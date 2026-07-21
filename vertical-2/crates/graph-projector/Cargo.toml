@@ -1,0 +1,21 @@
+[package]
+name = "graph-projector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "graph-projector"
+path = "src/main.rs"
+
+[dependencies]
+graph-core = { workspace = true, features = ["production"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+clap = { workspace = true }
+rskafka = { workspace = true }

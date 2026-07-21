@@ -21,6 +21,7 @@
 | ADR-007 | 2026-07-22 | Vertical 2 graph store | **CockroachDB property graph** (separate DB) | Active |
 | ADR-008 | 2026-07-22 | Monorepo layout | Separate `vertical-N/` folders | Active |
 | ADR-009 | 2026-07-22 | GitHub hosting | Private repo `AI-Manager` | Active |
+| ADR-010 | 2026-07-22 | V2 live ACL source | Hybrid: read V1 `user_group_membership` | Active |
 
 ---
 
@@ -250,8 +251,25 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 
 ---
 
+## ADR-010 — Vertical 2 live ACL membership source
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-22 |
+| **Status** | Active |
+| **Context** | Private graph nodes carry allow-lists from event time; **who is in those groups** must match V1 after revocation or V2 leaks after V1-only revoke. |
+| **Options** | (A) Local V2 membership only (B) Dual-write every revoke to V2 (C) **Read live groups from V1 Cockroach** |
+| **Choice** | **C — HybridMembership**: `get_groups` prefers V1 `user_group_membership`; local table for demos/seeds |
+| **Runner-up** | Dual-write revokes onto V2 membership |
+| **Why** | Single source of truth for membership avoids critical dual-write lag; verified: V1 DELETE group → V2 private PR immediately 404 |
+| **Trade-offs** | V2 production depends on V1 identity DB availability for authz (fail closed / local fallback only on read error) |
+| **Revisit if** | Multi-region split of identity vs graph requires a dedicated membership cache with pub/sub |
+
+---
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
-| 2026-07-22 | Created log; captured V1 stack ADRs retroactively; **ADR-007 Cockroach for V2 graph**; monorepo + GitHub ADRs. |
+| 2026-07-22 | Created log; ADR-007 Cockroach for V2 graph; monorepo + GitHub ADRs. |
+| 2026-07-22 | Implemented V2; **ADR-010** live ACL from V1 identity tables. |

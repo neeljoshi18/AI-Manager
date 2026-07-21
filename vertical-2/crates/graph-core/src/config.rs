@@ -47,6 +47,11 @@ impl GraphConfig {
             // Prefer context_graph DB if URL points at defaultdb
             c.cockroach_url = Some(v.replace("/defaultdb", "/context_graph"));
         }
+        if let Ok(v) = std::env::var("V1_COCKROACH_URL") {
+            c.v1_cockroach_url = Some(v);
+        } else if let Some(ref u) = c.cockroach_url {
+            c.v1_cockroach_url = Some(u.replace("/context_graph", "/defaultdb"));
+        }
         if let Ok(v) = std::env::var("KAFKA_BROKERS") {
             c.kafka_brokers = Some(v);
         }

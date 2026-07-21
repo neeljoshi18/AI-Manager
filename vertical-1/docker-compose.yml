@@ -1,0 +1,143 @@
+# Vertical 1 infrastructure stack (Spec §2).
+# Requires Docker Desktop / Colima / OrbStack.
+#
+#   docker compose up -d
+#   docker compose ps
+#
+# Embedded mode (default) does NOT require this stack — use it for
+# production-parity integration testing.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.4
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy.+true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.4
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint:
+      - bash
+      - -c
+      - |
+        rpk topic create events.raw events.realtime events.backfill events.acl \
+          --brokers redpanda:9092 || true
+
+  cockroach:
+    image: cockroachdb/cockroach:v24.2.0
+    command: start-single-node --insecure --store=attrs=ssd,path=/cockroach/cockroach-data
+    ports:
+      - "26257:26257"
+      - "8088:8080"
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+      - ./migrations/cockroach:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health?ready=1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      # Local-dev credentials (not for production). Allows host-machine HTTP access.
+      CLICKHOUSE_DB: enterprise_telemetry
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: vertical1
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./migrations/clickhouse/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sleep 3
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb -p local/ai-manager-telemetry || true
+
+  # Optional Envoy edge (TLS / rate-limit proxy in front of ingestion).
+  # Uncomment when mounting a real envoy.yaml for staging parity.
+  # envoy:
+  #   image: envoyproxy/envoy:v1.31-latest
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ./deploy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+
+volumes:
+  cockroach-data:
+  clickhouse-data:
+  minio-data:

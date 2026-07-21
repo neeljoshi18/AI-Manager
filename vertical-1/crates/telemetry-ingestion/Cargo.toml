@@ -1,0 +1,27 @@
+[package]
+name = "telemetry-ingestion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "telemetry-ingestion"
+path = "src/main.rs"
+
+[dependencies]
+telemetry-core = { workspace = true, features = ["production"] }
+telemetry-proto = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+clap = { workspace = true }
+bytes = { workspace = true }

@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package enterprise.telemetry.v1;
+
+// Source enterprise systems that emit telemetry into Vertical 1.
+enum SourceProvider {
+  SOURCE_PROVIDER_UNSPECIFIED = 0;
+  SOURCE_PROVIDER_GITHUB = 1;
+  SOURCE_PROVIDER_GITLAB = 2;
+  SOURCE_PROVIDER_JIRA = 3;
+  SOURCE_PROVIDER_LINEAR = 4;
+  SOURCE_PROVIDER_SLACK = 5;
+  SOURCE_PROVIDER_TEAMS = 6;
+  SOURCE_PROVIDER_ZENDESK = 7;
+}
+
+// High-level classification of a telemetry event.
+enum EventCategory {
+  EVENT_CATEGORY_UNSPECIFIED = 0;
+  EVENT_CATEGORY_CODE = 1;          // Commits, PRs, Branch Creation
+  EVENT_CATEGORY_WORK_ITEM = 2;     // Issues, Tickets, Epics
+  EVENT_CATEGORY_COMMUNICATION = 3; // Slack messages, PR reviews
+  EVENT_CATEGORY_IDENTITY = 4;      // User additions, role changes, ACL revocations
+}
+
+// Cross-system identity of an actor who triggered an event.
+message UserIdentity {
+  string global_user_id = 1;     // Internal cross-system mapping ID
+  string provider_user_id = 2;   // Source system internal ID (e.g. "gh_usr_1234")
+  string email = 3;
+  string display_name = 4;
+}
+
+// Access-control snapshot mirrored from the source system at ingest time.
+message ACLContext {
+  string tenant_id = 1;
+  repeated string allowed_group_ids = 2; // Source-system Group/Team IDs with access
+  bool is_private = 3;                   // Private repo, restricted ticket flag
+  uint64 acl_version = 4;                // Monotonic version for revocation ordering
+}
+
+// Canonical, strongly-typed telemetry event used across all Verticals.
+// Timestamps are Unix epoch milliseconds (UTC) for language-agnostic portability.
+message CanonicalEvent {
+  // Identity and Metadata
+  string event_id = 1;              // Unique GUID for tracking / dedup
+  SourceProvider provider = 2;
+  EventCategory category = 3;
+  string event_type = 4;            // e.g. "pull_request.opened"
+  int64 timestamp_ms = 5;           // Origin-system event time (epoch ms)
+  int64 ingested_at_ms = 6;         // Platform ingestion timestamp (epoch ms)
+
+  // Contextual Entities
+  UserIdentity actor = 7;
+  ACLContext acl_context = 8;
+
+  // Normalized References
+  string resource_id = 9;           // e.g. "repo_id/pr_number"
+  string parent_resource_id = 10;   // e.g. parent Epic ID or repository ID
+
+  // Structured Metadata & Raw Traceability
+  string attributes_json = 11;      // Standardized key-value pairs as JSON
+  string raw_payload_s3_uri = 12;   // Pointer to raw encrypted JSON in object store
+  uint64 event_sequence_number = 13;
+}
+
+// Explicit ACL revocation / membership-change event for real-time permission sync.
+message ACLRevocationEvent {
+  string event_id = 1;
+  string tenant_id = 2;
+  string global_user_id = 3;
+  string provider_user_id = 4;
+  SourceProvider provider = 5;
+  string group_id = 6;
+  // "removed_from_group" | "added_to_group" | "role_changed"
+  string change_type = 7;
+  uint64 acl_version = 8;
+  int64 timestamp_ms = 9;
+}
+
+// Envelope written to the streaming bus (Redpanda topics).
+message StreamEnvelope {
+  string topic = 1;              // events.raw | events.realtime | events.backfill | events.acl
+  string partition_key = 2;      // tenant_id or resource_id for ordering
+  CanonicalEvent event = 3;
+  ACLRevocationEvent acl_event = 4;
+  bytes raw_json = 5;            // Optional: retained only until S3 write confirms
+}

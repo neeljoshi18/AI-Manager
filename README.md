@@ -6,18 +6,21 @@ Private monorepo for the Autonomous AI Manager platform (engineering context lay
 
 | Path | Purpose |
 |------|---------|
-| `starting-out-documents/` | Ground-truth strategy + architecture + **decision log** |
+| `starting-out-documents/` | Ground-truth strategy + architecture + **decision log** + session handoff |
 | `vertical-1/` | Telemetry ingestion, canonical events, ACL, ClickHouse/Redpanda |
-| `vertical-2/` | Organizational Context Graph (spec first; implement next) |
+| `vertical-2/` | Organizational Context Graph (projector + ACL-safe multi-hop API) |
+| `vertical-3/` | Status twins, ledgers, veto-first Slack delivery (**spec**; implement next) |
 | `vertical-security/` | Centaur-inspired credential **egress proxy** (outbound secret inject) |
 
-Future verticals: `vertical-3/`, … — **one folder per vertical**, no nested coupling.
+**One folder per vertical**, no nested coupling. Product completeness ≈ verticals **sewn** (V1→V2→V3→egress Slack), not V1 alone.
 
 ## Key documents
 
+- [Session Handoff — AI Manager State](./starting-out-documents/Session%20Handoff_%20AI%20Manager%20State.md) (start new chats here)
 - [Architecture Decision Log — Pivotal Choices](./starting-out-documents/Architecture%20Decision%20Log_%20Pivotal%20Choices.md)
 - [Vertical 1 Technical Architecture Spec](./starting-out-documents/Technical%20Architecture%20Specification_%20Vertical%201.md)
 - [Vertical 2 Technical Architecture Spec](./vertical-2/Technical%20Architecture%20Specification_%20Vertical%202.md)
+- [Vertical 3 Technical Architecture Spec](./vertical-3/Technical%20Architecture%20Specification_%20Vertical%203.md)
 - Competitive analysis docs under `starting-out-documents/`
 
 ## Vertical 1 quick start
@@ -45,3 +48,9 @@ cargo test && cargo run   # :18090
 ```
 
 See [vertical-security/README.md](./vertical-security/README.md).
+
+## Vertical 3
+
+Status twins / ledgers / veto-first delivery — **spec only** today. Port **:18083** when implemented.
+
+See [vertical-3/README.md](./vertical-3/README.md) and the [V3 Technical Architecture Spec](./vertical-3/Technical%20Architecture%20Specification_%20Vertical%203.md).

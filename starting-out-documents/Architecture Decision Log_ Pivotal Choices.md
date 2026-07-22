@@ -23,7 +23,8 @@
 | ADR-009 | 2026-07-22 | GitHub hosting | Private repo `AI-Manager` | Active |
 | ADR-010 | 2026-07-22 | V2 live ACL source | Hybrid: read V1 `user_group_membership` | Active |
 | ADR-011 | 2026-07-22 | Response to Buzz/Centaur | Context plane, not agent workspace/runtime | Active |
-| ADR-012 | 2026-07-22 | Outbound secrets | Egress credential injection (Centaur pattern) | Active (planned) |
+| ADR-012 | 2026-07-22 | Outbound secrets | Egress credential injection (Centaur pattern) | Active (MVP) |
+| ADR-013 | 2026-07-22 | Vertical 3 product + stack | Status twins, veto-first Slack, Cockroach `status_twins` | Active (spec) |
 
 ---
 
@@ -288,7 +289,7 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | Field | Content |
 |-------|---------|
 | **Date** | 2026-07-22 |
-| **Status** | Active (**MVP implemented** in `vertical-security/` + V1 `EgressClient`) |
+| **Status** | Active (**MVP implemented** in `vertical-security/` + V1 `EgressClient`; required for V3 writes) |
 | **Context** | Agents/tools with API keys in env are exfil-prone under prompt injection. Centaur iron-proxy injects secrets at egress; industry standard 2026. |
 | **Options** | (A) Env vars forever (B) Full Centaur stack (C) **Scoped egress proxy + vault** |
 | **Choice** | **C** — secrets vault + egress inject proxy + allowlist + audit/redact |
@@ -298,6 +299,24 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | **Verticals** | V3 critical; V1 medium (outbound); V2 low |
 | **Revisit if** | Managed secret inject from cloud provider is mandated |
 
+## ADR-013 — Vertical 3 Status Twins & Veto-First Delivery
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-22 |
+| **Status** | Active (**specification**; implementation next) |
+| **Context** | V1+V2 prove the context plane but do not yet kill standups. Product completeness requires status ledgers delivered privately first, then optionally published. Competitive pressure (Buzz workspace, Centaur agents, Geekbot forms) must not pull us off the context/status thesis. |
+| **Options** | (A) Build multiplayer agent OS first (B) Build workspace chat first (C) **Status twins + ledger + veto-first Slack on top of V2** |
+| **Choice** | **C** — Vertical 3 owns twins, `status_twins` Cockroach DB, deterministic confidence tiers, DM veto state machine, channel publish via egress only |
+| **Runner-up** | Thin Slack bot with no ledger/versioning (too weak for enterprise audit + veto) |
+| **Why** | Matches pitch (meeting elimination); reuses V2 ACL graph; reuses ADR-012 egress; avoids cloning Buzz/Centaur; structure-first reduces LLM hallucination risk |
+| **Stack** | Rust/Axum; Cockroach `status_twins`; Redis timers; port **:18083**; Slack via egress **:18090** |
+| **Non-goals** | Vector search; Centaur sandboxes; Buzz Nostr/Git; individual LOC rankings; god-mode graph SQL |
+| **Ground truth** | `vertical-3/Technical Architecture Specification_ Vertical 3.md` |
+| **Trade-offs** | Product value delayed until V3 ships; depends on V2 API quality and Slack bot setup |
+| **Revisit if** | Mid-market buyers require Teams-first, or enterprise mandates a different workflow engine (Temporal) for multi-day sagas |
+| **Tests** | TC-T01–TC-T10 in V3 TAS |
+
 ## Changelog
 
 | Date | Change |
@@ -305,3 +324,4 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | 2026-07-22 | Created log; ADR-007 Cockroach for V2 graph; monorepo + GitHub ADRs. |
 | 2026-07-22 | Implemented V2; **ADR-010** live ACL from V1 identity tables. |
 | 2026-07-22 | Buzz/Centaur research; **ADR-011** product stance; **ADR-012** egress secrets planned; companion docs in starting-out-documents. |
+| 2026-07-22 | **ADR-012** MVP in `vertical-security/`; **ADR-013** V3 status twins TAS + session handoff for new chat. |

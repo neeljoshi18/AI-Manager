@@ -1,0 +1,23 @@
+[package]
+name = "twin-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "twin-verify"
+path = "src/main.rs"
+
+[dependencies]
+twin-core = { workspace = true }
+twin-compiler = { workspace = true }
+twin-delivery = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+uuid = { workspace = true }

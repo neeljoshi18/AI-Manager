@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Manager — Demo Console</title>
+  <link rel="stylesheet" href="/demo/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo">AI</div>
+        <div>
+          <h1>AI Manager</h1>
+          <p class="tag">Permissioned eng context · kill status meetings</p>
+        </div>
+      </div>
+      <div class="banner">DEMO ONLY · local · no Glean search · no agent sandbox</div>
+    </header>
+
+    <section class="card" id="health-card">
+      <h2>System health</h2>
+      <div class="pills" id="health-pills">loading…</div>
+      <p class="muted" id="slack-mode"></p>
+    </section>
+
+    <section class="grid2">
+      <div class="card">
+        <h2>1. Simulate work</h2>
+        <p class="muted">On-demand check: projects a sample PR into the graph and sends <strong>one</strong> status DM. Live GitHub ingest is continuous; scheduled DMs default to every 30 minutes (not every webhook).</p>
+        <label>Tenant <input id="tenant" value="ten_demo" /></label>
+        <label>Person (global_user_id) <input id="user" value="gu_alice" /></label>
+        <label>Display name <input id="name" value="Alice" /></label>
+        <label>Slack user ID <input id="slack_user" value="U0APK7W1X99" placeholder="U0123ABCD from Slack profile" /></label>
+        <label>Team channel ID <input id="channel" value="C0APN754MQV" placeholder="C… real channel id" /></label>
+        <label class="check"><input type="checkbox" id="skip_shadow" checked /> Skip shadow mode (demo)</label>
+        <button id="btn-sim" class="primary">Simulate PR → Ledger → Draft</button>
+      </div>
+      <div class="card">
+        <h2>2. Pitch (share this)</h2>
+        <ul class="pitch">
+          <li><strong>Not Glean</strong> — no vector search, no full-text crawl</li>
+          <li><strong>Not Buzz</strong> — stay in your Slack, no new workspace</li>
+          <li><strong>Veto-first status</strong> — private DM before any channel post</li>
+          <li><strong>ACL-safe graph</strong> — private PRs never leak across groups</li>
+        </ul>
+        <p class="muted">Success metric: meetings deleted / focus time reclaimed.</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3. Ledger & draft</h2>
+      <div id="ledger-empty" class="muted">Run a simulation to see evidence-backed status items here.</div>
+      <div id="ledger-view" class="hidden">
+        <div class="meta">
+          <span id="conf-pill" class="pill"></span>
+          <span id="draft-pill" class="pill"></span>
+          <code id="ids"></code>
+        </div>
+        <pre id="draft-text" class="box"></pre>
+        <h3>Items</h3>
+        <ul id="items"></ul>
+        <h3>Evidence</h3>
+        <pre id="evidence" class="box small"></pre>
+        <div class="actions">
+          <button id="btn-publish" class="ok">Publish</button>
+          <button id="btn-edit">Edit text…</button>
+          <button id="btn-veto" class="danger">Veto</button>
+          <button id="btn-silence">Silence timeout (Medium)</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4. Raw JSON (debug)</h2>
+      <pre id="raw" class="box small">{}</pre>
+    </section>
+
+    <footer>
+      <span>Ports: V1 :18080 · V2 :18082 · V3 :18083 · egress :18090</span>
+      <span>Milestone M4 · Sew &amp; Show</span>
+    </footer>
+  </div>
+  <script src="/demo/app.js"></script>
+</body>
+</html>

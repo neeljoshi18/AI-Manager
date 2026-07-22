@@ -139,9 +139,19 @@ V1 events ──► V2 graph-api (ACL QueryContext)
 
 **Output:** `StatusLedger` JSON stored as an immutable `ledger_snapshot` row.
 
-**Cadence (v1):** periodic Tokio tick and/or “standup window” (e.g. 09:00 local) + on-demand `POST .../compile`.
+**Cadence (v1 + M4 batching):**
 
-**Idempotency:** unique `(tenant_id, twin_id, period_start, period_end)`. Recompile may replace draft only if not yet published.
+| Concern | Policy |
+|---------|--------|
+| **Ingest** | Continuous — accept all GitHub/Jira webhooks into V1→V2 (high volume OK) |
+| **Ledger period** | Aligned wall-clock window: `STATUS_WINDOW_SECS` (default **3600** = 1h) |
+| **Compile tick** | Tokio scheduler every `COMPILE_INTERVAL_SECS` (default **1800** = 30m); `0` disables |
+| **Slack DM** | At most once per twin per `NOTIFY_INTERVAL_SECS` (default **1800**); **not** on every webhook |
+| **On-demand** | Demo console / `force_notify=true` on compile — separate “check now” tool |
+
+**Never** 1:1 map “GitHub delivery → Slack DM”. Bridge processes project graph only; twin-api owns notify.
+
+**Idempotency:** unique `(tenant_id, twin_id, period_start, period_end)`. Recompile may update open draft text; DM only when notify budget allows.
 
 ### 4.3 Confidence Scorer (Deterministic v1)
 
@@ -430,6 +440,10 @@ vertical-3/
 | `REDIS_URL` | locks / timers |
 | `SKIP_AUTH` | local only |
 | `BIND_ADDR` | default `0.0.0.0:18083` |
+| `STATUS_WINDOW_SECS` | ledger period align (default 3600) |
+| `NOTIFY_INTERVAL_SECS` | min seconds between Slack DMs per twin (default 1800) |
+| `COMPILE_INTERVAL_SECS` | background compile tick (default 1800; 0=off) |
+| `NOTIFY_ON_COMPILE` | if true, HTTP compile may DM (default false; demo uses force) |
 
 ---
 

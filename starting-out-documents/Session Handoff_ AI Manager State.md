@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-22  
 **Repo:** private monorepo `https://github.com/neeljoshi18/AI-Manager`  
-**Purpose:** Grounded state pack for a **new chat** (fresh context window). Prefer this file + vertical specs over auto-compacted chat history.
+**Purpose:** Grounded state pack for a **new chat**. Prefer this file + vertical specs over chat history.
 
 ---
 
@@ -11,199 +11,153 @@
 | Stance | Detail |
 |--------|--------|
 | **What we are** | Permissioned **engineering context plane** + **meeting elimination** (status ledgers) |
-| **Anti-Glean** | No vector search, no full-text enterprise index, no proprietary source code hosting, no OCR document corpus |
-| **Not Buzz** | Not a multiplayer human+agent workspace / Nostr / Git forge |
-| **Not Centaur** | Not a K8s multiplayer agent OS; **steal only** egress credential injection |
-| **Success metric** | Meetings deleted / focus time reclaimed — not search engagement |
-
-**Competitive docs:**  
-- `starting-out-documents/Competitive Landscape Update_ Buzz and Centaur.md`  
-- Glean analysis docs in `starting-out-documents/`  
-- ADRs 006, 011, 012, **013**
+| **Anti-Glean** | No vector search, no full-text enterprise index, no proprietary source code hosting |
+| **Not Buzz** | Not multiplayer workspace / Nostr / Git forge |
+| **Not Centaur** | Steal only egress credential injection |
+| **Success metric** | Meetings deleted / focus time reclaimed |
 
 ---
 
-## 2. Monorepo layout
+## 2. Milestone tracker (founder finish line = M7)
+
+| M | Meaning | Status |
+|---|--------|--------|
+| M0 | Strategy + ADRs | Done |
+| M1 | V1 engine | Done (~85–90%) |
+| M2 | V2 graph | Done (~75–80%) |
+| M3 | V3 twins engine | **Done** (TC-T01–T10 green) |
+| **M4** | **Sew & Show**: live sew + demo console + real Slack | **Near done** — V1+V2+V3 up; real GitHub webhook pending |
+| M5 | Staging single-tenant deploy | Not started |
+| M6 | Design partner weekly | Not started |
+| M7 | Self-serve deployed product | Not started |
+
+**Do not start Vertical 4** until M4 acceptance is green.
+
+---
+
+## 3. Monorepo layout
 
 | Path | Role | Status |
 |------|------|--------|
-| `starting-out-documents/` | Strategy, TAS (V1), decision log, competitive, this handoff | Living |
-| `vertical-1/` | Telemetry ingest, ACL, bus, CH, CRDB, MinIO | ~85–90% done |
-| `vertical-2/` | Organizational context graph + projector + API | ~75–80% done |
-| `vertical-security/` | Centaur-inspired egress credential proxy | MVP done |
-| `vertical-3/` | Status twins, ledgers, veto-first Slack delivery | **Spec only** (implement next) |
+| `starting-out-documents/` | Strategy, ADRs, handoff, demo script, M4 plan | Living |
+| `vertical-1/` | Telemetry ingest, ACL, bus | ~85–90% |
+| `vertical-2/` | Context graph + projector + API | ~75–80% |
+| `vertical-security/` | Egress credential proxy | MVP |
+| `vertical-3/` | Twins, ledgers, veto delivery, **demo console** | MVP + M4 UI |
+| `scripts/platform_sew.sh` | Cross-vertical TC-P01… | Done |
 
-**Product “100%” bar:** V1 + V2 + Security + V3 **sewn** on one E2E path (not “V1 green alone”).
+**Golden path:**
 
 ```
-Source webhook → V1 accept → V2 graph → V3 ledger → Slack DM (egress) → veto/edit/silence → channel post
+Source webhook → V1 → V2 graph → V3 ledger → Slack DM (egress) → veto/edit/silence → channel
 ```
 
 ---
 
-## 3. Ports & services
+## 4. Ports
 
-| Service | Port | Notes |
-|---------|------|-------|
-| V1 ingestion / query | **18080** | Avoid host 8080 (often Ollama) |
-| V2 graph-api | **18082** | |
-| V3 twin-api | **18083** | Spec; not implemented yet |
-| Egress proxy | **18090** | `vertical-security` |
-| Redis (compose) | 6379 | Dedup, rate limit, future veto timers |
-| Redpanda Kafka API | **19092** | (mapped; not 9092 alone) |
-| Cockroach SQL | 26257 | DBs: `defaultdb` (V1), `context_graph` (V2), `status_twins` (V3 planned) |
-| ClickHouse HTTP | 8123 | V1 analytics |
-| MinIO | 9000 | Raw webhook vault |
+| Service | Port |
+|---------|------|
+| V1 | **18080** |
+| V2 | **18082** |
+| V3 twin-api + **demo** | **18083** (`/demo/`) |
+| Egress | **18090** |
+| Cockroach | 26257 |
+| Redis | 6379 |
+| Redpanda | 19092 |
 
 ---
 
-## 4. What works (verified patterns)
+## 5. What works (verified)
 
-### Vertical 1
+### Engines
+- V1: `cargo run -p telemetry-verify`
+- V2: `cargo run -p graph-verify`
+- V3: `cargo run -p twin-verify` (TC-T01–T10 **PASS**)
+- Security: `cargo test` in `vertical-security/`
 
-- Rust/Axum workspace: `telemetry-core`, `ingestion`, `consumer`, `query`, `verify`, `proto`
-- HMAC, Redis dedup/rate limit, Redpanda bus, Cockroach ACL/identity, ClickHouse ReplacingMergeTree-style, MinIO vault
-- Production wiring under `telemetry-core/production/`
-- `SKIP_AUTH=true` for local; production needs secrets
-- Egress client module in core; smoke: `scripts/egress_smoke.sh`
-- Verify battery: `cargo run -p telemetry-verify` (TC-01…)
-- Docker: `vertical-1/docker-compose.yml`
+### M4 Sew & Show (partial)
+- **Demo console:** `http://127.0.0.1:18083/demo/` — simulate PR → ledger → draft/veto/publish
+- **API:** `POST /v3/demo/simulate`, `GET /v3/demo/status`, `GET /v3/demo/latest`
+- **Platform sew:** `./scripts/platform_sew.sh` (embedded green with V3 only; live needs V1+V2+V3)
+- **Slack:** mock default; real path ready when `USE_EGRESS_SLACK=true` + vault token
 
-### Vertical 2
-
-- Workspace: `graph-core`, `graph-api`, `graph-projector`, `graph-verify`
-- Cockroach DB `context_graph`; temporal nodes/edges; ACL on nodes/edges
-- **HybridMembership (ADR-010):** live groups from V1 `user_group_membership` — V1 revoke hides private graph nodes immediately
-- HTTP project bridge: `POST /v2/project` + `scripts/integration_v1_bridge.sh`
-- Bus projector: topics `events.raw`, `events.acl`; production offsets in CRDB
-- Verify: `cargo run -p graph-verify` (TC-G01–G10)
-- Spec: `vertical-2/Technical Architecture Specification_ Vertical 2.md`
-
-### Vertical Security
-
-- Fail-closed egress proxy; tool registry YAML; file secrets backend (dev)
-- Inject Authorization; audit log (no secret values); optional response redact
-- `cargo test` in `vertical-security/`; run on `:18090`
-- Do **not** put long-lived tokens in twin/worker env (ADR-012)
-
-### Vertical 3
-
-- **Ground truth only:** `vertical-3/Technical Architecture Specification_ Vertical 3.md`
-- No Rust crates yet — next session implements per TAS
-- Crates planned: `twin-core`, `twin-compiler`, `twin-delivery`, `twin-api`, `twin-verify`
-- Invariants: veto-first, confidence tiers, ACL via V2 only, Slack via egress only
+### Real Slack — **DM path verified (2026-07-22)**
+- Token only in `vertical-security/secrets/dev_secrets.json` (gitignored)
+- Twin: `USE_EGRESS_SLACK=true` + `EGRESS_PROXY_URL` (no bot token in twin env)
+- User `U0APK7W1X99` received DM (`dm_ts` set; egress audit status 200)
+- Channel publish needs bot **invited** to `C0APN754MQV` (`not_in_channel` until then)
 
 ---
 
-## 5. Commands that should be green
+## 6. Commands that should be green
 
 ```bash
-# V1
-cd vertical-1 && cargo test && cargo run -p telemetry-verify
-
-# V2
-cd vertical-2 && cargo test && cargo run -p graph-verify
-./scripts/integration_v1_bridge.sh   # needs V2 up; V1 optional
-
-# Security
+cd vertical-1 && cargo run -p telemetry-verify
+cd vertical-2 && cargo run -p graph-verify
+cd vertical-3 && cargo run -p twin-verify
 cd vertical-security && cargo test
+./scripts/platform_sew.sh
 
-# Infra (optional)
-cd vertical-1 && docker compose up -d
-```
-
-**Production V2 sketch** (V1 compose up):
-
-```bash
-docker compose -f vertical-1/docker-compose.yml exec -T cockroach \
-  ./cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS context_graph;"
-# apply vertical-2/migrations/cockroach/001_init.sql
-RUNTIME_MODE=production \
-  COCKROACH_URL='postgresql://root@127.0.0.1:26257/context_graph?sslmode=disable' \
-  V1_COCKROACH_URL='postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable' \
-  cargo run -p graph-api   # from vertical-2
+# Demo UI
+cd vertical-3 && RUNTIME_MODE=embedded SHADOW_MODE_DAYS=0 cargo run -p twin-api
+# open http://127.0.0.1:18083/demo/
 ```
 
 ---
 
-## 6. Open risks / known gaps
+## 7. Next task (resume here)
 
-| Risk | Notes |
-|------|-------|
-| V2 projector multi-partition / poison offsets | Production offset commit exists; chaos edge cases remain |
-| Vault backends | Dev file secrets only; enterprise vault still future |
-| ADR-012 index row still said “planned” historically | MVP implemented in `vertical-security/` — treat as Active/MVP |
-| V3 not built | Spec frozen; product value blocked until twins ship |
-| Empty graph → empty ledgers | Prefer live V1→V2 path before polishing twin UX |
-| Context auto-compact | Lossy; use this handoff + specs, not chat alone |
+1. **Ingest continuous / notify batched** (user feedback): bridge V1→V2 only; twin-api schedules DMs (`NOTIFY_INTERVAL_SECS=1800`, `STATUS_WINDOW_SECS=3600`).  
+2. Real GitHub webhooks work via ngrok; do **not** 1:1 Slack on every delivery.  
+3. Demo console = on-demand notify tool (`force_notify`).  
+4. Next: M5 staging; no multi-agent V4 until M4 stable.  
 
 ---
 
-## 7. Architecture decisions to obey
+## 8. Architecture decisions to obey
 
 | ADR | Choice |
 |-----|--------|
 | 006 | Strip search/vectors |
 | 007 | V2 graph on Cockroach `context_graph` |
-| 008 | Separate `vertical-N/` folders |
 | 010 | HybridMembership from V1 |
-| 011 | Context plane, not Buzz/Centaur clone |
+| 011 | Context plane, not Buzz/Centaur |
 | 012 | Egress credential injection |
-| **013** | V3 status twins + veto-first delivery (see decision log) |
+| 013 | V3 status twins + veto-first |
 
 ---
 
-## 8. Frozen for Vertical 3 implementation
+## 9. Context handoff protocol (~400k)
 
-Read **`vertical-3/Technical Architecture Specification_ Vertical 3.md`** end-to-end before coding.
+When context bloated: update this file + `Session Handoff_ Sew and Show M4.md` → stop with new-chat prompt (see Human Demo Script / plan).
 
-Highlights:
+### New-chat documents
 
-- Port **:18083**
-- DB **`status_twins`**
-- Compiler reads **V2 ACL APIs only** (no god-mode SQL on `context_graph`)
-- Slack **only** via egress `:18090` tool `slack_api`
-- Confidence: High / Medium / Blocker (deterministic first)
-- Shadow mode default 10 days; `high_auto_publish=false` initially
-- Tests TC-T01–TC-T10; scripts `smoke_v3.sh`, `sew_e2e.sh`
-- Do not build sandboxes, Nostr workspace, or surveillance rankings
+1. This handoff  
+2. `Plan_ Sew and Show M4.md`  
+3. `Human Demo Script.md`  
+4. V3 TAS  
+5. ADR log  
+6. vertical-2 / vertical-security / root README  
 
----
+### New-chat prompt
 
-## 9. Suggested new-chat implementation order
-
-1. Confirm TAS invariants aloud  
-2. `twin-core` domain (ledger, confidence, draft state machine)  
-3. `migrations/cockroach/001_init.sql`  
-4. `twin-compiler` (V2 HTTP client + fixtures)  
-5. `twin-delivery` (veto machine; mock Slack via egress)  
-6. `twin-api` on :18083  
-7. `twin-verify` TC-T01–T10  
-8. `scripts/sew_e2e.sh`  
-9. Extend `vertical-security` tool registry for Slack if missing  
-10. README + metrics  
+```text
+Continue AI Manager (neeljoshi18/AI-Manager). Phase Sew & Show M4.
+Read Session Handoff_ AI Manager State.md and Plan_ Sew and Show M4.md first.
+Do NOT start Vertical 4. Slack secrets only via egress vault.
+Resume from handoff “Next task”. Autonomous until real-world secrets needed or context ~400k.
+```
 
 ---
 
-## 10. Human demo path (target after V3 MVP)
+## 10. What NOT to do
 
-1. `docker compose` V1 stack up  
-2. Ingest or synthetic GitHub PR event → V1  
-3. Project into V2 (bridge or projector)  
-4. V3 compile ledger for actor twin  
-5. (Post-shadow) DM draft via egress  
-6. Veto or silence or publish  
-7. Show channel post + metrics; show ACL revoke still hides private nodes  
-
----
-
-## 11. What NOT to do in the next session
-
-- Do not re-litigate Cockroach vs Neo4j (ADR-007 settled)  
-- Do not re-open “build Buzz/Centaur” (ADR-011)  
+- Do not re-open Buzz/Centaur/Neo4j debates  
 - Do not put Slack tokens in twin env  
-- Do not nest V3 crates inside `vertical-1/`  
-- Do not invent product features outside the V3 TAS without a new ADR  
+- Do not claim M7 “deployed product” until staging + pilot + self-serve  
+- Do not skip sew for shiny new verticals  
 
 ---
 

@@ -6,51 +6,62 @@ Private monorepo for the Autonomous AI Manager platform (engineering context lay
 
 | Path | Purpose |
 |------|---------|
-| `starting-out-documents/` | Ground-truth strategy + architecture + **decision log** + session handoff |
-| `vertical-1/` | Telemetry ingestion, canonical events, ACL, ClickHouse/Redpanda |
-| `vertical-2/` | Organizational Context Graph (projector + ACL-safe multi-hop API) |
-| `vertical-3/` | Status twins, ledgers, veto-first Slack delivery (**spec**; implement next) |
-| `vertical-security/` | Centaur-inspired credential **egress proxy** (outbound secret inject) |
+| `starting-out-documents/` | Strategy, ADRs, handoff, **human demo script**, M4 plan |
+| `vertical-1/` | Telemetry ingestion, canonical events, ACL |
+| `vertical-2/` | Organizational Context Graph (ACL-safe multi-hop) |
+| `vertical-3/` | Status twins, ledgers, veto-first Slack + **demo console** |
+| `vertical-security/` | Credential **egress proxy** (outbound secret inject) |
+| `scripts/platform_sew.sh` | Cross-vertical sew battery (TC-P01…) |
 
-**One folder per vertical**, no nested coupling. Product completeness ≈ verticals **sewn** (V1→V2→V3→egress Slack), not V1 alone.
+**Product completeness** ≈ verticals **sewn** (V1→V2→V3→egress Slack), not V1 alone.
+
+## Milestone map
+
+| M | Meaning | Status |
+|---|--------|--------|
+| M1–M3 | Engines V1 / V2 / V3 | Done (code + unit batteries) |
+| **M4** | Live sew + **demo console** + real Slack | **In progress** |
+| M5 | Staging single-tenant deploy | Later |
+| M6 | Design-partner weekly use | Later |
+| M7 | Self-serve deployed product | “Finished” for teams |
+
+## 2-minute demo (leads / Reddit / X)
+
+```bash
+cd vertical-3
+RUNTIME_MODE=embedded SHADOW_MODE_DAYS=0 cargo run -p twin-api
+```
+
+Open **http://127.0.0.1:18083/demo/** → **Simulate PR → Ledger → Draft**.
+
+Full script: [Human Demo Script](./starting-out-documents/Human%20Demo%20Script.md)
+
+## Platform sew
+
+```bash
+# Embedded (V3 only ok):
+./scripts/platform_sew.sh
+
+# Live (requires V1 :18080, V2 :18082, V3 :18083):
+SEW_MODE=live ./scripts/platform_sew.sh
+```
 
 ## Key documents
 
-- [Session Handoff — AI Manager State](./starting-out-documents/Session%20Handoff_%20AI%20Manager%20State.md) (start new chats here)
-- [Architecture Decision Log — Pivotal Choices](./starting-out-documents/Architecture%20Decision%20Log_%20Pivotal%20Choices.md)
-- [Vertical 1 Technical Architecture Spec](./starting-out-documents/Technical%20Architecture%20Specification_%20Vertical%201.md)
-- [Vertical 2 Technical Architecture Spec](./vertical-2/Technical%20Architecture%20Specification_%20Vertical%202.md)
-- [Vertical 3 Technical Architecture Spec](./vertical-3/Technical%20Architecture%20Specification_%20Vertical%203.md)
-- Competitive analysis docs under `starting-out-documents/`
+- [Session Handoff](./starting-out-documents/Session%20Handoff_%20AI%20Manager%20State.md)
+- [Human Demo Script](./starting-out-documents/Human%20Demo%20Script.md)
+- [Plan — Sew & Show M4](./starting-out-documents/Plan_%20Sew%20and%20Show%20M4.md)
+- [Architecture Decision Log](./starting-out-documents/Architecture%20Decision%20Log_%20Pivotal%20Choices.md)
+- V1 / V2 / V3 TAS under `starting-out-documents/` and `vertical-*/`
 
-## Vertical 1 quick start
+## Vertical quick starts
 
-```bash
-cd vertical-1
-docker compose up -d          # optional production backends
-SKIP_AUTH=true cargo run -p telemetry-ingestion   # embedded default unless .env production
-```
+**V1:** `cd vertical-1 && SKIP_AUTH=true cargo run -p telemetry-ingestion` → `:18080`  
+**V2:** `cd vertical-2 && RUNTIME_MODE=embedded cargo run -p graph-api` → `:18082`  
+**V3:** `cd vertical-3 && RUNTIME_MODE=embedded cargo run -p twin-api` → `:18083` + `/demo/`  
+**Egress:** `cd vertical-security && cargo run` → `:18090`  
 
-See `vertical-1/README.md`.
+## Real Slack (M4)
 
-## Vertical 2
-
-See `vertical-2/README.md`.
-
-## Credential egress (vertical-security)
-
-Outbound API calls inject secrets via a small Rust reverse proxy so workers never hold long-lived tokens.
-
-```bash
-cd vertical-security
-cp secrets/dev_secrets.example.json secrets/dev_secrets.json
-cargo test && cargo run   # :18090
-```
-
-See [vertical-security/README.md](./vertical-security/README.md).
-
-## Vertical 3
-
-Status twins / ledgers / veto-first delivery — **spec only** today. Port **:18083** when implemented.
-
-See [vertical-3/README.md](./vertical-3/README.md) and the [V3 Technical Architecture Spec](./vertical-3/Technical%20Architecture%20Specification_%20Vertical%203.md).
+Bot token lives **only** in `vertical-security/secrets/dev_secrets.json` (`SLACK_BOT_TOKEN`).  
+Twin process: `USE_EGRESS_SLACK=true EGRESS_PROXY_URL=http://127.0.0.1:18090` — **never** set `SLACK_BOT_TOKEN` on twin.

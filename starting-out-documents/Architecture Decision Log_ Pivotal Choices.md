@@ -22,6 +22,8 @@
 | ADR-008 | 2026-07-22 | Monorepo layout | Separate `vertical-N/` folders | Active |
 | ADR-009 | 2026-07-22 | GitHub hosting | Private repo `AI-Manager` | Active |
 | ADR-010 | 2026-07-22 | V2 live ACL source | Hybrid: read V1 `user_group_membership` | Active |
+| ADR-011 | 2026-07-22 | Response to Buzz/Centaur | Context plane, not agent workspace/runtime | Active |
+| ADR-012 | 2026-07-22 | Outbound secrets | Egress credential injection (Centaur pattern) | Active (planned) |
 
 ---
 
@@ -267,9 +269,39 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 
 ---
 
+## ADR-011 — Product stance vs Buzz (Block) and Centaur (Paradigm)
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-22 |
+| **Status** | Active |
+| **Context** | Buzz = multiplayer human+agent workspace (Nostr/Git/ACP). Centaur = secure Slack multiplayer agent runtime (K8s + iron-proxy). Risk of narrative collision with “AI manager / coworker.” |
+| **Options** | (A) Compete as workspace (B) Compete as agent runtime (C) **Stay context/status plane** |
+| **Choice** | **C** — AI Manager is the permissioned engineering context graph + meeting elimination layer |
+| **Runner-up** | Partner/interop: expose graph via MCP to Buzz/Centaur/Goose |
+| **Why** | Moat is relational reasoning + strip TCO + ACL; cloning Buzz/Centaur abandons strip-to-win and duplicates well-funded OSS |
+| **Trade-offs** | We will not own multiplayer agent UX day one |
+| **Revisit if** | Distribution requires shipping a thin agent shell; still use graph as core |
+
+## ADR-012 — Outbound credential injection (Centaur-inspired)
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-22 |
+| **Status** | Active (**planned**, not implemented) |
+| **Context** | Agents/tools with API keys in env are exfil-prone under prompt injection. Centaur iron-proxy injects secrets at egress; industry standard 2026. |
+| **Options** | (A) Env vars forever (B) Full Centaur stack (C) **Scoped egress proxy + vault** |
+| **Choice** | **C** — secrets vault + egress inject proxy + allowlist + audit/redact |
+| **Runner-up** | Short-lived OAuth only (still needs careful agent isolation) |
+| **Why** | Required for enterprise write path (V3); hardens V1 outbound; does not require multiplayer sandbox product |
+| **Trade-offs** | Extra infra; must fail closed; doesn’t fix inbound webhook HMAC storage alone |
+| **Verticals** | V3 critical; V1 medium (outbound); V2 low |
+| **Revisit if** | Managed secret inject from cloud provider is mandated |
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
 | 2026-07-22 | Created log; ADR-007 Cockroach for V2 graph; monorepo + GitHub ADRs. |
 | 2026-07-22 | Implemented V2; **ADR-010** live ACL from V1 identity tables. |
+| 2026-07-22 | Buzz/Centaur research; **ADR-011** product stance; **ADR-012** egress secrets planned; companion docs in starting-out-documents. |

@@ -24,7 +24,9 @@
 | ADR-010 | 2026-07-22 | V2 live ACL source | Hybrid: read V1 `user_group_membership` | Active |
 | ADR-011 | 2026-07-22 | Response to Buzz/Centaur | Context plane, not agent workspace/runtime | Active |
 | ADR-012 | 2026-07-22 | Outbound secrets | Egress credential injection (Centaur pattern) | Active (MVP) |
-| ADR-013 | 2026-07-22 | Vertical 3 product + stack | Status twins, veto-first Slack, Cockroach `status_twins` | Active (spec) |
+| ADR-013 | 2026-07-22 | Vertical 3 product + stack | Status twins, veto-first Slack, Cockroach `status_twins` | Active (MVP implemented) |
+| ADR-014 | 2026-07-22 | Notify vs ingest cadence | Continuous ingest; batched Slack notify | Active |
+| ADR-015 | 2026-07-22 | Private Slack DMs | No silent 1:1 wiretap; bot/opt-in capture only | Active |
 
 ---
 
@@ -304,7 +306,7 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | Field | Content |
 |-------|---------|
 | **Date** | 2026-07-22 |
-| **Status** | Active (**specification**; implementation next) |
+| **Status** | Active (**MVP implemented** in `vertical-3/`; batch notify added) |
 | **Context** | V1+V2 prove the context plane but do not yet kill standups. Product completeness requires status ledgers delivered privately first, then optionally published. Competitive pressure (Buzz workspace, Centaur agents, Geekbot forms) must not pull us off the context/status thesis. |
 | **Options** | (A) Build multiplayer agent OS first (B) Build workspace chat first (C) **Status twins + ledger + veto-first Slack on top of V2** |
 | **Choice** | **C** — Vertical 3 owns twins, `status_twins` Cockroach DB, deterministic confidence tiers, DM veto state machine, channel publish via egress only |
@@ -317,6 +319,30 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | **Revisit if** | Mid-market buyers require Teams-first, or enterprise mandates a different workflow engine (Temporal) for multi-day sagas |
 | **Tests** | TC-T01–TC-T10 in V3 TAS |
 
+## ADR-014 — Continuous ingest, batched notify
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-22 |
+| **Status** | Active |
+| **Context** | GitHub “notify on every change” produces high webhook volume; mapping each event to a Slack DM floods developers and destroys trust. |
+| **Options** | (A) DM per event (B) Drop most events (C) **Ingest all events; schedule status DMs** |
+| **Choice** | **C** — V1/V2 ingest continuous; V3 `NOTIFY_INTERVAL_SECS` / `STATUS_WINDOW_SECS` / scheduler; bridge does not Slack |
+| **Why** | Company brain needs full exhaust; humans need digests + outcomes (merged/closed), not keystroke theater |
+| **Revisit if** | Real-time paging for sevs is required (separate alert path, not standup twin) |
+
+## ADR-015 — Private Slack DMs and intent capture
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-22 |
+| **Status** | Active |
+| **Context** | Founder wants colleague 1:1 DMs as intent signal for digital twins; Slack platform and ethics constrain silent read. |
+| **Options** | (A) Enterprise compliance scrape all DMs (B) Silent bot wiretap (C) **Bot-mediated + opt-in capture only** |
+| **Choice** | **C** — No silent human↔human DM read by default; capture via bot DM, slash capture, channels where bot is invited; compliance SKU only with legal |
+| **Why** | Trust is the product; mid-market can’t buy spyware; technical bot membership model |
+| **Revisit if** | Enterprise customer contracts compliance API with dual-control policy |
+
 ## Changelog
 
 | Date | Change |
@@ -325,3 +351,4 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | 2026-07-22 | Implemented V2; **ADR-010** live ACL from V1 identity tables. |
 | 2026-07-22 | Buzz/Centaur research; **ADR-011** product stance; **ADR-012** egress secrets planned; companion docs in starting-out-documents. |
 | 2026-07-22 | **ADR-012** MVP in `vertical-security/`; **ADR-013** V3 status twins TAS + session handoff for new chat. |
+| 2026-07-22 | V3 MVP + sew + GitHub/Slack live; **ADR-014** batch notify; **ADR-015** private DM policy; product roadmap file. |

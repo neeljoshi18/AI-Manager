@@ -49,8 +49,9 @@ SEW_MODE=live ./scripts/platform_sew.sh
 ## Key documents
 
 - [Session Handoff](./starting-out-documents/Session%20Handoff_%20AI%20Manager%20State.md)
+- [**Product Roadmap — Intent → Twins**](./starting-out-documents/Product%20Roadmap_%20Intent%20Capture%20to%20Digital%20Twins.md) ← **what we build next**
+- [Interaction Log](./starting-out-documents/Interaction%20Log_%20Product%20Decisions.md) ← decision history
 - [Human Demo Script](./starting-out-documents/Human%20Demo%20Script.md)
-- [Plan — Sew & Show M4](./starting-out-documents/Plan_%20Sew%20and%20Show%20M4.md)
 - [Architecture Decision Log](./starting-out-documents/Architecture%20Decision%20Log_%20Pivotal%20Choices.md)
 - V1 / V2 / V3 TAS under `starting-out-documents/` and `vertical-*/`
 

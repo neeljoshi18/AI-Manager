@@ -26,12 +26,14 @@
 | M1 | V1 engine | Done (~85–90%) |
 | M2 | V2 graph | Done (~75–80%) |
 | M3 | V3 twins engine | **Done** (TC-T01–T10 green) |
-| **M4** | **Sew & Show**: live sew + demo console + real Slack | **Near done** — V1+V2+V3 up; real GitHub webhook pending |
-| M5 | Staging single-tenant deploy | Not started |
-| M6 | Design partner weekly | Not started |
-| M7 | Self-serve deployed product | Not started |
+| **M4** | Sew & Show + GitHub/Slack live + **batched notify** | **Done enough** to plan M5+ |
+| M5 | Staging product + GitHub App + Slack OAuth | **Next** |
+| M6 | Design partner (Jira/Linear, Slack inbound, conflict v0) | Planned |
+| M7 | Self-serve + person profiles | Planned |
+| M8+ | Intent graph V4, browser opt-in, agent monitors | Roadmap |
 
-**Do not start Vertical 4** until M4 acceptance is green.
+**Ground-truth next plan:** `starting-out-documents/Product Roadmap_ Intent Capture to Digital Twins.md`  
+**Interaction log:** `starting-out-documents/Interaction Log_ Product Decisions.md`
 
 ---
 

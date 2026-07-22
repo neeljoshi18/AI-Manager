@@ -94,15 +94,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let demo_dir = demo_static_dir();
-    info!(?demo_dir, "demo static directory");
-    let index = demo_dir.join("index.html");
+    let app_dir = app_static_dir();
+    info!(?demo_dir, ?app_dir, "static directories");
+    let demo_index = ServeFile::new(demo_dir.join("index.html"));
     let demo_files = ServeDir::new(&demo_dir).append_index_html_on_directories(true);
-    let demo_index = ServeFile::new(&index);
+    let app_index = ServeFile::new(app_dir.join("index.html"));
+    let app_files = ServeDir::new(&app_dir).append_index_html_on_directories(true);
 
     let api = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
+        .route("/", get(|| async { Redirect::temporary("/app/") }))
+        .route("/app", get(|| async { Redirect::permanent("/app/") }))
         .route("/demo", get(|| async { Redirect::permanent("/demo/") }))
         .route("/v3/demo/status", get(demo_status))
         .route("/v3/demo/simulate", post(demo_simulate))
@@ -150,12 +154,14 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .merge(api)
+        .nest_service("/app/", app_files)
+        .route_service("/app/index.html", app_index)
         .nest_service("/demo/", demo_files)
         .route_service("/demo/index.html", demo_index)
         .layer(TraceLayer::new_for_http());
 
     let addr: SocketAddr = cfg.http_bind.parse()?;
-    info!(%addr, mode = %cfg.runtime_mode, "twin-api listening (demo at /demo/)");
+    info!(%addr, mode = %cfg.runtime_mode, "twin-api listening (product /app/ · lab /demo/)");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -171,6 +177,17 @@ fn demo_static_dir() -> PathBuf {
         return from_manifest;
     }
     PathBuf::from("demo-static")
+}
+
+fn app_static_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("APP_STATIC_DIR") {
+        return PathBuf::from(p);
+    }
+    let from_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app-static");
+    if from_manifest.exists() {
+        return from_manifest;
+    }
+    PathBuf::from("app-static")
 }
 
 async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
@@ -385,6 +402,7 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         "mode": st.mode,
         "slack_mode": st.slack_mode,
         "demo": "/demo/",
+        "app": "/app/",
         "status_window_secs": st.cfg.status_window_secs,
         "notify_interval_secs": st.cfg.notify_interval_secs,
         "compile_interval_secs": st.cfg.compile_interval_secs,

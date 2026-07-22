@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Manager</title>
+  <link rel="stylesheet" href="/app/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="nav">
+      <div class="nav-brand">
+        <div class="logo">AI</div>
+        <div>
+          <div class="nav-title">AI Manager</div>
+          <div class="nav-sub">Kill status meetings</div>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="today">Today</button>
+        <button class="nav-item" data-view="status">My status</button>
+        <button class="nav-item" data-view="connections">Connections</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+        <button class="nav-item lab" data-view="lab">Lab</button>
+      </nav>
+      <div class="nav-foot">
+        <span id="nav-mode" class="muted">—</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="top">
+        <div>
+          <h1 id="view-title">Today</h1>
+          <p class="muted" id="view-sub">Org pulse — what the graph knows right now</p>
+        </div>
+        <div class="top-actions">
+          <button id="btn-refresh" class="ghost">Refresh</button>
+        </div>
+      </header>
+
+      <!-- TODAY -->
+      <section id="view-today" class="view">
+        <div class="grid3">
+          <div class="stat card">
+            <div class="stat-label">Stack</div>
+            <div class="stat-value" id="stat-stack">…</div>
+            <div class="muted small" id="stat-stack-detail"></div>
+          </div>
+          <div class="stat card">
+            <div class="stat-label">Notify cadence</div>
+            <div class="stat-value" id="stat-notify">…</div>
+            <div class="muted small">Not every webhook — digests only</div>
+          </div>
+          <div class="stat card">
+            <div class="stat-label">Status window</div>
+            <div class="stat-value" id="stat-window">…</div>
+            <div class="muted small">Aligned ledger period</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Product pitch</h2>
+          <ul class="pitch">
+            <li><strong>Ingest everything</strong> that is ACL-safe (GitHub, later Jira/Slack channels).</li>
+            <li><strong>Message rarely</strong> — batched status with veto, not spam.</li>
+            <li><strong>Evidence-backed</strong> — no invented work items; no LOC rankings.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>Latest status snapshot</h2>
+          <div id="today-latest" class="muted">No status yet — open <strong>My status</strong> or run a test under Connections.</div>
+        </div>
+      </section>
+
+      <!-- STATUS -->
+      <section id="view-status" class="view hidden">
+        <div class="card">
+          <h2>Current draft</h2>
+          <div class="meta-row">
+            <span id="st-conf" class="pill mid">confidence: —</span>
+            <span id="st-status" class="pill mid">draft: —</span>
+            <code id="st-ids" class="muted small"></code>
+          </div>
+          <pre id="st-text" class="box">No draft loaded. Send a test status from Connections, or wait for a scheduled window.</pre>
+          <h3>Items</h3>
+          <ul id="st-items" class="item-list"></ul>
+          <div class="actions">
+            <button id="btn-publish" class="ok">Publish</button>
+            <button id="btn-edit" class="ghost">Edit…</button>
+            <button id="btn-veto" class="danger">Veto</button>
+            <button id="btn-silence" class="ghost">Silence → publish</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- CONNECTIONS -->
+      <section id="view-connections" class="view hidden">
+        <div class="grid2">
+          <div class="card">
+            <h2>Services</h2>
+            <div id="conn-pills" class="pills">loading…</div>
+            <p class="muted small" id="conn-detail"></p>
+            <p class="muted small">If V1/V2 are down after laptop sleep, run <code>./scripts/dev_up.sh</code>.</p>
+          </div>
+          <div class="card">
+            <h2>Send test status</h2>
+            <p class="muted small">On-demand tool (one DM). Live GitHub still ingests in the background without spamming Slack.</p>
+            <label>Tenant <input id="tenant" value="ten_demo" /></label>
+            <label>Person id <input id="user" value="gu_alice" /></label>
+            <label>Display name <input id="name" value="Alice" /></label>
+            <label>Slack user ID <input id="slack_user" value="U0APK7W1X99" /></label>
+            <label>Team channel <input id="channel" value="C0APN754MQV" /></label>
+            <button id="btn-sim" class="primary">Send test status DM</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="view-settings" class="view hidden">
+        <div class="card">
+          <h2>Cadence (server env)</h2>
+          <table class="kv">
+            <tr><td>STATUS_WINDOW_SECS</td><td id="cfg-window">—</td></tr>
+            <tr><td>NOTIFY_INTERVAL_SECS</td><td id="cfg-notify">—</td></tr>
+            <tr><td>COMPILE_INTERVAL_SECS</td><td id="cfg-compile">—</td></tr>
+            <tr><td>NOTIFY_ON_COMPILE</td><td id="cfg-noc">—</td></tr>
+            <tr><td>Slack delivery</td><td id="cfg-slack">—</td></tr>
+          </table>
+          <p class="muted small">Change via env when starting twin-api. See plans/2026-07-23_demo-to-product-m5.md.</p>
+        </div>
+        <div class="card">
+          <h2>What we don’t build</h2>
+          <ul class="pitch">
+            <li>Glean-style document search / vectors</li>
+            <li>Silent private 1:1 Slack wiretaps</li>
+            <li>LOC / productivity rankings</li>
+            <li>Multiplayer agent OS as core product</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- LAB -->
+      <section id="view-lab" class="view hidden">
+        <div class="card">
+          <h2>Engineer lab</h2>
+          <p class="muted">Raw JSON and experiment UI (previous demo console).</p>
+          <a class="primary linkbtn" href="/demo/">Open lab console →</a>
+          <pre id="lab-raw" class="box small">{}</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app/app.js"></script>
+</body>
+</html>

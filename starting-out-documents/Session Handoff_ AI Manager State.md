@@ -33,7 +33,9 @@
 | M8+ | Intent graph V4, browser opt-in, agent monitors | Roadmap |
 
 **Ground-truth next plan:** `starting-out-documents/Product Roadmap_ Intent Capture to Digital Twins.md`  
-**Interaction log:** `starting-out-documents/Interaction Log_ Product Decisions.md`
+**Dated plans:** `plans/` (e.g. `plans/2026-07-23_demo-to-product-m5.md`)  
+**Interaction log:** `starting-out-documents/Interaction Log_ Product Decisions.md`  
+**Product UI:** `http://127.0.0.1:18083/app/` · lab: `/demo/` · stack: `./scripts/dev_up.sh`
 
 ---
 

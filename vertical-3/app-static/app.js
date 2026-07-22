@@ -1,0 +1,205 @@
+const $ = (id) => document.getElementById(id);
+
+let state = {
+  tenant: "ten_demo",
+  draftId: null,
+  ledgerId: null,
+  latest: null,
+  status: null,
+};
+
+async function jfetch(url, opts) {
+  const res = await fetch(url, {
+    headers: { "content-type": "application/json", ...(opts?.headers || {}) },
+    ...opts,
+  });
+  const text = await res.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = { raw: text };
+  }
+  if (!res.ok) throw new Error(body.error || body.raw || res.statusText);
+  return body;
+}
+
+function pill(name, up) {
+  const cls = up === true ? "up" : up === false ? "down" : "mid";
+  const label = up === true ? "up" : up === false ? "down" : "n/a";
+  return `<span class="pill ${cls}">${name}: ${label}</span>`;
+}
+
+function fmtSecs(s) {
+  if (s == null) return "—";
+  if (s >= 3600) return `${Math.round(s / 3600)}h`;
+  if (s >= 60) return `${Math.round(s / 60)}m`;
+  return `${s}s`;
+}
+
+function showView(name) {
+  document.querySelectorAll(".view").forEach((el) => el.classList.add("hidden"));
+  document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
+  const view = $(`view-${name}`);
+  if (view) view.classList.remove("hidden");
+  const btn = document.querySelector(`.nav-item[data-view="${name}"]`);
+  if (btn) btn.classList.add("active");
+  const titles = {
+    today: ["Today", "Org pulse — what the graph knows right now"],
+    status: ["My status", "Scheduled digests · veto-first · evidence-backed"],
+    connections: ["Connections", "Services and on-demand test status"],
+    settings: ["Settings", "Cadence and product boundaries"],
+    lab: ["Lab", "Engineer console and raw JSON"],
+  };
+  const t = titles[name] || ["AI Manager", ""];
+  $("view-title").textContent = t[0];
+  $("view-sub").textContent = t[1];
+}
+
+async function refreshHealth() {
+  try {
+    const h = await jfetch("/v3/demo/status");
+    state.status = h;
+    $("conn-pills").innerHTML = [
+      pill("V3", true),
+      pill("V1", h.v1),
+      pill("V2", h.v2),
+      pill("egress", h.egress),
+    ].join("");
+    const stackOk = h.v1 && h.v2;
+    $("stat-stack").textContent = stackOk ? "Live" : "Partial";
+    $("stat-stack-detail").textContent = stackOk
+      ? "V1 ingest + V2 graph reachable"
+      : "Start stack with ./scripts/dev_up.sh";
+    $("stat-notify").textContent = fmtSecs(h.notify_interval_secs);
+    $("stat-window").textContent = fmtSecs(h.status_window_secs);
+    $("conn-detail").textContent = `Slack: ${h.slack_mode || "—"} · runtime ${h.mode || "—"}`;
+    $("nav-mode").textContent = `${h.mode || "?"} · ${h.slack_mode || "slack?"}`;
+    $("cfg-window").textContent = String(h.status_window_secs ?? "—");
+    $("cfg-notify").textContent = String(h.notify_interval_secs ?? "—");
+    $("cfg-compile").textContent = String(h.compile_interval_secs ?? "—");
+    $("cfg-noc").textContent = String(h.notify_on_compile_default ?? "—");
+    $("cfg-slack").textContent = h.slack_mode || "—";
+  } catch (e) {
+    $("conn-pills").innerHTML = pill("V3", false);
+    $("stat-stack").textContent = "Down";
+    $("stat-stack-detail").textContent = String(e.message || e);
+  }
+}
+
+function renderLatest(payload) {
+  if (!payload) return;
+  state.latest = payload;
+  state.tenant = $("tenant")?.value?.trim() || payload.draft?.tenant_id || state.tenant;
+  state.draftId = payload.draft?.draft_id || null;
+  state.ledgerId = payload.ledger_id || null;
+
+  const conf = payload.confidence_rollup || payload.ledger?.confidence_rollup || "?";
+  const st = payload.draft?.status || "?";
+  $("st-conf").textContent = `confidence: ${conf}`;
+  $("st-conf").className = "pill " + (conf === "blocker" ? "down" : conf === "high" ? "up" : "mid");
+  $("st-status").textContent = `draft: ${st}`;
+  $("st-status").className = "pill " + (st === "vetoed" ? "down" : st === "published" ? "up" : "mid");
+  $("st-ids").textContent = `ledger=${state.ledgerId || "—"}  draft=${state.draftId || "—"}`;
+  $("st-text").textContent = payload.draft?.draft_text || "(no text)";
+
+  const items = payload.ledger?.items || [];
+  const blockers = payload.ledger?.open_blockers || [];
+  $("st-items").innerHTML = "";
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `<strong>[${it.confidence}]</strong> ${it.summary}`;
+    $("st-items").appendChild(li);
+  }
+  for (const b of blockers) {
+    const li = document.createElement("li");
+    li.innerHTML = `<strong>[blocker]</strong> ${b.summary}`;
+    $("st-items").appendChild(li);
+  }
+  if (!items.length && !blockers.length) {
+    $("st-items").innerHTML = "<li class='muted'>No items in this window</li>";
+  }
+
+  $("today-latest").innerHTML = `
+    <div class="meta-row">
+      <span class="pill mid">confidence: ${conf}</span>
+      <span class="pill mid">draft: ${st}</span>
+    </div>
+    <pre class="box">${(payload.draft?.draft_text || "").replace(/</g, "&lt;")}</pre>
+  `;
+  $("lab-raw").textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadLatest() {
+  const tenant = $("tenant")?.value?.trim() || "ten_demo";
+  try {
+    const payload = await jfetch(`/v3/demo/latest?tenant_id=${encodeURIComponent(tenant)}`);
+    renderLatest(payload);
+  } catch {
+    /* no snapshot yet */
+  }
+}
+
+async function simulate() {
+  $("btn-sim").disabled = true;
+  $("btn-sim").textContent = "Sending…";
+  try {
+    const body = {
+      tenant_id: $("tenant").value.trim() || "ten_demo",
+      global_user_id: $("user").value.trim() || "gu_alice",
+      display_name: $("name").value.trim() || "Alice",
+      slack_user_id: $("slack_user").value.trim() || "U_DEMO",
+      channel_id: $("channel").value.trim() || "C_DEMO",
+      skip_shadow: true,
+      pr_title: "Product UI test status",
+    };
+    const payload = await jfetch("/v3/demo/simulate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    renderLatest(payload);
+    showView("status");
+  } catch (e) {
+    alert("Test status failed: " + (e.message || e));
+  } finally {
+    $("btn-sim").disabled = false;
+    $("btn-sim").textContent = "Send test status DM";
+  }
+}
+
+async function act(kind) {
+  if (!state.draftId) {
+    alert("No draft yet — send a test status first");
+    return;
+  }
+  const base = `/v3/tenants/${encodeURIComponent(state.tenant)}/drafts/${encodeURIComponent(state.draftId)}`;
+  try {
+    if (kind === "edit") {
+      const text = prompt("Edited status text:", $("st-text").textContent);
+      if (text == null) return;
+      await jfetch(base + "/edit", { method: "POST", body: JSON.stringify({ text }) });
+    } else {
+      await jfetch(base + "/" + kind, { method: "POST", body: "{}" });
+    }
+    await loadLatest();
+  } catch (e) {
+    alert(kind + " failed: " + (e.message || e));
+  }
+}
+
+document.querySelectorAll(".nav-item").forEach((btn) => {
+  btn.addEventListener("click", () => showView(btn.dataset.view));
+});
+$("btn-refresh").addEventListener("click", async () => {
+  await refreshHealth();
+  await loadLatest();
+});
+$("btn-sim").addEventListener("click", simulate);
+$("btn-publish").addEventListener("click", () => act("publish"));
+$("btn-veto").addEventListener("click", () => act("veto"));
+$("btn-silence").addEventListener("click", () => act("silence"));
+$("btn-edit").addEventListener("click", () => act("edit"));
+
+refreshHealth();
+loadLatest();
+setInterval(refreshHealth, 10000);

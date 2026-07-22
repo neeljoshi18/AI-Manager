@@ -45,6 +45,28 @@
 
 ---
 
+## 2026-07-23 — Session: Demo → product plan + product UI shell
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Focus next on **demo → product** (UX + deploy), not agent sprawl | Trust bottleneck |
+| 2 | Intent classification = extract/type/attach/conflict with **rules v0 first** | Evidence, not LLM invent |
+| 3 | Agentic layer = **monitors** on graph, human veto | ADR-011 |
+| 4 | Create monorepo **`plans/`** for dated plan snapshots | Durable planning history |
+| 5 | Product UI at `/app/`; lab remains `/demo/` | Buyer vs engineer surfaces |
+| 6 | `dev_up.sh` / wake runbook for laptop sleep | Ops friction |
+
+### Artifacts
+
+- `plans/` + `2026-07-23_demo-to-product-m5.md`  
+- `scripts/dev_up.sh`, `dev_down.sh`  
+- `vertical-3/app-static/` product shell  
+- Wake runbook under `plans/`  
+
+---
+
 ## Template for future entries
 
 ```markdown

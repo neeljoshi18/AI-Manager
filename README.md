@@ -28,11 +28,14 @@ Private monorepo for the Autonomous AI Manager platform (engineering context lay
 ## 2-minute demo (leads / Reddit / X)
 
 ```bash
-cd vertical-3
-RUNTIME_MODE=embedded SHADOW_MODE_DAYS=0 cargo run -p twin-api
+./scripts/dev_up.sh
+# Product UI (redesigned shell):
+open http://127.0.0.1:18083/app/
+# Lab console:
+open http://127.0.0.1:18083/demo/
 ```
 
-Open **http://127.0.0.1:18083/demo/** → **Simulate PR → Ledger → Draft**.
+Wake after sleep: [plans/2026-07-23_wake-laptop-runbook.md](./plans/2026-07-23_wake-laptop-runbook.md).
 
 Full script: [Human Demo Script](./starting-out-documents/Human%20Demo%20Script.md)
 
@@ -50,6 +53,7 @@ SEW_MODE=live ./scripts/platform_sew.sh
 
 - [Session Handoff](./starting-out-documents/Session%20Handoff_%20AI%20Manager%20State.md)
 - [**Product Roadmap — Intent → Twins**](./starting-out-documents/Product%20Roadmap_%20Intent%20Capture%20to%20Digital%20Twins.md) ← **what we build next**
+- [**Plans/**](./plans/) ← dated plan snapshots (start here after each planning session)
 - [Interaction Log](./starting-out-documents/Interaction%20Log_%20Product%20Decisions.md) ← decision history
 - [Human Demo Script](./starting-out-documents/Human%20Demo%20Script.md)
 - [Architecture Decision Log](./starting-out-documents/Architecture%20Decision%20Log_%20Pivotal%20Choices.md)

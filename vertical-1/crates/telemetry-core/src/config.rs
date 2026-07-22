@@ -32,6 +32,15 @@ pub struct AppConfig {
     /// When true in production mode, also write the analytical store inline
     /// (useful for single-process demos). Prefer a dedicated consumer in prod.
     pub inline_consumer: bool,
+
+    /// Base URL of the credential egress proxy (e.g. `http://127.0.0.1:18090`).
+    /// When set, outbound tool HTTP should go through `EgressClient`.
+    pub egress_proxy_url: Option<String>,
+    /// Fail closed: require egress proxy for outbound API credentials; no env token fallback.
+    pub egress_enforce: bool,
+    /// Optional JSON secrets file (name → value). Used for tenant webhook overlays
+    /// and shared with vertical-security in dev (`SECRETS_FILE`).
+    pub secrets_file: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -59,6 +68,9 @@ impl Default for AppConfig {
             s3_secret_key: Some("minioadmin".into()),
             skip_auth: false,
             inline_consumer: true,
+            egress_proxy_url: None,
+            egress_enforce: false,
+            secrets_file: None,
         }
     }
 }
@@ -137,7 +149,28 @@ impl AppConfig {
         {
             cfg.inline_consumer = false;
         }
+        if let Ok(v) = std::env::var("EGRESS_PROXY_URL") {
+            if !v.is_empty() {
+                cfg.egress_proxy_url = Some(v);
+            }
+        }
+        cfg.egress_enforce = std::env::var("EGRESS_ENFORCE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if let Ok(v) = std::env::var("SECRETS_FILE") {
+            if !v.is_empty() {
+                cfg.secrets_file = Some(v);
+            }
+        }
         cfg
+    }
+
+    /// Build an [`crate::egress::EgressConfig`] from this app config.
+    pub fn egress_config(&self) -> crate::egress::EgressConfig {
+        crate::egress::EgressConfig {
+            proxy_url: self.egress_proxy_url.clone(),
+            enforce: self.egress_enforce,
+        }
     }
 
     pub fn is_embedded(&self) -> bool {

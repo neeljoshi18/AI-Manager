@@ -70,8 +70,30 @@ vertical-1/
 │   └── cockroach/001_init.sql
 ├── docker-compose.yml         # Redis, Redpanda, CockroachDB, ClickHouse, MinIO
 ├── scripts/smoke_http.sh
+├── scripts/egress_smoke.sh   # curl egress proxy if already up
 └── Makefile
 ```
+
+### Outbound credential egress (optional)
+
+Long-lived API tokens for outbound calls (GitHub REST backfill, etc.) should **not** live in the worker process. Use the Centaur-inspired proxy in `../vertical-security/`:
+
+| Env | Meaning |
+|-----|---------|
+| `EGRESS_PROXY_URL` | e.g. `http://127.0.0.1:18090` — route via `telemetry_core::egress::EgressClient` |
+| `EGRESS_ENFORCE` | `true` → fail closed if proxy unset (no env token fallback) |
+| `SECRETS_FILE` | JSON name→value map; optional `WEBHOOK_SECRET_<tenant>` overlays |
+
+```bash
+# terminal A
+cd ../vertical-security && cp secrets/dev_secrets.example.json secrets/dev_secrets.json && cargo run
+
+# terminal B
+./scripts/egress_smoke.sh
+```
+
+Inbound webhook HMAC is unchanged (in-process). See `../vertical-security/README.md`.
+
 
 ---
 

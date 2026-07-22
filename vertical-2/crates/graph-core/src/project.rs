@@ -149,10 +149,26 @@ impl ProjectEngine {
 
 pub fn map_event(event: &V1CanonicalEvent) -> GraphMutation {
     let et = event.event_type.as_str();
+    let et_l = et.to_ascii_lowercase();
     if et.starts_with("pull_request.") || et.contains("merge_request.") {
         return map_pull_request(event);
     }
-    if et.starts_with("issue.") || et.contains("jira:") || et.starts_with("linear.") {
+    // Identity / team membership → MEMBER_OF Person→Team (before generic issue routes)
+    if event.category.eq_ignore_ascii_case("identity")
+        || et_l.contains("identity")
+        || (et_l.contains("member") && !et_l.contains("comment"))
+    {
+        let m = map_team_membership(event);
+        if !m.nodes.is_empty() || !m.edges.is_empty() {
+            return m;
+        }
+    }
+    if et.starts_with("issue.")
+        || et_l.contains("jira:")
+        || et.starts_with("linear.")
+        || et_l.contains("issue.assigned")
+        || et_l.contains("issue_assigned")
+    {
         return map_issue(event);
     }
     if et == "push" || et.starts_with("push") {
@@ -161,7 +177,7 @@ pub fn map_event(event: &V1CanonicalEvent) -> GraphMutation {
     if et.starts_with("slack.") || et.starts_with("teams.") {
         return map_communication(event);
     }
-    if et.contains("block") {
+    if et_l.contains("block") {
         return map_blocker_hint(event);
     }
     GraphMutation::default()
@@ -352,6 +368,62 @@ fn map_pull_request(event: &V1CanonicalEvent) -> GraphMutation {
     }
 }
 
+/// Extract assignee identity from attributes (GitHub/Jira/Linear shapes).
+fn extract_assignee_key(event: &V1CanonicalEvent) -> Option<String> {
+    let attrs = &event.attributes;
+    // Nested object: { "assignee": { "id" | "login" | "accountId" | "global_user_id": ... } }
+    if let Some(obj) = attrs.get("assignee").and_then(|v| v.as_object()) {
+        for k in ["global_user_id", "id", "login", "accountId", "account_id", "name"] {
+            if let Some(s) = obj.get(k).and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    // Flat string fields
+    for k in [
+        "assignee",
+        "assignee_id",
+        "assignee_account_id",
+        "assignee_login",
+        "assignee_global_user_id",
+    ] {
+        if let Some(s) = attrs.get(k).and_then(|v| v.as_str()) {
+            if !s.is_empty() && s != "null" {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn person_node_for_key(
+    event: &V1CanonicalEvent,
+    key: &str,
+    display: Option<&str>,
+) -> GraphNode {
+    let (_is_private, groups, ver) = acl_fields(event);
+    let nid = if key.starts_with("gu_") || key.contains('@') {
+        person_node_id(key)
+    } else if key.starts_with("person:") {
+        key.to_string()
+    } else {
+        person_from_provider(key)
+    };
+    GraphNode {
+        tenant_id: event.tenant_id.clone(),
+        node_id: nid,
+        node_type: "Person".into(),
+        display_name: display.unwrap_or(key).to_string(),
+        resource_id: key.to_string(),
+        properties: json!({ "assignee_key": key }),
+        is_private: false,
+        allowed_group_ids: groups,
+        acl_version: ver,
+    }
+}
+
 fn map_issue(event: &V1CanonicalEvent) -> GraphMutation {
     let (is_private, groups, ver) = acl_fields(event);
     let parent = if event.parent_resource_id.is_empty() {
@@ -417,12 +489,126 @@ fn map_issue(event: &V1CanonicalEvent) -> GraphMutation {
         as_of: event.event_timestamp,
         event_id: event.event_id.clone(),
         is_private,
+        allowed_group_ids: groups.clone(),
+    };
+
+    let mut nodes = vec![person, issue.clone()];
+    let mut edges = vec![authored];
+
+    // ASSIGNED_TO: Issue → Person when assignee present or event is assign-related.
+    // Spec: Ticket → Person; task notes Person←Issue.
+    let et_l = event.event_type.to_ascii_lowercase();
+    let is_assign_event = et_l.contains("assign");
+    if let Some(akey) = extract_assignee_key(event) {
+        let assignee = person_node_for_key(event, &akey, None);
+        let assigned = GraphEdge {
+            tenant_id: event.tenant_id.clone(),
+            edge_id: stable_edge_id(
+                &event.tenant_id,
+                "ASSIGNED_TO",
+                &issue.node_id,
+                &assignee.node_id,
+            ),
+            edge_type: "ASSIGNED_TO".into(),
+            from_node_id: issue.node_id.clone(),
+            to_node_id: assignee.node_id.clone(),
+            valid_from: event.event_timestamp,
+            valid_to: None,
+            event_id: event.event_id.clone(),
+            properties: json!({ "assignee_key": akey }),
+            is_private,
+            allowed_group_ids: groups.clone(),
+            acl_version: ver,
+        };
+        nodes.push(assignee);
+        edges.push(assigned);
+    } else if is_assign_event {
+        // jira assign / issue.assigned without structured assignee → actor
+        let assignee = person_node(event);
+        let assigned = GraphEdge {
+            tenant_id: event.tenant_id.clone(),
+            edge_id: stable_edge_id(
+                &event.tenant_id,
+                "ASSIGNED_TO",
+                &issue.node_id,
+                &assignee.node_id,
+            ),
+            edge_type: "ASSIGNED_TO".into(),
+            from_node_id: issue.node_id.clone(),
+            to_node_id: assignee.node_id.clone(),
+            valid_from: event.event_timestamp,
+            valid_to: None,
+            event_id: event.event_id.clone(),
+            properties: json!({}),
+            is_private,
+            allowed_group_ids: groups,
+            acl_version: ver,
+        };
+        edges.push(assigned);
+    }
+
+    GraphMutation {
+        nodes,
+        edges,
+        states: vec![state],
+    }
+}
+
+/// MEMBER_OF: Person → Team from identity / member events.
+fn map_team_membership(event: &V1CanonicalEvent) -> GraphMutation {
+    let (is_private, groups, ver) = acl_fields(event);
+    let team = event
+        .attributes
+        .get("team")
+        .or_else(|| event.attributes.get("group_name"))
+        .or_else(|| event.attributes.get("group_id"))
+        .or_else(|| event.attributes.get("channel"))
+        .or_else(|| event.attributes.get("org"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if team.is_empty() {
+        return GraphMutation::default();
+    }
+    let et = event.event_type.to_ascii_lowercase();
+    // Only materialize MEMBER_OF on join/add (not remove).
+    if et.contains("remove") || et.contains("left") || et.contains("deleted") {
+        return GraphMutation::default();
+    }
+    let person = person_node(event);
+    let team_node = GraphNode {
+        tenant_id: event.tenant_id.clone(),
+        node_id: team_node_id(team),
+        node_type: "Team".into(),
+        display_name: team.to_string(),
+        resource_id: team.to_string(),
+        properties: json!({}),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: ver,
+    };
+    let edge = GraphEdge {
+        tenant_id: event.tenant_id.clone(),
+        edge_id: stable_edge_id(
+            &event.tenant_id,
+            "MEMBER_OF",
+            &person.node_id,
+            &team_node.node_id,
+        ),
+        edge_type: "MEMBER_OF".into(),
+        from_node_id: person.node_id.clone(),
+        to_node_id: team_node.node_id.clone(),
+        valid_from: event.event_timestamp,
+        valid_to: None,
+        event_id: event.event_id.clone(),
+        properties: json!({ "team": team }),
+        is_private,
         allowed_group_ids: groups,
+        acl_version: ver,
     };
     GraphMutation {
-        nodes: vec![person, issue],
-        edges: vec![authored],
-        states: vec![state],
+        nodes: vec![person, team_node],
+        edges: vec![edge],
+        states: vec![],
     }
 }
 
@@ -650,5 +836,89 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(st.state_value, "CLOSED");
+    }
+
+    #[test]
+    fn pull_request_merged_sets_lifecycle_merged() {
+        let m = map_event(&sample_pr("merged", "2026-01-02T00:00:00Z", false));
+        let life = m
+            .states
+            .iter()
+            .find(|s| s.state_key == "lifecycle")
+            .expect("lifecycle state");
+        assert_eq!(life.state_value, "MERGED");
+    }
+
+    #[test]
+    fn issue_assigned_creates_assigned_to_edge() {
+        let mut ev = sample_pr("opened", "2026-01-01T00:00:00Z", false);
+        ev.event_id = "iss-assign-1".into();
+        ev.event_type = "issue.assigned".into();
+        ev.category = "work".into();
+        ev.resource_id = "acme/app/issues/9".into();
+        ev.parent_resource_id = "acme/app".into();
+        ev.attributes = json!({
+            "title": "Bug",
+            "assignee": "gu_bob",
+            "status": "open"
+        });
+        let m = map_event(&ev);
+        assert!(
+            m.edges.iter().any(|e| e.edge_type == "ASSIGNED_TO"),
+            "expected ASSIGNED_TO edge, got {:?}",
+            m.edges.iter().map(|e| &e.edge_type).collect::<Vec<_>>()
+        );
+        let edge = m
+            .edges
+            .iter()
+            .find(|e| e.edge_type == "ASSIGNED_TO")
+            .unwrap();
+        assert_eq!(edge.from_node_id, issue_node_id("acme/app/issues/9"));
+        assert_eq!(edge.to_node_id, person_node_id("gu_bob"));
+        assert!(m.nodes.iter().any(|n| n.node_type == "Issue"));
+        assert!(m.nodes.iter().any(|n| n.node_id == person_node_id("gu_bob")));
+    }
+
+    #[test]
+    fn jira_assign_with_assignee_account_id() {
+        let mut ev = sample_pr("opened", "2026-01-01T00:00:00Z", false);
+        ev.event_id = "jira-1".into();
+        ev.event_type = "jira:issue_updated".into();
+        ev.provider = "jira".into();
+        ev.resource_id = "PROJ-12".into();
+        ev.attributes = json!({
+            "summary": "Do thing",
+            "assignee_account_id": "jira-acc-99",
+            "status": "In Progress"
+        });
+        let m = map_event(&ev);
+        let edge = m
+            .edges
+            .iter()
+            .find(|e| e.edge_type == "ASSIGNED_TO")
+            .expect("ASSIGNED_TO");
+        assert_eq!(edge.to_node_id, person_from_provider("jira-acc-99"));
+    }
+
+    #[test]
+    fn identity_member_creates_member_of_edge() {
+        let mut ev = sample_pr("opened", "2026-01-01T00:00:00Z", false);
+        ev.event_id = "mem-1".into();
+        ev.event_type = "identity.team.member_added".into();
+        ev.category = "identity".into();
+        ev.resource_id = "team/eng".into();
+        ev.attributes = json!({
+            "team": "eng",
+            "member": "gu_alice"
+        });
+        let m = map_event(&ev);
+        assert!(
+            m.edges.iter().any(|e| e.edge_type == "MEMBER_OF"),
+            "expected MEMBER_OF"
+        );
+        let edge = m.edges.iter().find(|e| e.edge_type == "MEMBER_OF").unwrap();
+        assert_eq!(edge.from_node_id, person_node_id("gu_alice"));
+        assert_eq!(edge.to_node_id, team_node_id("eng"));
+        assert!(m.nodes.iter().any(|n| n.node_type == "Team"));
     }
 }

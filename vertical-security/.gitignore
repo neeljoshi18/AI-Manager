@@ -1,0 +1,18 @@
+# Real secret files (never commit)
+secrets/dev_secrets.json
+secrets/*.json
+!secrets/*.example.json
+!secrets/dev_secrets.example.json
+
+# Build
+/target/
+**/*.rs.bk
+
+# Local env
+.env
+.env.local
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

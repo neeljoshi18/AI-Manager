@@ -1,0 +1,5 @@
+target
+secrets/dev_secrets.json
+.git
+**/*.md
+!README.md

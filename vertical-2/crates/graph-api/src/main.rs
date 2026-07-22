@@ -10,18 +10,28 @@ use axum::{
 use graph_core::config::GraphConfig;
 use graph_core::ids::pr_node_id;
 use graph_core::membership::{InMemoryMembership, MembershipStore};
-use graph_core::model::{ProjectOutcome, QueryContext};
+use graph_core::model::{ProjectOutcome, ProjectStatus, QueryContext};
 use graph_core::project::ProjectEngine;
 use graph_core::store::{GraphStore, InMemoryGraphStore};
 use graph_core::v1_event::{V1AclRevocation, V1CanonicalEvent};
-use graph_core::{GraphError, GraphResult};
+use graph_core::GraphError;
 use serde::Deserialize;
 use serde_json::json;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Default)]
+struct Metrics {
+    projects_applied: AtomicU64,
+    projects_duplicate: AtomicU64,
+    projects_skipped: AtomicU64,
+    projects_error: AtomicU64,
+    acl_revocations: AtomicU64,
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -31,6 +41,7 @@ struct AppState {
     max_hops: usize,
     default_hops: usize,
     mode: String,
+    metrics: Arc<Metrics>,
 }
 
 #[tokio::main]
@@ -46,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
         .route("/v2/project", post(project_event))
         .route("/v2/project/acl", post(project_acl))
         .route("/v2/tenants/{tenant_id}/users", post(seed_user))
@@ -70,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
+    let metrics = Arc::new(Metrics::default());
     if cfg.is_embedded() {
         info!("runtime mode=embedded");
         let store: Arc<dyn GraphStore> = InMemoryGraphStore::new();
@@ -82,6 +95,7 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
             max_hops: cfg.max_hops,
             default_hops: cfg.default_hops,
             mode: "embedded".into(),
+            metrics,
         });
     }
 
@@ -94,6 +108,7 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
     info!(%url, "connecting cockroach context_graph");
     let store: Arc<dyn GraphStore> = CrdbGraphStore::connect(&url).await?;
     let local_mem: Arc<dyn MembershipStore> = CrdbMembership::connect(&url).await?;
+    // Production always uses HybridMembership; V1 identity when V1_COCKROACH_URL is set.
     let membership: Arc<dyn MembershipStore> =
         if let Some(v1_url) = cfg.v1_cockroach_url.as_deref() {
             info!(%v1_url, "live ACL groups from Vertical 1 identity tables");
@@ -109,7 +124,22 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
         max_hops: cfg.max_hops,
         default_hops: cfg.default_hops,
         mode: "production".into(),
+        metrics,
     })
+}
+
+fn record_project_outcome(m: &Metrics, out: &ProjectOutcome) {
+    match out.status {
+        ProjectStatus::Applied => {
+            m.projects_applied.fetch_add(1, Ordering::Relaxed);
+        }
+        ProjectStatus::Duplicate => {
+            m.projects_duplicate.fetch_add(1, Ordering::Relaxed);
+        }
+        ProjectStatus::Skipped => {
+            m.projects_skipped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -120,24 +150,49 @@ async fn readyz(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({ "status": "ready", "mode": st.mode }))
 }
 
+async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "service": "graph-api",
+        "mode": st.mode,
+        "projects_applied": st.metrics.projects_applied.load(Ordering::Relaxed),
+        "projects_duplicate": st.metrics.projects_duplicate.load(Ordering::Relaxed),
+        "projects_skipped": st.metrics.projects_skipped.load(Ordering::Relaxed),
+        "projects_error": st.metrics.projects_error.load(Ordering::Relaxed),
+        "acl_revocations": st.metrics.acl_revocations.load(Ordering::Relaxed),
+    }))
+}
+
 async fn project_event(
     State(st): State<AppState>,
     Json(event): Json<V1CanonicalEvent>,
 ) -> Result<Json<ProjectOutcome>, ApiError> {
-    let out = st.engine.project_event(&event).await.map_err(ApiError::from)?;
-    Ok(Json(out))
+    match st.engine.project_event(&event).await {
+        Ok(out) => {
+            record_project_outcome(&st.metrics, &out);
+            Ok(Json(out))
+        }
+        Err(e) => {
+            st.metrics.projects_error.fetch_add(1, Ordering::Relaxed);
+            Err(ApiError::from(e))
+        }
+    }
 }
 
 async fn project_acl(
     State(st): State<AppState>,
     Json(rev): Json<V1AclRevocation>,
 ) -> Result<Json<ProjectOutcome>, ApiError> {
-    let out = st
-        .engine
-        .project_acl_revocation(&rev)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(out))
+    match st.engine.project_acl_revocation(&rev).await {
+        Ok(out) => {
+            st.metrics.acl_revocations.fetch_add(1, Ordering::Relaxed);
+            record_project_outcome(&st.metrics, &out);
+            Ok(Json(out))
+        }
+        Err(e) => {
+            st.metrics.projects_error.fetch_add(1, Ordering::Relaxed);
+            Err(ApiError::from(e))
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -181,11 +236,6 @@ async fn remove_group(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({ "removed": group_id })))
-}
-
-#[derive(Deserialize)]
-struct UserQ {
-    user_id: String,
 }
 
 #[derive(Deserialize)]

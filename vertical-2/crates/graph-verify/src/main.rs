@@ -9,7 +9,6 @@ use graph_core::project::ProjectEngine;
 use graph_core::store::{GraphStore, InMemoryGraphStore};
 use graph_core::v1_event::{V1Actor, V1Acl, V1AclRevocation, V1CanonicalEvent};
 use serde_json::json;
-use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 

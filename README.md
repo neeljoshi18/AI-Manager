@@ -9,6 +9,7 @@ Private monorepo for the Autonomous AI Manager platform (engineering context lay
 | `starting-out-documents/` | Ground-truth strategy + architecture + **decision log** |
 | `vertical-1/` | Telemetry ingestion, canonical events, ACL, ClickHouse/Redpanda |
 | `vertical-2/` | Organizational Context Graph (spec first; implement next) |
+| `vertical-security/` | Centaur-inspired credential **egress proxy** (outbound secret inject) |
 
 Future verticals: `vertical-3/`, … — **one folder per vertical**, no nested coupling.
 
@@ -31,4 +32,16 @@ See `vertical-1/README.md`.
 
 ## Vertical 2
 
-Specification only for now. See `vertical-2/README.md`.
+See `vertical-2/README.md`.
+
+## Credential egress (vertical-security)
+
+Outbound API calls inject secrets via a small Rust reverse proxy so workers never hold long-lived tokens.
+
+```bash
+cd vertical-security
+cp secrets/dev_secrets.example.json secrets/dev_secrets.json
+cargo test && cargo run   # :18090
+```
+
+See [vertical-security/README.md](./vertical-security/README.md).

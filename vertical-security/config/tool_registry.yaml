@@ -1,0 +1,13 @@
+# Tool registry: tool name → allowed hosts + which secret to inject.
+# The egress proxy rejects any host not listed for the requested tool (403).
+tools:
+  github_api:
+    hosts: ["api.github.com"]
+    secret: GITHUB_TOKEN
+    header: Authorization
+    prefix: "Bearer "
+  slack_api:
+    hosts: ["slack.com", "www.slack.com"]
+    secret: SLACK_BOT_TOKEN
+    header: Authorization
+    prefix: "Bearer "

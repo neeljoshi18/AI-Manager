@@ -288,7 +288,7 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | Field | Content |
 |-------|---------|
 | **Date** | 2026-07-22 |
-| **Status** | Active (**planned**, not implemented) |
+| **Status** | Active (**MVP implemented** in `vertical-security/` + V1 `EgressClient`) |
 | **Context** | Agents/tools with API keys in env are exfil-prone under prompt injection. Centaur iron-proxy injects secrets at egress; industry standard 2026. |
 | **Options** | (A) Env vars forever (B) Full Centaur stack (C) **Scoped egress proxy + vault** |
 | **Choice** | **C** — secrets vault + egress inject proxy + allowlist + audit/redact |

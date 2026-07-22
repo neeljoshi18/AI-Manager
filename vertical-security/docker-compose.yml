@@ -1,0 +1,25 @@
+# Self-contained egress proxy stack (does not alter vertical-1 compose).
+#
+#   cp secrets/dev_secrets.example.json secrets/dev_secrets.json
+#   docker compose up --build -d
+#   curl -sf http://127.0.0.1:18090/healthz
+
+services:
+  egress-proxy:
+    build: .
+    ports:
+      - "18090:18090"
+    environment:
+      EGRESS_BIND: "0.0.0.0:18090"
+      TOOL_REGISTRY: /app/config/tool_registry.yaml
+      SECRETS_FILE: /app/secrets/dev_secrets.json
+      RUST_LOG: info
+    volumes:
+      # Mount real secrets (create from example first)
+      - ./secrets/dev_secrets.json:/app/secrets/dev_secrets.json:ro
+      - ./config/tool_registry.yaml:/app/config/tool_registry.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

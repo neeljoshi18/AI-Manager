@@ -1,7 +1,7 @@
 # Plan: Credential Egress Proxy (Centaur-inspired)
 
 **Date:** 2026-07-22  
-**Status:** Approved pattern; **not yet implemented**  
+**Status:** Approved pattern; **MVP implemented** (`vertical-security/` egress-proxy + V1 `EgressClient` / secrets load). Full vault backends + network policy still open.  
 **Inspiration:** Centaur iron-proxy; industry credential brokering (Envoy inject, Cloudflare/Vercel sandbox egress, Infisical)  
 **Decision:** Adopt the **security pattern**, not the full Centaur product.
 

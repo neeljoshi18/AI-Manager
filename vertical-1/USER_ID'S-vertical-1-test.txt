@@ -1,3 +1,0 @@
-YOUR_USER_ID: {"global_user_id":"gu_f4283140-4888-4099-b803-cf2afa9885a2","tenant_id":"ten_manual"}% 
-
-BOB_USER_ID: {"global_user_id":"gu_c566c231-f877-4473-8806-acdbb61a2da3","tenant_id":"ten_manual"}% 

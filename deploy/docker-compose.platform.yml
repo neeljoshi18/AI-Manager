@@ -1,0 +1,88 @@
+# AI Manager — single-host platform compose (M5 staging foundation)
+# Usage from monorepo root:
+#   docker compose -f deploy/docker-compose.platform.yml up -d
+# Infra only by default. Run Rust services on host (dev_up) or extend with images later.
+#
+# Ports align with local defaults:
+#   Cockroach 26257, Redis 6379, Redpanda 19092, MinIO 9000, ClickHouse 8123
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  cockroach:
+    image: cockroachdb/cockroach:v24.1.0
+    command: start-single-node --insecure --advertise-addr=cockroach
+    ports:
+      - "26257:26257"
+      - "8081:8080"
+    volumes:
+      - crdb_data:/cockroach/cockroach-data
+    restart: unless-stopped
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://127.0.0.1:19092
+    ports:
+      - "19092:19092"
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    ports:
+      - "8123:8123"
+      - "9009:9000"
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
+
+  # Optional: egress proxy image (build from vertical-security)
+  # egress:
+  #   build: ../vertical-security
+  #   ports:
+  #     - "18090:18090"
+  #   volumes:
+  #     - ../vertical-security/config:/config:ro
+  #     - ../vertical-security/secrets:/secrets:ro
+  #   command: ["--bind","0.0.0.0:18090","--registry","/config/tool_registry.yaml","--secrets","/secrets/dev_secrets.json"]
+
+volumes:
+  crdb_data:
+  minio_data:
+  ch_data:

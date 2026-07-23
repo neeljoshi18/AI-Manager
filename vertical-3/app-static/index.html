@@ -68,7 +68,7 @@
         </div>
         <div class="card">
           <h2>Latest status snapshot</h2>
-          <div id="today-latest" class="muted">No status yet — open <strong>My status</strong> or run a test under Connections.</div>
+          <div id="today-latest" class="empty-hint">No status yet. Open <strong>My status</strong> or send a test under <strong>Connections</strong>.</div>
         </div>
       </section>
 
@@ -81,7 +81,10 @@
             <span id="st-status" class="pill mid">draft: —</span>
             <code id="st-ids" class="muted small"></code>
           </div>
-          <pre id="st-text" class="box">No draft loaded. Send a test status from Connections, or wait for a scheduled window.</pre>
+          <pre id="st-text" class="box">No draft loaded.
+
+Send a test status from Connections, or wait for a scheduled window
+(default: every 30 minutes — not every GitHub event).</pre>
           <h3>Items</h3>
           <ul id="st-items" class="item-list"></ul>
           <div class="actions">

@@ -53,7 +53,9 @@ cd vertical-3
 cargo test
 cargo run -p twin-verify          # TC-T01…T10
 RUNTIME_MODE=embedded SHADOW_MODE_DAYS=0 cargo run -p twin-api   # :18083
-# open http://127.0.0.1:18083/demo/   ← visual demo console
+# Product UI (light B&W):  http://127.0.0.1:18083/app/
+# Lab console:             http://127.0.0.1:18083/demo/
+# Or from monorepo root:   ../scripts/dev_up.sh
 ./scripts/smoke_v3.sh
 ../scripts/platform_sew.sh
 ```

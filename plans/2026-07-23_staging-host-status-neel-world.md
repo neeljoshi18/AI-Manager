@@ -80,5 +80,17 @@ Caddy routes (repo `deploy/Caddyfile`):
 - Images built on Mac as **linux/amd64** and loaded to droplet (arm64 images will not run).
 - Slack bot token in host vault only; OAuth client id/secret in deploy/.env.staging (gitignored).
 - Caddy TLS issued for status.neel.world.
-- GitHub App still pending.
+- **Droplet policy:** keep **always on** (no power-off between sessions).
+
+## GitHub App (wired)
+
+| Field | Value |
+|-------|--------|
+| App ID | 4374829 |
+| Slug | `status-neel-world` |
+| Installation | 148502033 on `neeljoshi18` |
+| Webhook URL (must match App settings) | `https://status.neel.world/v1/tenants/ten_github/webhooks/github` |
+| Secrets location | gitignored vault + `deploy/secrets/*.pem` on host only |
+
+HMAC verified locally against V1 (`accepted` + last-event age).
 

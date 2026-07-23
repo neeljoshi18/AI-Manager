@@ -41,6 +41,43 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let rt = Arc::new(build_from_env());
+    // Seed tenants from SECRETS_FILE WEBHOOK_SECRET_* so restarts keep HMAC config.
+    if let Ok(Some(map)) = telemetry_core::secrets::load_secrets_from_env() {
+        let ts = telemetry_core::secrets::TenantSecrets::from_map(map);
+        let mut tenant_ids = std::collections::BTreeSet::new();
+        for key in ts.map.names() {
+            if let Some(rest) = key.strip_prefix("WEBHOOK_SECRET_") {
+                let tid = rest
+                    .strip_suffix("_GITHUB")
+                    .or_else(|| rest.strip_suffix("_GITLAB"))
+                    .or_else(|| rest.strip_suffix("_SLACK"))
+                    .or_else(|| rest.strip_suffix("_JIRA"))
+                    .or_else(|| rest.strip_suffix("_LINEAR"))
+                    .or_else(|| rest.strip_suffix("_TEAMS"))
+                    .or_else(|| rest.strip_suffix("_ZENDESK"))
+                    .unwrap_or(rest);
+                if !tid.is_empty() {
+                    tenant_ids.insert(tid.to_string());
+                }
+            }
+        }
+        // Always ensure product tenants exist when vault is present
+        tenant_ids.insert("ten_github".into());
+        tenant_ids.insert("ten_demo".into());
+        for tid in tenant_ids {
+            let cfg = ts.tenant_config(&tid, vec!["grp_eng".into()]);
+            if cfg.github_webhook_secret.is_some()
+                || cfg.gitlab_webhook_secret.is_some()
+                || cfg.slack_signing_secret.is_some()
+            {
+                if let Err(e) = rt.tenants.upsert(cfg).await {
+                    tracing::warn!(tenant = %tid, error = %e, "failed to seed tenant from secrets");
+                } else {
+                    info!(tenant = %tid, "seeded tenant webhook secrets from SECRETS_FILE");
+                }
+            }
+        }
+    }
     let bind = rt.config.http_bind.clone();
     let mode = rt.config.runtime_mode.clone();
     let state = AppState { rt };

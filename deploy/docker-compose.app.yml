@@ -54,9 +54,12 @@ services:
     environment:
       HTTP_BIND: "0.0.0.0:18080"
       RUNTIME_MODE: embedded
-      SKIP_AUTH: "true"
-      # Optional: point at compose egress for outbound tools
+      # HMAC verify GitHub App webhooks via SECRETS_FILE WEBHOOK_SECRET_ten_github
+      SKIP_AUTH: "false"
+      SECRETS_FILE: /secrets/dev_secrets.json
       EGRESS_PROXY_URL: http://egress:18090
+    volumes:
+      - ../vertical-security/secrets:/secrets:ro
     depends_on:
       - egress
     healthcheck:
@@ -110,6 +113,10 @@ services:
       SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
       SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID:-}
       STATUS_WINDOW_SECS: ${STATUS_WINDOW_SECS:-3600}
       NOTIFY_INTERVAL_SECS: ${NOTIFY_INTERVAL_SECS:-1800}
       COMPILE_INTERVAL_SECS: ${COMPILE_INTERVAL_SECS:-1800}

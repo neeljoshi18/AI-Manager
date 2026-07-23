@@ -3,7 +3,8 @@
 #
 # Webhook path matches V1: POST /v1/tenants/{tenant_id}/webhooks/github
 
-name: AI Manager
+# Live app slug: status-neel-world (App ID 4374829, install 148502033 on neeljoshi18)
+name: status-neel-world
 url: https://status.neel.world/app/
 hook_attributes:
   url: https://status.neel.world/v1/tenants/ten_github/webhooks/github

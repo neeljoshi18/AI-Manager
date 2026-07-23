@@ -380,7 +380,18 @@ async fn healthz() -> impl IntoResponse {
 }
 
 async fn probe(url: &str) -> bool {
-    probe_json(url).await.is_some()
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok();
+    let Some(c) = client else {
+        return false;
+    };
+    c.get(url)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
 async fn probe_json(url: &str) -> Option<serde_json::Value> {
@@ -392,7 +403,11 @@ async fn probe_json(url: &str) -> Option<serde_json::Value> {
     if !res.status().is_success() {
         return None;
     }
-    res.json().await.ok()
+    // Prefer JSON; some services (egress) return plain "ok".
+    match res.json().await {
+        Ok(v) => Some(v),
+        Err(_) => Some(serde_json::json!({ "status": "ok" })),
+    }
 }
 
 fn env_present(name: &str) -> bool {

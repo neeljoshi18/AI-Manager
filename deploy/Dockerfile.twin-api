@@ -1,6 +1,6 @@
 # Build from monorepo root:
 #   docker build -f deploy/Dockerfile.twin-api -t ai-manager-twin-api ./vertical-3
-FROM rust:1.85-bookworm AS build
+FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates

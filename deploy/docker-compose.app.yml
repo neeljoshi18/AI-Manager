@@ -92,19 +92,28 @@ services:
     image: ai-manager-twin-api:local
     ports:
       - "18083:18083"
+    # OAuth client id/secret from deploy/.env.staging (gitignored). Never SLACK_BOT_TOKEN here.
+    env_file:
+      - path: .env.staging
+        required: false
     environment:
       BIND_ADDR: "0.0.0.0:18083"
       RUNTIME_MODE: embedded
-      SHADOW_MODE_DAYS: "0"
+      SHADOW_MODE_DAYS: ${SHADOW_MODE_DAYS:-0}
       V1_BASE_URL: http://v1:18080
       V2_BASE_URL: http://v2:18082
       EGRESS_PROXY_URL: http://egress:18090
       EGRESS_ENFORCE: "true"
       USE_EGRESS_SLACK: "true"
-      STATUS_WINDOW_SECS: "3600"
-      NOTIFY_INTERVAL_SECS: "1800"
-      COMPILE_INTERVAL_SECS: "1800"
-      NOTIFY_ON_COMPILE: "false"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-}
+      STATUS_WINDOW_SECS: ${STATUS_WINDOW_SECS:-3600}
+      NOTIFY_INTERVAL_SECS: ${NOTIFY_INTERVAL_SECS:-1800}
+      COMPILE_INTERVAL_SECS: ${COMPILE_INTERVAL_SECS:-1800}
+      NOTIFY_ON_COMPILE: ${NOTIFY_ON_COMPILE:-false}
       APP_STATIC_DIR: /app/app-static
       DEMO_STATIC_DIR: /app/demo-static
     depends_on:

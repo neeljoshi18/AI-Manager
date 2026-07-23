@@ -20,7 +20,7 @@
       ]
     },
     "redirect_urls": [
-      "https://REPLACE_ME_DOMAIN/v3/oauth/slack/callback"
+      "https://status.neel.world/v3/oauth/slack/callback"
     ]
   },
   "settings": {
@@ -29,10 +29,10 @@
     "token_rotation_enabled": false,
     "interactivity": {
       "is_enabled": true,
-      "request_url": "https://REPLACE_ME_DOMAIN/v3/slack/interactions"
+      "request_url": "https://status.neel.world/v3/slack/interactions"
     },
     "event_subscriptions": {
-      "request_url": "https://REPLACE_ME_DOMAIN/v3/slack/events",
+      "request_url": "https://status.neel.world/v3/slack/events",
       "bot_events": [
         "message.im"
       ]

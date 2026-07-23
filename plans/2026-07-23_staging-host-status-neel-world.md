@@ -73,3 +73,12 @@ Caddy routes (repo `deploy/Caddyfile`):
 | Bind | Services already bind `0.0.0.0:1808x` |
 | Binary name | Multiple: `telemetry-ingestion`, `graph-api`, `twin-api`, `egress-proxy` |
 | Source | Private GitHub `neeljoshi18/AI-Manager` |
+
+## Deploy status (2026-07-23 later)
+
+- Stack live at https://status.neel.world/app/
+- Images built on Mac as **linux/amd64** and loaded to droplet (arm64 images will not run).
+- Slack bot token in host vault only; OAuth client id/secret in deploy/.env.staging (gitignored).
+- Caddy TLS issued for status.neel.world.
+- GitHub App still pending.
+

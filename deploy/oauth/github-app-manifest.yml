@@ -4,13 +4,13 @@
 # Webhook path matches V1: POST /v1/tenants/{tenant_id}/webhooks/github
 
 name: AI Manager
-url: https://REPLACE_ME_DOMAIN/app/
+url: https://status.neel.world/app/
 hook_attributes:
-  url: https://REPLACE_ME_DOMAIN/v1/tenants/ten_github/webhooks/github
+  url: https://status.neel.world/v1/tenants/ten_github/webhooks/github
   active: true
-redirect_url: https://REPLACE_ME_DOMAIN/v3/oauth/github/callback
+redirect_url: https://status.neel.world/v3/oauth/github/callback
 callback_urls:
-  - https://REPLACE_ME_DOMAIN/v3/oauth/github/callback
+  - https://status.neel.world/v3/oauth/github/callback
 public: false
 default_permissions:
   contents: read

@@ -1,6 +1,6 @@
 # Build:
 #   docker build -f deploy/Dockerfile.v2-graph-api -t ai-manager-v2 ./vertical-2
-FROM rust:1.85-bookworm AS build
+FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates

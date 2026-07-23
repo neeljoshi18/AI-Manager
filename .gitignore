@@ -10,6 +10,9 @@
 !**/.env.example
 **/secrets/dev_secrets.json
 **/secrets/*.local.json
+**/secrets/staging*.json
+deploy/.env.staging
+deploy/secrets/
 
 # Never commit SSH private keys or local key dumps
 ssh/

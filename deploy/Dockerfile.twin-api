@@ -1,0 +1,24 @@
+# Build from monorepo root:
+#   docker build -f deploy/Dockerfile.twin-api -t ai-manager-twin-api ./vertical-3
+FROM rust:1.85-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+# Static assets baked into image paths used at runtime
+COPY app-static ./app-static
+COPY demo-static ./demo-static
+RUN cargo build --release -p twin-api
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /src/target/release/twin-api /app/twin-api
+COPY --from=build /src/app-static /app/app-static
+COPY --from=build /src/demo-static /app/demo-static
+ENV BIND_ADDR=0.0.0.0:18083
+ENV APP_STATIC_DIR=/app/app-static
+ENV DEMO_STATIC_DIR=/app/demo-static
+ENV RUNTIME_MODE=embedded
+EXPOSE 18083
+CMD ["/app/twin-api"]

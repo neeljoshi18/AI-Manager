@@ -98,16 +98,27 @@ Send a test status from Connections, or wait for a scheduled window
 
       <!-- CONNECTIONS -->
       <section id="view-connections" class="view hidden">
+        <div class="card">
+          <h2>Onboarding checklist</h2>
+          <ol class="pitch" style="list-style: decimal; padding-left: 1.25rem;">
+            <li>Stack up — <code>./scripts/dev_up.sh</code> (see status pills below)</li>
+            <li>Slack bot token in egress vault only (never twin env)</li>
+            <li>GitHub webhook → V1 (ngrok or staging domain)</li>
+            <li>Shadow / batch notify — digests, not every event</li>
+            <li>First status DM → veto or publish</li>
+          </ol>
+          <p class="muted small">OAuth install buttons land in M5; IDs below are the manual path for now.</p>
+        </div>
         <div class="grid2">
           <div class="card">
             <h2>Services</h2>
             <div id="conn-pills" class="pills">loading…</div>
             <p class="muted small" id="conn-detail"></p>
-            <p class="muted small">If V1/V2 are down after laptop sleep, run <code>./scripts/dev_up.sh</code>.</p>
+            <p class="muted small">After laptop sleep: <code>./scripts/dev_up.sh</code>. Staging: <code>deploy/README.md</code>.</p>
           </div>
           <div class="card">
             <h2>Send test status</h2>
-            <p class="muted small">On-demand tool (one DM). Live GitHub still ingests in the background without spamming Slack.</p>
+            <p class="muted small">On-demand (one DM). Live GitHub ingests without spamming Slack.</p>
             <label>Tenant <input id="tenant" value="ten_demo" /></label>
             <label>Person id <input id="user" value="gu_alice" /></label>
             <label>Display name <input id="name" value="Alice" /></label>

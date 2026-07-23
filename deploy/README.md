@@ -54,9 +54,20 @@ COCKROACH_URL=postgresql://root@127.0.0.1:26257/context_graph?sslmode=disable
 V1_COCKROACH_URL=postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable
 ```
 
+## Docker image (twin-api only — first binary)
+
+```bash
+# from monorepo root
+docker build -f deploy/Dockerfile.twin-api -t ai-manager-twin-api ./vertical-3
+docker run --rm -p 18083:18083 ai-manager-twin-api
+# open http://127.0.0.1:18083/app/
+```
+
 ## Not yet (M5 remaining)
 
-- [ ] Multi-stage Dockerfiles for each Rust binary  
+- [x] Infra compose  
+- [x] twin-api Dockerfile (embedded mode image)  
+- [ ] Dockerfiles for V1/V2/egress + multi-service compose  
 - [ ] Slack OAuth install flow in UI  
 - [ ] GitHub App manifest + install  
 - [ ] Managed TLS automation  

@@ -278,6 +278,38 @@ button.danger {
   border-color: var(--border);
   color: var(--text);
 }
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.onboard-steps {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboard-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  font-size: 13.5px;
+}
+.onboard-steps li.done {
+  border-color: var(--text);
+  background: var(--bg);
+}
+.onboard-steps li .mark {
+  font-family: var(--mono);
+  font-weight: 600;
+  min-width: 1.1rem;
+}
 .box {
   background: var(--bg-soft);
   border: 1px solid var(--border);

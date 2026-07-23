@@ -238,8 +238,68 @@ async function act(kind) {
 document.querySelectorAll(".nav-item").forEach((btn) => {
   btn.addEventListener("click", () => showView(btn.dataset.view));
 });
+async function refreshOnboarding() {
+  const el = $("onboard-steps");
+  if (!el) return;
+  try {
+    const o = await jfetch("/v3/onboarding/status");
+    el.innerHTML = "";
+    for (const step of o.steps || []) {
+      const li = document.createElement("li");
+      li.className = step.done ? "done" : "todo";
+      li.innerHTML = `<span class="mark">${step.done ? "✓" : "○"}</span> <strong>${step.title}</strong> — <span class="muted">${step.detail || ""}</span>`;
+      el.appendChild(li);
+    }
+    if ($("onboard-note")) {
+      $("onboard-note").textContent = o.note || "";
+    }
+    // Enable OAuth buttons when server says ready (still may 501 if partial)
+    const gh = $("btn-gh-app");
+    const sl = $("btn-slack-oauth");
+    if (gh) {
+      gh.disabled = false;
+      gh.title = o.github_app_ready
+        ? "Open GitHub App install"
+        : "Will show setup instructions until GITHUB_APP_ID is set";
+    }
+    if (sl) {
+      sl.disabled = false;
+      sl.title = o.slack_oauth_ready
+        ? "Start Slack OAuth"
+        : "Will show vault/manual path until SLACK_CLIENT_ID is set";
+    }
+  } catch (e) {
+    el.innerHTML = `<li class="todo">Onboarding status unavailable: ${e.message || e}</li>`;
+  }
+}
+
+async function startOAuth(kind) {
+  const path = kind === "slack" ? "/v3/oauth/slack/start" : "/v3/oauth/github/start";
+  try {
+    const res = await fetch(path);
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 501 || body.error) {
+      alert(
+        (body.message || "Not configured") +
+          "\n\nManual path: " +
+          (body.manual_path || body.webhook_path || "deploy/oauth/README.md")
+      );
+      return;
+    }
+    const url = body.authorize_url || body.install_url;
+    if (url) {
+      window.open(url, "_blank", "noopener");
+    } else {
+      alert(JSON.stringify(body, null, 2));
+    }
+  } catch (e) {
+    alert("OAuth start failed: " + (e.message || e));
+  }
+}
+
 $("btn-refresh").addEventListener("click", async () => {
   await refreshHealth();
+  await refreshOnboarding();
   await loadLatest();
 });
 $("btn-sim").addEventListener("click", simulate);
@@ -247,7 +307,15 @@ $("btn-publish").addEventListener("click", () => act("publish"));
 $("btn-veto").addEventListener("click", () => act("veto"));
 $("btn-silence").addEventListener("click", () => act("silence"));
 $("btn-edit").addEventListener("click", () => act("edit"));
+if ($("btn-slack-oauth")) {
+  $("btn-slack-oauth").addEventListener("click", () => startOAuth("slack"));
+}
+if ($("btn-gh-app")) {
+  $("btn-gh-app").addEventListener("click", () => startOAuth("github"));
+}
 
 refreshHealth();
+refreshOnboarding();
 loadLatest();
 setInterval(refreshHealth, 10000);
+setInterval(refreshOnboarding, 15000);

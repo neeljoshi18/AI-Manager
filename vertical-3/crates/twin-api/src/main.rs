@@ -111,6 +111,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v3/demo/status", get(demo_status))
         .route("/v3/demo/simulate", post(demo_simulate))
         .route("/v3/demo/latest", get(demo_latest))
+        .route("/v3/onboarding/status", get(onboarding_status))
+        .route("/v3/oauth/slack/start", get(oauth_slack_start))
+        .route("/v3/oauth/github/start", get(oauth_github_start))
         .route("/v3/tenants/{tenant_id}/twins", post(upsert_twin))
         .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}",
@@ -392,6 +395,176 @@ async fn probe_json(url: &str) -> Option<serde_json::Value> {
     res.json().await.ok()
 }
 
+fn env_present(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| !v.trim().is_empty() && !v.contains("REPLACE") && !v.contains("example"))
+        .unwrap_or(false)
+}
+
+/// Onboarding + OAuth readiness (never returns secret values).
+async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
+    let v1_base = st.cfg.v1_base_url.trim_end_matches('/');
+    let v2_base = st.cfg.v2_base_url.trim_end_matches('/');
+    let v1 = probe(&format!("{v1_base}/healthz")).await;
+    let v2 = probe(&format!("{v2_base}/healthz")).await;
+    let egress = match &st.cfg.egress_proxy_url {
+        Some(u) => probe(&format!("{}/healthz", u.trim_end_matches('/'))).await,
+        None => false,
+    };
+    let slack_oauth_ready = env_present("SLACK_CLIENT_ID") && env_present("SLACK_CLIENT_SECRET");
+    let github_app_ready = env_present("GITHUB_APP_ID") && env_present("GITHUB_APP_CLIENT_ID");
+    let public_base = std::env::var("PUBLIC_BASE_URL").unwrap_or_default();
+    let public_ok = !public_base.is_empty() && public_base.starts_with("https://");
+    let v1_health = if v1 {
+        probe_json(&format!("{v1_base}/healthz")).await
+    } else {
+        None
+    };
+    let github_ingest_ok = v1_health
+        .as_ref()
+        .and_then(|v| v.get("accepted").and_then(|x| x.as_u64()))
+        .map(|n| n > 0)
+        .unwrap_or(false);
+
+    // Steps for product wizard (UI drives progression; this is server truth).
+    let steps = json!([
+        {
+            "id": "stack",
+            "title": "Stack running",
+            "done": v1 && v2,
+            "detail": if v1 && v2 { "V1 + V2 reachable" } else { "Start ./scripts/dev_up.sh or docker compose app" }
+        },
+        {
+            "id": "egress",
+            "title": "Egress vault",
+            "done": egress,
+            "detail": if egress { "Proxy up — tokens stay in vault only" } else { "Start egress with secrets/dev_secrets.json" }
+        },
+        {
+            "id": "slack",
+            "title": "Connect Slack",
+            "done": st.slack_mode == "egress" && egress,
+            "detail": if slack_oauth_ready {
+                "OAuth credentials present — use Connect Slack"
+            } else if st.slack_mode == "egress" {
+                "Manual vault token path active (OAuth client not set)"
+            } else {
+                "Set USE_EGRESS_SLACK + vault token, or SLACK_CLIENT_ID/SECRET"
+            }
+        },
+        {
+            "id": "github",
+            "title": "Connect GitHub",
+            "done": github_ingest_ok || github_app_ready,
+            "detail": if github_ingest_ok {
+                "V1 has accepted at least one event this process"
+            } else if github_app_ready {
+                "GitHub App env present — complete install on GitHub"
+            } else {
+                "Webhook → V1 or set GITHUB_APP_* (see deploy/oauth/)"
+            }
+        },
+        {
+            "id": "shadow",
+            "title": "Shadow / batch notify",
+            "done": !st.cfg.notify_on_compile_default && st.cfg.notify_interval_secs > 0,
+            "detail": format!(
+                "notify every {}s · window {}s · on_compile={}",
+                st.cfg.notify_interval_secs,
+                st.cfg.status_window_secs,
+                st.cfg.notify_on_compile_default
+            )
+        },
+        {
+            "id": "first_dm",
+            "title": "First status DM",
+            "done": !st.last_demo.lock().is_empty(),
+            "detail": "Send test status under Connections or wait for scheduler"
+        }
+    ]);
+
+    Json(json!({
+        "steps": steps,
+        "public_base_url_set": public_ok,
+        "slack_oauth_ready": slack_oauth_ready,
+        "github_app_ready": github_app_ready,
+        "slack_mode": st.slack_mode,
+        "manifests": {
+            "slack": "deploy/oauth/slack-app-manifest.json",
+            "github": "deploy/oauth/github-app-manifest.yml",
+            "docs": "deploy/oauth/README.md"
+        },
+        "note": "OAuth install redirects require human-provided client credentials (never in git)."
+    }))
+}
+
+async fn oauth_slack_start() -> impl IntoResponse {
+    if !env_present("SLACK_CLIENT_ID") || !env_present("SLACK_CLIENT_SECRET") {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "error": "slack_oauth_not_configured",
+                "message": "Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET (human secrets). Manifest: deploy/oauth/slack-app-manifest.json. Until then use vault SLACK_BOT_TOKEN via egress.",
+                "manual_path": "vertical-security/secrets/dev_secrets.json"
+            })),
+        );
+    }
+    // Full authorize redirect when credentials exist (next slice after human secrets).
+    let client_id = std::env::var("SLACK_CLIENT_ID").unwrap_or_default();
+    let redirect = std::env::var("SLACK_REDIRECT_URI").unwrap_or_else(|_| {
+        format!(
+            "{}/v3/oauth/slack/callback",
+            std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "https://REPLACE_ME".into())
+        )
+    });
+    let scopes = "chat:write,im:write,users:read";
+    let url = format!(
+        "https://slack.com/oauth/v2/authorize?client_id={}&scope={}&redirect_uri={}",
+        urlencoding_slack(&client_id),
+        urlencoding_slack(scopes),
+        urlencoding_slack(&redirect)
+    );
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ready": true,
+            "authorize_url": url,
+            "note": "Open authorize_url in browser; callback store bot token in egress vault only."
+        })),
+    )
+}
+
+async fn oauth_github_start() -> impl IntoResponse {
+    if !env_present("GITHUB_APP_ID") {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "error": "github_app_not_configured",
+                "message": "Set GITHUB_APP_ID (and related secrets). Manifest: deploy/oauth/github-app-manifest.yml. Manual webhooks to V1 still work.",
+                "webhook_path": "/v1/tenants/{tenant_id}/webhooks/github"
+            })),
+        );
+    }
+    let app_slug = std::env::var("GITHUB_APP_SLUG").unwrap_or_else(|_| "ai-manager".into());
+    let url = format!("https://github.com/apps/{app_slug}/installations/new");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ready": true,
+            "install_url": url
+        })),
+    )
+}
+
+fn urlencoding_slack(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            _ => format!("%{:02X}", c as u8),
+        })
+        .collect()
+}
+
 async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
     let v1_base = st.cfg.v1_base_url.trim_end_matches('/');
     let v2_base = st.cfg.v2_base_url.trim_end_matches('/');
@@ -432,6 +605,8 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         "v1_accepted": accepted,
         "v1_last_accepted_unix": last_accepted_unix,
         "v1_last_event_age_secs": last_event_age_secs,
+        "slack_oauth_ready": env_present("SLACK_CLIENT_ID") && env_present("SLACK_CLIENT_SECRET"),
+        "github_app_ready": env_present("GITHUB_APP_ID"),
     }))
 }
 

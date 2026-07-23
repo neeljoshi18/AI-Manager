@@ -35,9 +35,15 @@
 - Slack OAuth client id/secret
 - GitHub App credentials
 
+## Follow-up in same session
+
+- `/v3/onboarding/status` — server-driven checklist
+- `/v3/oauth/slack/start`, `/v3/oauth/github/start` — 501 until env secrets
+- Connections UI wizard steps + OAuth buttons with clear manual fallback
+
 ## Next code slices
 
-1. Wire Slack OAuth callback route when client id available
-2. Wire GitHub App install status into Connections
+1. Wire Slack OAuth **callback** → write bot token to egress vault only
+2. Wire GitHub App install status into Connections  
 3. Production-mode compose overlay (CRDB URLs on app services)
-4. Onboarding wizard polish (tenant create → connectors → shadow)
+4. Public host + DOMAIN (human)

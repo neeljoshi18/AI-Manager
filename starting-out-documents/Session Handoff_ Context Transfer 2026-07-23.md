@@ -138,8 +138,9 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 [x] Connections UI: last event age from V1 when up
 [x] GitHub App + Slack OAuth scaffolding (manifests; stop for secrets)
 [ ] Host + public URL (need human host/DNS choice)
-[ ] Wire OAuth callback routes when Slack/GitHub credentials exist
-[ ] Onboarding wizard polish in /app
+[x] OAuth start endpoints (501 until secrets) + live onboarding steps API
+[ ] OAuth callback → vault write when Slack/GitHub credentials exist
+[x] Onboarding wizard polish in /app (server-driven steps)
 [ ] Keep ADRs; append Interaction Log on decisions
 [ ] Save any new plan under plans/YYYY-MM-DD_slug.md
 ```

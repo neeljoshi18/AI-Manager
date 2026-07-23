@@ -13,6 +13,7 @@ Dated planning snapshots for AI Manager. Living backlog stays in `starting-out-d
 ## Index
 
 | Date | File | Topic |
+| 2026-07-23 | [2026-07-23_staging-host-status-neel-world.md](./2026-07-23_staging-host-status-neel-world.md) | Staging host status.neel.world (DO VPS) |
 |------|------|--------|
 | 2026-07-23 | [2026-07-23_m5-multiservice-compose.md](./2026-07-23_m5-multiservice-compose.md) | Multi-service Docker + last-event age + OAuth scaffold |
 | 2026-07-23 | [Session Handoff — Context Transfer](../starting-out-documents/Session%20Handoff_%20Context%20Transfer%202026-07-23.md) | **New chat pack** + paste prompt |

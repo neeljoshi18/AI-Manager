@@ -11,6 +11,12 @@
 **/secrets/dev_secrets.json
 **/secrets/*.local.json
 
+# Never commit SSH private keys or local key dumps
+ssh/
+**/*.pem
+**/id_ed25519
+**/id_rsa
+
 # OS / IDE
 .DS_Store
 **/.DS_Store

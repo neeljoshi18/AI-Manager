@@ -1,8 +1,8 @@
 # Session Handoff — AI Manager State
 
-**Date:** 2026-07-22  
+**Date:** 2026-07-23 (see also **Session Handoff_ Context Transfer 2026-07-23.md** for full new-chat pack)  
 **Repo:** private monorepo `https://github.com/neeljoshi18/AI-Manager`  
-**Purpose:** Grounded state pack for a **new chat**. Prefer this file + vertical specs over chat history.
+**Purpose:** Living state pack. For a **fresh chat**, prefer `Session Handoff_ Context Transfer 2026-07-23.md` + `plans/`.
 
 ---
 

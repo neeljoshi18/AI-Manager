@@ -14,6 +14,7 @@ Dated planning snapshots for AI Manager. Living backlog stays in `starting-out-d
 
 | Date | File | Topic |
 |------|------|--------|
+| 2026-07-23 | [Session Handoff — Context Transfer](../starting-out-documents/Session%20Handoff_%20Context%20Transfer%202026-07-23.md) | **New chat pack** + paste prompt |
 | 2026-07-23 | [2026-07-23_m5-and-product-ui.md](./2026-07-23_m5-and-product-ui.md) | Execution: B&W UI + deploy compose foundation |
 | 2026-07-23 | [2026-07-23_demo-to-product-m5.md](./2026-07-23_demo-to-product-m5.md) | Demo → product, UX redesign, intent/agents clarity, M5 path |
 | 2026-07-23 | [2026-07-23_wake-laptop-runbook.md](./2026-07-23_wake-laptop-runbook.md) | Restart stack after sleep |

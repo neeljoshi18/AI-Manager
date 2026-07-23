@@ -182,17 +182,19 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 
 - [x] V3 + demo + real Slack outbound  
 - [x] GitHub live + batched notify  
-- [ ] GitHub App draft (replace ngrok for demos)  
-- [ ] One-command `docker compose` “full product” profile  
-- [ ] Admin: last-N events / last ledger in console  
+- [x] GitHub App **manifest scaffold** (install still needs human secrets)  
+- [x] One-command `docker compose` app profile (`deploy/docker-compose.app.yml`)  
+- [x] Admin: last-event age on Connections (process + accepted count)  
 
 ### Phase M5 — Staging product
 
-- [ ] Single-tenant deploy (VM or Fly/Render) + TLS  
+- [x] Multi-service container path + Caddy HTTPS scaffold  
+- [ ] Single-tenant public host (VM or Fly/Render) + real DNS/TLS  
 - [ ] Secrets vault path (not only file)  
-- [ ] Slack OAuth install link  
+- [ ] Slack OAuth install link (wired; manifests exist)  
 - [ ] GitHub App production install  
-- [ ] Health dashboard + runbooks  
+- [x] Health dashboard last-event age + deploy runbooks  
+
 
 ### Phase M6 — Design partner
 

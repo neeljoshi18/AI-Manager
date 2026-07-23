@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/metrics", get(metrics))
+        .route("/metrics", get(metrics_handler))
         .route("/v1/tenants", post(upsert_tenant))
         .route("/v1/tenants/{tenant_id}/webhooks/{provider}", post(ingest_webhook))
         .route("/v1/ingest/{tenant_id}/{provider}", post(ingest_webhook))
@@ -76,8 +76,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn healthz() -> impl IntoResponse {
-    Json(json!({ "status": "ok", "service": "telemetry-ingestion", "vertical": 1 }))
+async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
+    let snap = state.rt.metrics.snapshot();
+    Json(json!({
+        "status": "ok",
+        "service": "telemetry-ingestion",
+        "vertical": 1,
+        "accepted": snap.accepted,
+        "last_accepted_unix": snap.last_accepted_unix,
+    }))
 }
 
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
@@ -88,7 +95,7 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(state.rt.metrics.snapshot())
 }
 

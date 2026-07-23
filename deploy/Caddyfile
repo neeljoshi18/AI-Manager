@@ -1,0 +1,31 @@
+# Staging reverse proxy (M5). Used by docker-compose.app.yml profile `tls`.
+# Set DOMAIN=status.example.com (and open 80/443) for automatic HTTPS via Caddy.
+#
+# Paths:
+#   /           → product UI (twin-api :18083)
+#   /app/*      → product UI
+#   /demo/*     → lab
+#   /v3/*       → twin API
+#   /v1/*       → V1 webhooks/ingest (GitHub App target)
+
+{$DOMAIN:localhost} {
+	# Prefer ACME when DOMAIN is a real public hostname.
+	# For local smoke without certs, use: caddy run --config with http:// only.
+
+	encode gzip
+
+	# GitHub / provider webhooks → V1
+	handle /v1/* {
+		reverse_proxy v1:18080
+	}
+
+	# Everything else (product + lab + V3 API) → twin-api
+	handle {
+		reverse_proxy twin-api:18083
+	}
+}
+
+# Optional bare HTTP webhook host if you split DNS (hooks.example.com)
+# {$HOOKS_DOMAIN:hooks.localhost} {
+# 	reverse_proxy v1:18080
+# }

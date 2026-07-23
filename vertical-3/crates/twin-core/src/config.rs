@@ -8,6 +8,8 @@ pub struct TwinConfig {
     pub runtime_mode: String,
     pub http_bind: String,
     pub cockroach_url: Option<String>,
+    /// Vertical 1 ingestion base URL (health + last-event probes).
+    pub v1_base_url: String,
     pub v2_base_url: String,
     pub egress_proxy_url: Option<String>,
     pub egress_enforce: bool,
@@ -35,6 +37,7 @@ impl Default for TwinConfig {
             cockroach_url: Some(
                 "postgresql://root@127.0.0.1:26257/status_twins?sslmode=disable".into(),
             ),
+            v1_base_url: "http://127.0.0.1:18080".into(),
             v2_base_url: "http://127.0.0.1:18082".into(),
             egress_proxy_url: Some("http://127.0.0.1:18090".into()),
             egress_enforce: true,
@@ -67,6 +70,9 @@ impl TwinConfig {
         if let Ok(v) = std::env::var("COCKROACH_URL").or_else(|_| std::env::var("DATABASE_URL")) {
             c.cockroach_url = Some(v.replace("/defaultdb", "/status_twins")
                 .replace("/context_graph", "/status_twins"));
+        }
+        if let Ok(v) = std::env::var("V1_BASE_URL") {
+            c.v1_base_url = v;
         }
         if let Ok(v) = std::env::var("V2_BASE_URL") {
             c.v2_base_url = v;

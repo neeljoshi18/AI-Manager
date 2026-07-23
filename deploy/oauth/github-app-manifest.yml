@@ -1,0 +1,27 @@
+# GitHub App manifest (fill domain; create via GitHub "Register new GitHub App from a manifest")
+# Docs: https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
+#
+# Webhook path matches V1: POST /v1/tenants/{tenant_id}/webhooks/github
+
+name: AI Manager
+url: https://REPLACE_ME_DOMAIN/app/
+hook_attributes:
+  url: https://REPLACE_ME_DOMAIN/v1/tenants/ten_github/webhooks/github
+  active: true
+redirect_url: https://REPLACE_ME_DOMAIN/v3/oauth/github/callback
+callback_urls:
+  - https://REPLACE_ME_DOMAIN/v3/oauth/github/callback
+public: false
+default_permissions:
+  contents: read
+  issues: read
+  metadata: read
+  pull_requests: read
+  # members: read  # enable if mapping org users later
+default_events:
+  - issues
+  - issue_comment
+  - pull_request
+  - pull_request_review
+  - push
+  - workflow_run

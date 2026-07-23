@@ -377,23 +377,42 @@ async fn healthz() -> impl IntoResponse {
 }
 
 async fn probe(url: &str) -> bool {
+    probe_json(url).await.is_some()
+}
+
+async fn probe_json(url: &str) -> Option<serde_json::Value> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
-        .ok();
-    let Some(c) = client else {
-        return false;
-    };
-    c.get(url).send().await.map(|r| r.status().is_success()).unwrap_or(false)
+        .ok()?;
+    let res = client.get(url).send().await.ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    res.json().await.ok()
 }
 
 async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
-    let v1 = probe("http://127.0.0.1:18080/healthz").await;
-    let v2 = probe(&format!("{}/healthz", st.cfg.v2_base_url.trim_end_matches('/'))).await;
+    let v1_base = st.cfg.v1_base_url.trim_end_matches('/');
+    let v2_base = st.cfg.v2_base_url.trim_end_matches('/');
+    let v1_health = probe_json(&format!("{v1_base}/healthz")).await;
+    let v1 = v1_health.is_some();
+    let v2 = probe(&format!("{v2_base}/healthz")).await;
     let egress = match &st.cfg.egress_proxy_url {
         Some(u) => probe(&format!("{}/healthz", u.trim_end_matches('/'))).await,
         None => false,
     };
+
+    let now = Utc::now().timestamp() as u64;
+    let last_accepted_unix = v1_health
+        .as_ref()
+        .and_then(|v| v.get("last_accepted_unix").and_then(|x| x.as_u64()))
+        .filter(|&t| t > 0);
+    let accepted = v1_health
+        .as_ref()
+        .and_then(|v| v.get("accepted").and_then(|x| x.as_u64()));
+    let last_event_age_secs = last_accepted_unix.map(|t| now.saturating_sub(t));
+
     Json(json!({
         "v3": true,
         "v1": v1,
@@ -403,10 +422,16 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         "slack_mode": st.slack_mode,
         "demo": "/demo/",
         "app": "/app/",
+        "v1_base_url": v1_base,
+        "v2_base_url": v2_base,
         "status_window_secs": st.cfg.status_window_secs,
         "notify_interval_secs": st.cfg.notify_interval_secs,
         "compile_interval_secs": st.cfg.compile_interval_secs,
         "notify_on_compile_default": st.cfg.notify_on_compile_default,
+        // Connections health: last successful ingest (not only process up)
+        "v1_accepted": accepted,
+        "v1_last_accepted_unix": last_accepted_unix,
+        "v1_last_event_age_secs": last_event_age_secs,
     }))
 }
 

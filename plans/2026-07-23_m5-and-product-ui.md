@@ -29,6 +29,9 @@
 
 ## Next code slices
 
-1. Dockerfile per service + compose app services  
-2. Connections UI: “last event age” from V1 when available  
-3. Slack OAuth + GitHub App manifests  
+1. ~~Dockerfile per service + compose app services~~ → `plans/2026-07-23_m5-multiservice-compose.md`  
+2. ~~Connections UI: last event age~~  
+3. ~~Slack OAuth + GitHub App manifests (scaffold)~~  
+4. Host/DNS + wire OAuth callbacks when secrets arrive  
+5. Onboarding wizard polish  
+

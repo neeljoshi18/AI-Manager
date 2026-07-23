@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default)]
 pub struct IngestMetrics {
@@ -17,6 +17,8 @@ pub struct IngestMetrics {
     pub rate_limited: AtomicU64,
     pub dead_lettered: AtomicU64,
     pub errors: AtomicU64,
+    /// Unix seconds of last accepted ingest (0 = never). Used by product Connections UI.
+    pub last_accepted_unix: AtomicU64,
     latency_samples_ms: Mutex<Vec<u64>>,
     dedup_hits: AtomicU64,
     dedup_misses: AtomicU64,
@@ -36,6 +38,15 @@ impl IngestMetrics {
             let drain = samples.len() - 25_000;
             samples.drain(0..drain);
         }
+    }
+
+    pub fn record_accepted(&self) {
+        self.accepted.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_accepted_unix.store(now, Ordering::Relaxed);
     }
 
     pub fn record_tenant(&self, tenant_id: &str) {
@@ -70,6 +81,7 @@ impl IngestMetrics {
             rate_limited: self.rate_limited.load(Ordering::Relaxed),
             dead_lettered: self.dead_lettered.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
+            last_accepted_unix: self.last_accepted_unix.load(Ordering::Relaxed),
             p50_ms: p(0.50),
             p95_ms: p(0.95),
             p99_ms: p(0.99),
@@ -88,6 +100,8 @@ pub struct MetricsSnapshot {
     pub rate_limited: u64,
     pub dead_lettered: u64,
     pub errors: u64,
+    /// Unix seconds of last accepted event; 0 if none yet.
+    pub last_accepted_unix: u64,
     pub p50_ms: u64,
     pub p95_ms: u64,
     pub p99_ms: u64,

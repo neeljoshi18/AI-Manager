@@ -67,6 +67,36 @@
 
 ---
 
+## 2026-07-23 — Session: M5 multi-service compose + last-event Connections
+
+### Context
+
+- Continuing from Session Handoff 2026-07-23; M5 “demo → product → staging”.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Ship **embedded** multi-service compose first | Staging/demo without CRDB ops on day one |
+| 2 | Caddy profile `tls` for HTTPS path; need human DOMAIN/DNS | Scaffold now; secrets/host later |
+| 3 | Product health = **last accepted ingest age**, not only process up | Matches UX pillar / Vercel-like connectors |
+| 4 | OAuth/App **manifests only** until human credentials | Stop for secrets (handoff rule) |
+| 5 | `V1_BASE_URL` on twin-api | Docker network probes (no hardcoded 127.0.0.1) |
+
+### Artifacts
+
+- `deploy/docker-compose.app.yml`, Dockerfiles V1/V2/egress/twin, `Caddyfile`  
+- `deploy/oauth/*`  
+- V1 `last_accepted_unix`; Connections UI last-event age  
+- Plan: `plans/2026-07-23_m5-multiservice-compose.md`  
+
+### Open questions
+
+1. Host preference still open (VPS vs Fly)?  
+2. When human provides Slack/GitHub secrets, wire OAuth callbacks next.  
+
+---
+
 ## Template for future entries
 
 ```markdown

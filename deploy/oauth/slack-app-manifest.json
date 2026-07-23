@@ -1,0 +1,41 @@
+{
+  "display_information": {
+    "name": "AI Manager",
+    "description": "Evidence-backed status digests. Veto-first. No standup theater.",
+    "background_color": "#000000"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "AI Manager",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "im:write",
+        "im:history",
+        "users:read"
+      ]
+    },
+    "redirect_urls": [
+      "https://REPLACE_ME_DOMAIN/v3/oauth/slack/callback"
+    ]
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false,
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://REPLACE_ME_DOMAIN/v3/slack/interactions"
+    },
+    "event_subscriptions": {
+      "request_url": "https://REPLACE_ME_DOMAIN/v3/slack/events",
+      "bot_events": [
+        "message.im"
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+# Build:
+#   docker build -f deploy/Dockerfile.egress -t ai-manager-egress ./vertical-security
+# Secrets must be mounted at runtime (never baked into the image).
+FROM rust:1.85-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY config ./config
+RUN cargo build --release --locked
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /src/target/release/egress-proxy /app/egress-proxy
+COPY --from=build /src/config /app/config
+# Example only — real secrets via volume mount (ADR-012)
+COPY secrets/dev_secrets.example.json /app/secrets/dev_secrets.example.json
+
+ENV EGRESS_BIND=0.0.0.0:18090
+ENV TOOL_REGISTRY=/app/config/tool_registry.yaml
+ENV SECRETS_FILE=/app/secrets/dev_secrets.json
+
+EXPOSE 18090
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
+  CMD curl -sf http://127.0.0.1:18090/healthz || exit 1
+CMD ["/app/egress-proxy"]

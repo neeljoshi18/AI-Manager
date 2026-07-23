@@ -1,0 +1,21 @@
+# Build from monorepo root or with context=vertical-1:
+#   docker build -f deploy/Dockerfile.v1-ingestion -t ai-manager-v1 ./vertical-1
+FROM rust:1.85-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY proto ./proto
+RUN cargo build --release -p telemetry-ingestion
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /src/target/release/telemetry-ingestion /app/telemetry-ingestion
+ENV HTTP_BIND=0.0.0.0:18080
+ENV RUNTIME_MODE=embedded
+ENV SKIP_AUTH=true
+EXPOSE 18080
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
+  CMD curl -sf http://127.0.0.1:18080/healthz || exit 1
+CMD ["/app/telemetry-ingestion"]

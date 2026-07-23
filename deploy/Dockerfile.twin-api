@@ -10,7 +10,7 @@ COPY demo-static ./demo-static
 RUN cargo build --release -p twin-api
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /src/target/release/twin-api /app/twin-api
@@ -21,4 +21,6 @@ ENV APP_STATIC_DIR=/app/app-static
 ENV DEMO_STATIC_DIR=/app/demo-static
 ENV RUNTIME_MODE=embedded
 EXPOSE 18083
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
+  CMD curl -sf http://127.0.0.1:18083/healthz || exit 1
 CMD ["/app/twin-api"]

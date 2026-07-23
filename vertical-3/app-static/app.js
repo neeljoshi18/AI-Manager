@@ -37,6 +37,16 @@ function fmtSecs(s) {
   return `${s}s`;
 }
 
+/** Human age for last ingest (Connections health). */
+function fmtAge(secs) {
+  if (secs == null) return "no events yet";
+  if (secs < 5) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
 function showView(name) {
   document.querySelectorAll(".view").forEach((el) => el.classList.add("hidden"));
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
@@ -70,7 +80,7 @@ async function refreshHealth() {
     $("stat-stack").textContent = stackOk ? "Live" : "Partial";
     $("stat-stack-detail").textContent = stackOk
       ? "V1 ingest + V2 graph reachable"
-      : "Start stack with ./scripts/dev_up.sh";
+      : "Start stack with ./scripts/dev_up.sh or docker compose -f deploy/docker-compose.app.yml up -d";
     $("stat-notify").textContent = fmtSecs(h.notify_interval_secs);
     $("stat-window").textContent = fmtSecs(h.status_window_secs);
     $("conn-detail").textContent = `Slack: ${h.slack_mode || "—"} · runtime ${h.mode || "—"}`;
@@ -80,10 +90,48 @@ async function refreshHealth() {
     $("cfg-compile").textContent = String(h.compile_interval_secs ?? "—");
     $("cfg-noc").textContent = String(h.notify_on_compile_default ?? "—");
     $("cfg-slack").textContent = h.slack_mode || "—";
+
+    // Connections: last successful ingest age (product health, not only process up)
+    const ingestEl = $("conn-ingest");
+    if (ingestEl) {
+      if (!h.v1) {
+        ingestEl.innerHTML = `<span class="pill down">GitHub / ingest: V1 down</span>`;
+        if ($("conn-github")) {
+          $("conn-github").textContent =
+            "V1 not reachable. Start stack so webhooks and last-event age work.";
+        }
+      } else if (h.v1_last_event_age_secs == null) {
+        ingestEl.innerHTML = [
+          `<span class="pill mid">GitHub / ingest: up · no events yet</span>`,
+          `<span class="pill mid">accepted: ${h.v1_accepted ?? 0}</span>`,
+        ].join("");
+        if ($("conn-github")) {
+          $("conn-github").textContent =
+            "V1 up. Waiting for first webhook or test ingest.";
+        }
+      } else {
+        const age = h.v1_last_event_age_secs;
+        const fresh = age < 600; // 10m
+        ingestEl.innerHTML = [
+          `<span class="pill ${fresh ? "up" : "mid"}">GitHub / ingest: last event ${fmtAge(age)}</span>`,
+          `<span class="pill mid">accepted: ${h.v1_accepted ?? "—"}</span>`,
+        ].join("");
+        if ($("conn-github")) {
+          $("conn-github").textContent = `Last event ${fmtAge(age)} · ${h.v1_accepted ?? 0} accepted this process.`;
+        }
+      }
+    }
+    if ($("conn-slack")) {
+      $("conn-slack").textContent = h.egress
+        ? `Egress up · delivery mode: ${h.slack_mode || "—"}. Tokens only in vault.`
+        : "Egress down — real Slack DMs disabled until vault + proxy are up.";
+    }
   } catch (e) {
     $("conn-pills").innerHTML = pill("V3", false);
     $("stat-stack").textContent = "Down";
     $("stat-stack-detail").textContent = String(e.message || e);
+    const ingestEl = $("conn-ingest");
+    if (ingestEl) ingestEl.innerHTML = "";
   }
 }
 

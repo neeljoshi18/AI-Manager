@@ -115,7 +115,7 @@ impl IngestPipeline {
             Ok(outcome) => {
                 match outcome.status {
                     IngestStatus::Accepted => {
-                        self.metrics.accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        self.metrics.record_accepted();
                     }
                     IngestStatus::Duplicate => {
                         self.metrics.duplicates.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

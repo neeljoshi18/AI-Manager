@@ -1,0 +1,143 @@
+# AI Manager — multi-service application stack (M5)
+# Embedded-mode services for staging demos; optional TLS reverse proxy.
+#
+# From monorepo root:
+#   # App services only (fastest path to product UI):
+#   docker compose -f deploy/docker-compose.app.yml up -d --build
+#
+#   # With Caddy HTTPS (set DOMAIN + optional email):
+#   DOMAIN=status.example.com docker compose -f deploy/docker-compose.app.yml --profile tls up -d --build
+#
+#   # Infra + apps (production-ish URLs; apps still embedded by default):
+#   docker compose -f deploy/docker-compose.platform.yml -f deploy/docker-compose.app.yml up -d --build
+#
+# Product UI:  http://127.0.0.1:18083/app/
+# Lab:         http://127.0.0.1:18083/demo/
+# Webhooks:    http://HOST:18080/v1/tenants/{tenant}/webhooks/github
+#
+# Secrets: mount vertical-security/secrets/dev_secrets.json (gitignored). Never put
+# SLACK_BOT_TOKEN on twin-api (ADR-012).
+
+name: ai-manager
+
+services:
+  egress:
+    build:
+      context: ../vertical-security
+      dockerfile: ../deploy/Dockerfile.egress
+    image: ai-manager-egress:local
+    ports:
+      - "18090:18090"
+    environment:
+      EGRESS_BIND: "0.0.0.0:18090"
+      TOOL_REGISTRY: /app/config/tool_registry.yaml
+      SECRETS_FILE: /app/secrets/dev_secrets.json
+    volumes:
+      # Host secrets (required for real Slack). Create from example if missing.
+      - ../vertical-security/secrets:/app/secrets:ro
+      - ../vertical-security/config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  v1:
+    build:
+      context: ../vertical-1
+      dockerfile: ../deploy/Dockerfile.v1-ingestion
+    image: ai-manager-v1:local
+    ports:
+      - "18080:18080"
+    environment:
+      HTTP_BIND: "0.0.0.0:18080"
+      RUNTIME_MODE: embedded
+      SKIP_AUTH: "true"
+      # Optional: point at compose egress for outbound tools
+      EGRESS_PROXY_URL: http://egress:18090
+    depends_on:
+      - egress
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  v2:
+    build:
+      context: ../vertical-2
+      dockerfile: ../deploy/Dockerfile.v2-graph-api
+    image: ai-manager-v2:local
+    ports:
+      - "18082:18082"
+    environment:
+      HTTP_BIND: "0.0.0.0:18082"
+      RUNTIME_MODE: embedded
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18082/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  twin-api:
+    build:
+      context: ../vertical-3
+      dockerfile: ../deploy/Dockerfile.twin-api
+    image: ai-manager-twin-api:local
+    ports:
+      - "18083:18083"
+    environment:
+      BIND_ADDR: "0.0.0.0:18083"
+      RUNTIME_MODE: embedded
+      SHADOW_MODE_DAYS: "0"
+      V1_BASE_URL: http://v1:18080
+      V2_BASE_URL: http://v2:18082
+      EGRESS_PROXY_URL: http://egress:18090
+      EGRESS_ENFORCE: "true"
+      USE_EGRESS_SLACK: "true"
+      STATUS_WINDOW_SECS: "3600"
+      NOTIFY_INTERVAL_SECS: "1800"
+      COMPILE_INTERVAL_SECS: "1800"
+      NOTIFY_ON_COMPILE: "false"
+      APP_STATIC_DIR: /app/app-static
+      DEMO_STATIC_DIR: /app/demo-static
+    depends_on:
+      - v1
+      - v2
+      - egress
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18083/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # Optional TLS edge (profile: tls). Needs DOMAIN env.
+  # Exposes 80/443; proxies product UI + webhooks.
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2.8-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - twin-api
+      - v1
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

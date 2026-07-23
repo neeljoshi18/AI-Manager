@@ -20,8 +20,8 @@ Private monorepo for the Autonomous AI Manager platform (engineering context lay
 | M | Meaning | Status |
 |---|--------|--------|
 | M1–M3 | Engines V1 / V2 / V3 | Done (code + unit batteries) |
-| **M4** | Live sew + **demo console** + real Slack | **In progress** |
-| M5 | Staging single-tenant deploy | Later |
+| **M4** | Live sew + **demo console** + real Slack | Done enough |
+| **M5** | Staging single-tenant deploy + product UI | **In progress** |
 | M6 | Design-partner weekly use | Later |
 | M7 | Self-serve deployed product | “Finished” for teams |
 
@@ -35,7 +35,15 @@ open http://127.0.0.1:18083/app/
 open http://127.0.0.1:18083/demo/
 ```
 
-Wake after sleep: [plans/2026-07-23_wake-laptop-runbook.md](./plans/2026-07-23_wake-laptop-runbook.md).
+**Docker multi-service (staging-shaped):**
+
+```bash
+docker compose -f deploy/docker-compose.app.yml up -d --build
+open http://127.0.0.1:18083/app/
+```
+
+Wake after sleep: [plans/2026-07-23_wake-laptop-runbook.md](./plans/2026-07-23_wake-laptop-runbook.md).  
+Deploy: [deploy/README.md](./deploy/README.md).
 
 Full script: [Human Demo Script](./starting-out-documents/Human%20Demo%20Script.md)
 

@@ -51,8 +51,9 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 | Product UI | **http://127.0.0.1:18083/app/** — light B&W (Fish Audio–inspired) |
 | Lab UI | **http://127.0.0.1:18083/demo/** |
 | Plans folder | `plans/` dated snapshots |
-| Deploy scaffold | `deploy/docker-compose.platform.yml`, `deploy/Dockerfile.twin-api`, `deploy/README.md` |
+| Deploy scaffold | `deploy/docker-compose.platform.yml`, `deploy/docker-compose.app.yml`, Dockerfiles for V1/V2/V3/egress, Caddy TLS profile, `deploy/oauth/` |
 | Dev ops | `./scripts/dev_up.sh` / `dev_down.sh` |
+| Connections last-event | V1 `/healthz` → twin `/v3/demo/status` → `/app/` Connections |
 
 **User confirmed:** real PR → Slack DM (then spam fixed via batching).
 
@@ -132,11 +133,13 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 ## 7. Next concrete tasks for the new session
 
 ```
-[ ] Finish multi-service Docker compose for V1+V2+V3+egress
-[ ] Staging deploy runbook + one public URL (need host choice if not local-only)
-[ ] Connections UI: last event age from V1 when up
-[ ] GitHub App + Slack OAuth scaffolding (stop for secrets when needed)
-[ ] Onboarding flow polish in /app
+[x] Finish multi-service Docker compose for V1+V2+V3+egress
+[x] Staging HTTPS path scaffold (Caddy profile tls + deploy/README)
+[x] Connections UI: last event age from V1 when up
+[x] GitHub App + Slack OAuth scaffolding (manifests; stop for secrets)
+[ ] Host + public URL (need human host/DNS choice)
+[ ] Wire OAuth callback routes when Slack/GitHub credentials exist
+[ ] Onboarding wizard polish in /app
 [ ] Keep ADRs; append Interaction Log on decisions
 [ ] Save any new plan under plans/YYYY-MM-DD_slug.md
 ```
@@ -175,6 +178,12 @@ SEW_MODE=live ./scripts/platform_sew.sh
 
 # Infra only
 docker compose -f deploy/docker-compose.platform.yml up -d
+
+# Multi-service app stack (embedded demos / first VPS)
+docker compose -f deploy/docker-compose.app.yml up -d --build
+
+# HTTPS (set DOMAIN first)
+# DOMAIN=status.example.com docker compose -f deploy/docker-compose.app.yml --profile tls up -d --build
 ```
 
 ---

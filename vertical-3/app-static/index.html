@@ -20,6 +20,7 @@
         <button class="nav-item active" data-view="today">Today</button>
         <button class="nav-item" data-view="status">My status</button>
         <button class="nav-item" data-view="team">Team</button>
+        <button class="nav-item" data-view="graph">Graph</button>
         <button class="nav-item" data-view="connections">Connections</button>
         <button class="nav-item" data-view="settings">Settings</button>
         <button class="nav-item lab" data-view="lab">Lab</button>
@@ -75,6 +76,49 @@
         <div class="card">
           <h2>Latest status snapshot</h2>
           <div id="today-latest" class="empty-hint">No status yet. Open <strong>My status</strong> or send a test under <strong>Connections</strong>.</div>
+        </div>
+      </section>
+
+      <!-- GRAPH -->
+      <section id="view-graph" class="view hidden">
+        <div class="card graph-toolbar">
+          <div class="graph-toolbar-row">
+            <div>
+              <h2 style="margin:0;">Live context map</h2>
+              <p class="muted small" style="margin:0.25rem 0 0;">
+                ACL-safe V2 graph of ingested signals. Updates while this view is open.
+                Multi-person ties appear as shared work / intents between people.
+              </p>
+            </div>
+            <div class="graph-toolbar-actions">
+              <label class="inline-label">Tenant
+                <input id="graph-tenant" value="ten_github" />
+              </label>
+              <label class="inline-label">Live
+                <input type="checkbox" id="graph-live" checked />
+              </label>
+              <button id="btn-graph-refresh" class="ghost" type="button">Refresh</button>
+              <button id="btn-graph-fit" class="ghost" type="button">Fit</button>
+            </div>
+          </div>
+          <div id="graph-stats" class="meta-row" style="margin-top:0.75rem;"></div>
+          <div id="graph-filters" class="graph-filters"></div>
+        </div>
+        <div class="graph-layout">
+          <div class="card graph-canvas-card">
+            <canvas id="graph-canvas" width="900" height="560" aria-label="Context graph canvas"></canvas>
+            <div class="graph-legend" id="graph-legend"></div>
+          </div>
+          <div class="card graph-side">
+            <h2>Selection</h2>
+            <div id="graph-detail" class="empty-hint">Click a node to inspect. Drag to rearrange. Scroll to zoom.</div>
+            <h3 class="graph-side-h">People</h3>
+            <ul id="graph-people" class="item-list muted"><li class="muted">—</li></ul>
+            <h3 class="graph-side-h">Recent edges</h3>
+            <ul id="graph-edges" class="item-list"><li class="muted">—</li></ul>
+            <h3 class="graph-side-h">Type counts</h3>
+            <pre id="graph-type-counts" class="box small">{}</pre>
+          </div>
         </div>
       </section>
 

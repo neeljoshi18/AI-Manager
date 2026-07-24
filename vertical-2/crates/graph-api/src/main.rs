@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v2/tenants/{tenant_id}/blockers", get(blockers))
         .route("/v2/tenants/{tenant_id}/intents", get(list_intents))
         .route("/v2/tenants/{tenant_id}/conflicts", get(list_conflicts))
+        .route("/v2/tenants/{tenant_id}/snapshot", get(graph_snapshot))
         .route("/v2/tenants/{tenant_id}/stats", get(stats))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -454,6 +455,95 @@ async fn stats(
     let nodes = st.store.count_nodes(&tenant_id).await.map_err(ApiError::from)?;
     let edges = st.store.count_edges(&tenant_id).await.map_err(ApiError::from)?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+}
+
+#[derive(Deserialize)]
+struct SnapshotQ {
+    user_id: String,
+    node_limit: Option<usize>,
+    edge_limit: Option<usize>,
+}
+
+/// ACL-safe full-ish graph for product Graph UI (live map of ingested signals).
+async fn graph_snapshot(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<SnapshotQ>,
+) -> Result<impl IntoResponse, ApiError> {
+    let ctx = ctx_for(&st, &tenant_id, &q.user_id).await?;
+    let node_limit = q.node_limit.unwrap_or(400);
+    let edge_limit = q.edge_limit.unwrap_or(800);
+    let (nodes, edges) = st
+        .store
+        .snapshot(&ctx, node_limit, edge_limit)
+        .await
+        .map_err(ApiError::from)?;
+    let total_nodes = st.store.count_nodes(&tenant_id).await.map_err(ApiError::from)?;
+    let total_edges = st.store.count_edges(&tenant_id).await.map_err(ApiError::from)?;
+
+    let mut by_type: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for n in &nodes {
+        *by_type.entry(n.node_type.clone()).or_insert(0) += 1;
+    }
+    let mut edge_by_type: std::collections::BTreeMap<String, u64> =
+        std::collections::BTreeMap::new();
+    for e in &edges {
+        *edge_by_type.entry(e.edge_type.clone()).or_insert(0) += 1;
+    }
+
+    // Light view models for UI (trim heavy properties)
+    let node_views: Vec<serde_json::Value> = nodes
+        .iter()
+        .map(|n| {
+            let intent_type = n
+                .properties
+                .get("intent_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let title = n
+                .properties
+                .get("title")
+                .or_else(|| n.properties.get("summary"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            json!({
+                "id": n.node_id,
+                "type": n.node_type,
+                "label": if n.display_name.is_empty() { n.node_id.clone() } else { n.display_name.clone() },
+                "resource_id": n.resource_id,
+                "intent_type": intent_type,
+                "title": title,
+                "is_private": n.is_private,
+            })
+        })
+        .collect();
+    let edge_views: Vec<serde_json::Value> = edges
+        .iter()
+        .map(|e| {
+            json!({
+                "id": e.edge_id,
+                "type": e.edge_type,
+                "from": e.from_node_id,
+                "to": e.to_node_id,
+                "event_id": e.event_id,
+                "valid_from": e.valid_from,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "reader": q.user_id,
+        "as_of": chrono::Utc::now().to_rfc3339(),
+        "totals": { "nodes": total_nodes, "edges": total_edges },
+        "returned": { "nodes": node_views.len(), "edges": edge_views.len() },
+        "by_type": by_type,
+        "edge_by_type": edge_by_type,
+        "nodes": node_views,
+        "edges": edge_views,
+        "truncated": total_nodes as usize > node_views.len() || total_edges as usize > edge_views.len(),
+        "engine": "acl_snapshot_v0",
+    })))
 }
 
 async fn ctx_for(

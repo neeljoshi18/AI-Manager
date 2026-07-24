@@ -244,6 +244,23 @@ def main() -> None:
     refresh_team_map(force=True)
     seen = load_seen()
 
+    # Embedded V2 loses graph on container recreate; replay V1 exhaust so Graph UI is full.
+    # Only wipe once per process start when the graph is empty (not when only unmapped
+    # event types were seen — those leave nodes=0 but still need re-projection of PRs).
+    try:
+        stats = get(f"{V2}/v2/tenants/{TENANT}/stats", timeout=10)
+        v2_nodes = int(stats.get("nodes") or 0)
+        if v2_nodes == 0 and seen:
+            print(
+                f"V2 graph empty (nodes=0) but bridge has {len(seen)} seen ids — "
+                "clearing seen state to re-project already-ingested signals",
+                flush=True,
+            )
+            seen = set()
+            open(STATE, "w").close()
+    except Exception as e:
+        print(f"v2 stats check warn: {e}", flush=True)
+
     while True:
         try:
             # Re-seed reader periodically (embedded V1 loses membership on restart)

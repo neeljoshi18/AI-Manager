@@ -174,6 +174,15 @@ pub fn map_event(event: &V1CanonicalEvent) -> GraphMutation {
     if et == "push" || et.starts_with("push") {
         return map_push(event);
     }
+    if et.starts_with("check_suite.")
+        || et.starts_with("check_run.")
+        || et.starts_with("status.")
+        || et.starts_with("workflow_run.")
+        || et.starts_with("deployment.")
+        || et.starts_with("branch.")
+    {
+        return map_check_activity(event);
+    }
     if et.starts_with("slack.") || et.starts_with("teams.") {
         return map_communication(event);
     }
@@ -620,7 +629,20 @@ fn map_team_membership(event: &V1CanonicalEvent) -> GraphMutation {
 
 fn map_push(event: &V1CanonicalEvent) -> GraphMutation {
     let (is_private, groups, ver) = acl_fields(event);
-    let repo_res = event.parent_resource_id.clone();
+    let mut repo_res = event.parent_resource_id.clone();
+    if repo_res.is_empty() {
+        // resource often "org/repo/ref/refs/heads/main"
+        let rid = event.resource_id.as_str();
+        if let Some(idx) = rid.find("/ref/") {
+            repo_res = rid[..idx].to_string();
+        } else {
+            repo_res = rid
+                .split('/')
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("/");
+        }
+    }
     if repo_res.is_empty() {
         return GraphMutation::default();
     }
@@ -636,8 +658,30 @@ fn map_push(event: &V1CanonicalEvent) -> GraphMutation {
         allowed_group_ids: groups.clone(),
         acl_version: ver,
     };
-    let mut nodes = vec![person.clone(), repo];
-    let mut edges = Vec::new();
+    let mut nodes = vec![person.clone(), repo.clone()];
+    let mut edges = vec![GraphEdge {
+        tenant_id: event.tenant_id.clone(),
+        edge_id: edge_id(
+            &event.tenant_id,
+            "PUSHED_TO",
+            &person.node_id,
+            &repo.node_id,
+            &event.event_id,
+        ),
+        edge_type: "PUSHED_TO".into(),
+        from_node_id: person.node_id.clone(),
+        to_node_id: repo.node_id.clone(),
+        valid_from: event.event_timestamp,
+        valid_to: None,
+        event_id: event.event_id.clone(),
+        properties: json!({
+            "ref": event.attributes.get("ref").and_then(|v| v.as_str()).unwrap_or(""),
+            "commit_count": event.attributes.get("commit_count"),
+        }),
+        is_private,
+        allowed_group_ids: groups.clone(),
+        acl_version: ver,
+    }];
     if let Some(commits) = event.attributes.get("commits").and_then(|c| c.as_array()) {
         for c in commits.iter().take(20) {
             let sha = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -683,6 +727,61 @@ fn map_push(event: &V1CanonicalEvent) -> GraphMutation {
     GraphMutation {
         nodes,
         edges,
+        states: vec![],
+    }
+}
+
+/// CI / check suite activity → Person + Repo + CHECKED edge (keeps map dense for mid-market).
+fn map_check_activity(event: &V1CanonicalEvent) -> GraphMutation {
+    let (is_private, groups, ver) = acl_fields(event);
+    let repo_res = if !event.parent_resource_id.is_empty() {
+        event.parent_resource_id.clone()
+    } else {
+        event
+            .resource_id
+            .split('/')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    if repo_res.is_empty() || repo_res == event.resource_id && !event.resource_id.contains('/') {
+        return GraphMutation::default();
+    }
+    let person = person_node(event);
+    let repo = GraphNode {
+        tenant_id: event.tenant_id.clone(),
+        node_id: repo_node_id(&repo_res),
+        node_type: "Repo".into(),
+        display_name: repo_res.clone(),
+        resource_id: repo_res,
+        properties: json!({}),
+        is_private,
+        allowed_group_ids: groups.clone(),
+        acl_version: ver,
+    };
+    let edge = GraphEdge {
+        tenant_id: event.tenant_id.clone(),
+        edge_id: edge_id(
+            &event.tenant_id,
+            "CHECKED",
+            &person.node_id,
+            &repo.node_id,
+            &event.event_id,
+        ),
+        edge_type: "CHECKED".into(),
+        from_node_id: person.node_id.clone(),
+        to_node_id: repo.node_id.clone(),
+        valid_from: event.event_timestamp,
+        valid_to: None,
+        event_id: event.event_id.clone(),
+        properties: json!({ "event_type": event.event_type }),
+        is_private,
+        allowed_group_ids: groups,
+        acl_version: ver,
+    };
+    GraphMutation {
+        nodes: vec![person, repo],
+        edges: vec![edge],
         states: vec![],
     }
 }

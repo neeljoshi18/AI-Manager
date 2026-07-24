@@ -58,12 +58,18 @@ function showView(name) {
     today: ["Today", "Org pulse — what the graph knows right now"],
     status: ["My status", "Scheduled digests · veto-first · evidence-backed"],
     team: ["Team", "Multi-person Slack map · intents · conflicts"],
+    graph: ["Graph", "Live context map — people, work, intents, edges"],
     connections: ["Connections", "Services and on-demand test status"],
     settings: ["Settings", "Cadence, metrics, product boundaries"],
     lab: ["Lab", "Engineer console and raw JSON"],
   };
   if (name === "team") {
     refreshTeam();
+  }
+  if (name === "graph") {
+    startGraphView();
+  } else {
+    stopGraphLive();
   }
   const t = titles[name] || ["AI Manager", ""];
   $("view-title").textContent = t[0];
@@ -462,12 +468,678 @@ async function refreshMetrics() {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Graph live map — force layout, filters, selection, live poll
+   ═══════════════════════════════════════════════════════════════ */
+const graphState = {
+  raw: null,
+  nodes: [], // { id, type, label, x, y, vx, vy, r, meta }
+  edges: [], // { id, type, from, to }
+  filters: {}, // type -> bool
+  selected: null,
+  sim: null,
+  liveTimer: null,
+  anim: null,
+  drag: null,
+  pan: { x: 0, y: 0 },
+  scale: 1,
+  panning: null,
+  lastFetch: 0,
+  types: [],
+};
+
+const GRAPH_TYPE_ORDER = [
+  "Person",
+  "PullRequest",
+  "Issue",
+  "Ticket",
+  "Intent",
+  "Repo",
+  "Team",
+  "Commit",
+  "Channel",
+];
+
+function graphTenant() {
+  return (
+    $("graph-tenant")?.value?.trim() ||
+    $("team-tenant")?.value?.trim() ||
+    "ten_github"
+  );
+}
+
+function stopGraphLive() {
+  if (graphState.liveTimer) {
+    clearInterval(graphState.liveTimer);
+    graphState.liveTimer = null;
+  }
+  if (graphState.anim) {
+    cancelAnimationFrame(graphState.anim);
+    graphState.anim = null;
+  }
+}
+
+function startGraphView() {
+  ensureGraphCanvas();
+  refreshGraph(true);
+  stopGraphLive();
+  if ($("graph-live")?.checked !== false) {
+    graphState.liveTimer = setInterval(() => {
+      if ($("graph-live")?.checked) refreshGraph(false);
+    }, 5000);
+  }
+  if (!graphState.anim) {
+    const tick = () => {
+      stepForce();
+      drawGraph();
+      graphState.anim = requestAnimationFrame(tick);
+    };
+    graphState.anim = requestAnimationFrame(tick);
+  }
+}
+
+function ensureGraphCanvas() {
+  const canvas = $("graph-canvas");
+  if (!canvas || canvas._graphBound) return;
+  canvas._graphBound = true;
+  const resize = () => {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(320, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(360, Math.floor(rect.height * dpr));
+    canvas.style.height = Math.max(360, rect.height) + "px";
+    drawGraph();
+  };
+  window.addEventListener("resize", resize);
+  resize();
+
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.92 : 1.08;
+    graphState.scale = Math.min(3.5, Math.max(0.25, graphState.scale * factor));
+    drawGraph();
+  }, { passive: false });
+
+  canvas.addEventListener("pointerdown", (e) => {
+    const pt = canvasPoint(canvas, e);
+    const hit = hitNode(pt.x, pt.y);
+    if (hit) {
+      graphState.selected = hit.id;
+      graphState.drag = { id: hit.id, ox: hit.x, oy: hit.y };
+      hit.fx = hit.x;
+      hit.fy = hit.y;
+      canvas.setPointerCapture(e.pointerId);
+      renderGraphDetail(hit);
+      drawGraph();
+      return;
+    }
+    graphState.panning = { x: e.clientX, y: e.clientY, px: graphState.pan.x, py: graphState.pan.y };
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (graphState.drag) {
+      const pt = canvasPoint(canvas, e);
+      const n = graphState.nodes.find((x) => x.id === graphState.drag.id);
+      if (n) {
+        n.x = pt.x;
+        n.y = pt.y;
+        n.fx = pt.x;
+        n.fy = pt.y;
+        n.vx = 0;
+        n.vy = 0;
+      }
+      return;
+    }
+    if (graphState.panning) {
+      graphState.pan.x = graphState.panning.px + (e.clientX - graphState.panning.x);
+      graphState.pan.y = graphState.panning.py + (e.clientY - graphState.panning.y);
+    }
+  });
+  canvas.addEventListener("pointerup", () => {
+    if (graphState.drag) {
+      const n = graphState.nodes.find((x) => x.id === graphState.drag.id);
+      if (n) {
+        n.fx = null;
+        n.fy = null;
+      }
+    }
+    graphState.drag = null;
+    graphState.panning = null;
+  });
+  canvas.addEventListener("pointercancel", () => {
+    graphState.drag = null;
+    graphState.panning = null;
+  });
+}
+
+function canvasPoint(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const cx = (e.clientX - rect.left) * dpr;
+  const cy = (e.clientY - rect.top) * dpr;
+  return {
+    x: (cx - graphState.pan.x) / graphState.scale,
+    y: (cy - graphState.pan.y) / graphState.scale,
+  };
+}
+
+function hitNode(x, y) {
+  for (let i = graphState.nodes.length - 1; i >= 0; i--) {
+    const n = graphState.nodes[i];
+    if (!typeVisible(n.type)) continue;
+    const dx = n.x - x;
+    const dy = n.y - y;
+    if (dx * dx + dy * dy <= (n.r + 4) * (n.r + 4)) return n;
+  }
+  return null;
+}
+
+function typeVisible(t) {
+  if (graphState.filters[t] === false) return false;
+  return true;
+}
+
+function normalizeType(t) {
+  if (!t) return "Other";
+  if (t === "pull_request") return "PullRequest";
+  if (t === "issue" || t === "ticket") return "Issue";
+  return t;
+}
+
+function nodeRadius(type) {
+  switch (type) {
+    case "Person": return 16;
+    case "PullRequest": return 12;
+    case "Issue":
+    case "Ticket": return 11;
+    case "Intent": return 10;
+    case "Repo": return 14;
+    default: return 9;
+  }
+}
+
+async function refreshGraph(forceLayout) {
+  const tenant = graphTenant();
+  const statsEl = $("graph-stats");
+  try {
+    if (statsEl && forceLayout) {
+      statsEl.innerHTML = `<span class="pill mid">loading map…</span>`;
+    }
+    const data = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=500&edge_limit=1000`
+    );
+    graphState.raw = data;
+    graphState.lastFetch = Date.now();
+    mergeGraphData(data, forceLayout);
+    renderGraphChrome(data);
+    drawGraph();
+  } catch (e) {
+    if (statsEl) {
+      statsEl.innerHTML = `<span class="pill down">graph load failed: ${esc(e.message || e)}</span>`;
+    }
+  }
+}
+
+function mergeGraphData(data, forceLayout) {
+  const prev = new Map(graphState.nodes.map((n) => [n.id, n]));
+  const types = new Set();
+  const nodes = (data.nodes || []).map((n, i) => {
+    const type = normalizeType(n.type);
+    types.add(type);
+    const old = prev.get(n.id);
+    const r = nodeRadius(type);
+    if (old && !forceLayout) {
+      return {
+        ...old,
+        type,
+        label: n.label || n.id,
+        r,
+        meta: n,
+      };
+    }
+    // seed positions by type rings so multi-person layout is readable
+    const angle = (i / Math.max(1, (data.nodes || []).length)) * Math.PI * 2;
+    const ring =
+      type === "Person" ? 80 :
+      type === "Repo" ? 200 :
+      type === "Intent" ? 160 :
+      120;
+    return {
+      id: n.id,
+      type,
+      label: n.label || n.id,
+      x: old?.x ?? Math.cos(angle) * ring + (Math.random() - 0.5) * 20,
+      y: old?.y ?? Math.sin(angle) * ring + (Math.random() - 0.5) * 20,
+      vx: 0,
+      vy: 0,
+      r,
+      fx: null,
+      fy: null,
+      meta: n,
+    };
+  });
+  graphState.nodes = nodes;
+  graphState.edges = (data.edges || []).map((e) => ({
+    id: e.id,
+    type: e.type || "RELATED",
+    from: e.from,
+    to: e.to,
+    meta: e,
+  }));
+  // init filters for new types
+  for (const t of types) {
+    if (graphState.filters[t] === undefined) graphState.filters[t] = true;
+  }
+  graphState.types = Array.from(types).sort((a, b) => {
+    const ia = GRAPH_TYPE_ORDER.indexOf(a);
+    const ib = GRAPH_TYPE_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  renderGraphFilters();
+  if (forceLayout) fitGraph();
+}
+
+function renderGraphFilters() {
+  const el = $("graph-filters");
+  if (!el) return;
+  el.innerHTML = graphState.types
+    .map((t) => {
+      const on = graphState.filters[t] !== false;
+      const count = graphState.nodes.filter((n) => n.type === t).length;
+      return `<button type="button" class="ghost graph-filter-btn ${on ? "" : "off"}" data-type="${esc(t)}">${esc(t)} (${count})</button>`;
+    })
+    .join("");
+  el.querySelectorAll("[data-type]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const t = btn.getAttribute("data-type");
+      graphState.filters[t] = graphState.filters[t] === false;
+      renderGraphFilters();
+      drawGraph();
+    });
+  });
+}
+
+function renderGraphChrome(data) {
+  const statsEl = $("graph-stats");
+  const totals = data.totals || {};
+  const returned = data.returned || {};
+  const live = $("graph-live")?.checked;
+  if (statsEl) {
+    statsEl.innerHTML = [
+      live ? `<span class="pill up"><span class="graph-live-dot"></span>live</span>` : `<span class="pill mid">paused</span>`,
+      `<span class="pill mid">nodes ${returned.nodes ?? graphState.nodes.length}/${totals.nodes ?? "—"}</span>`,
+      `<span class="pill mid">edges ${returned.edges ?? graphState.edges.length}/${totals.edges ?? "—"}</span>`,
+      data.truncated ? `<span class="pill mid">truncated</span>` : "",
+      `<span class="pill mid">reader ${esc(data.reader || "—")}</span>`,
+      `<span class="pill mid">as_of ${esc((data.as_of || "").replace("T", " ").slice(0, 19))}</span>`,
+    ]
+      .filter(Boolean)
+      .join("");
+  }
+  const legend = $("graph-legend");
+  if (legend) {
+    legend.innerHTML = [
+      `<span><i></i> Person</span>`,
+      `<span><i class="pr"></i> Pull request</span>`,
+      `<span><i class="issue"></i> Issue</span>`,
+      `<span><i class="intent"></i> Intent</span>`,
+      `<span><i class="repo"></i> Repo</span>`,
+      `<span>Lines = edges (AUTHORED, CLAIMS, BLOCKS…)</span>`,
+    ].join("");
+  }
+  const people = $("graph-people");
+  if (people) {
+    const persons = graphState.nodes.filter((n) => n.type === "Person");
+    const team = data.team?.members || [];
+    if (!persons.length && !team.length) {
+      people.innerHTML = `<li class="muted">No people yet — ingest PRs or add Team maps.</li>`;
+    } else {
+      const rows = persons.map((p) => {
+        const mapped = team.find((m) => m.person_node_id === p.id || `person:${m.subject_id}` === p.id);
+        return `<li><button type="button" class="ghost graph-filter-btn" data-node="${esc(p.id)}">${esc(p.label)}</button> ${mapped?.slack_mapped ? '<span class="muted small">slack</span>' : ""}</li>`;
+      });
+      people.innerHTML = rows.join("") || `<li class="muted">—</li>`;
+      people.querySelectorAll("[data-node]").forEach((b) => {
+        b.addEventListener("click", () => {
+          const id = b.getAttribute("data-node");
+          const n = graphState.nodes.find((x) => x.id === id);
+          if (n) {
+            graphState.selected = id;
+            renderGraphDetail(n);
+            drawGraph();
+          }
+        });
+      });
+    }
+  }
+  const edgesEl = $("graph-edges");
+  if (edgesEl) {
+    const sample = graphState.edges.slice(-25).reverse();
+    edgesEl.innerHTML = sample.length
+      ? sample
+          .map(
+            (e) =>
+              `<li><code class="small">${esc(e.type)}</code> <span class="muted">${esc(shortId(e.from))} → ${esc(shortId(e.to))}</span></li>`
+          )
+          .join("")
+      : `<li class="muted">No edges yet</li>`;
+  }
+  const counts = $("graph-type-counts");
+  if (counts) {
+    counts.textContent = JSON.stringify(
+      {
+        nodes: data.by_type || {},
+        edges: data.edge_by_type || {},
+      },
+      null,
+      2
+    );
+  }
+  if (graphState.selected) {
+    const n = graphState.nodes.find((x) => x.id === graphState.selected);
+    if (n) renderGraphDetail(n);
+  }
+}
+
+function shortId(id) {
+  if (!id) return "";
+  if (id.length <= 28) return id;
+  return id.slice(0, 12) + "…" + id.slice(-8);
+}
+
+function renderGraphDetail(n) {
+  const el = $("graph-detail");
+  if (!el || !n) return;
+  const linked = graphState.edges.filter((e) => e.from === n.id || e.to === n.id);
+  const neighbors = linked.map((e) => (e.from === n.id ? e.to : e.from));
+  const uniq = [...new Set(neighbors)];
+  const intent = n.meta?.intent_type || "";
+  el.innerHTML = `
+    <div class="meta-row">
+      <span class="graph-node-chip">${esc(n.type)}</span>
+      ${intent ? `<span class="graph-node-chip">${esc(intent)}</span>` : ""}
+      ${n.meta?.from_team_map ? `<span class="graph-node-chip">team map</span>` : ""}
+    </div>
+    <p style="margin:0.6rem 0 0.2rem;font-weight:600;">${esc(n.label)}</p>
+    <p class="muted small" style="margin:0;word-break:break-all;"><code>${esc(n.id)}</code></p>
+    ${n.meta?.resource_id ? `<p class="muted small">resource: <code>${esc(n.meta.resource_id)}</code></p>` : ""}
+    <p class="muted small" style="margin-top:0.75rem;">${linked.length} edge(s) · ${uniq.length} neighbor(s)</p>
+    <ul class="item-list">
+      ${linked
+        .slice(0, 12)
+        .map((e) => {
+          const other = e.from === n.id ? e.to : e.from;
+          const dir = e.from === n.id ? "→" : "←";
+          return `<li><code class="small">${esc(e.type)}</code> ${dir} ${esc(shortId(other))}</li>`;
+        })
+        .join("") || "<li class='muted'>No edges</li>"}
+    </ul>
+  `;
+}
+
+function stepForce() {
+  const nodes = graphState.nodes.filter((n) => typeVisible(n.type));
+  if (nodes.length === 0) return;
+  const byId = new Map(graphState.nodes.map((n) => [n.id, n]));
+  const edges = graphState.edges.filter(
+    (e) => typeVisible(byId.get(e.from)?.type) && typeVisible(byId.get(e.to)?.type)
+  );
+
+  // repulsion
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i];
+      const b = nodes[j];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let dist2 = dx * dx + dy * dy || 0.01;
+      const dist = Math.sqrt(dist2);
+      const minD = a.r + b.r + 28;
+      let force = 900 / dist2;
+      if (dist < minD) force += (minD - dist) * 0.15;
+      // same-type mild clustering for people
+      if (a.type === "Person" && b.type === "Person") force *= 0.55;
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      a.vx -= fx;
+      a.vy -= fy;
+      b.vx += fx;
+      b.vy += fy;
+    }
+  }
+
+  // springs
+  for (const e of edges) {
+    const a = byId.get(e.from);
+    const b = byId.get(e.to);
+    if (!a || !b) continue;
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    let ideal = 90;
+    if (e.type === "CLAIMS" || e.type === "ABOUT") ideal = 55;
+    if (e.type === "BLOCKS" || e.type === "BLOCKED_BY") ideal = 70;
+    if (e.type === "AUTHORED" || e.type === "ASSIGNED_TO") ideal = 75;
+    if (e.type === "BELONGS_TO") ideal = 100;
+    if (e.type === "MEMBER_OF") ideal = 85;
+    const k = 0.035;
+    const f = (dist - ideal) * k;
+    const fx = (dx / dist) * f;
+    const fy = (dy / dist) * f;
+    a.vx += fx;
+    a.vy += fy;
+    b.vx -= fx;
+    b.vy -= fy;
+  }
+
+  // center gravity
+  for (const n of nodes) {
+    n.vx += -n.x * 0.002;
+    n.vy += -n.y * 0.002;
+  }
+
+  // integrate
+  for (const n of graphState.nodes) {
+    if (!typeVisible(n.type)) continue;
+    if (n.fx != null) {
+      n.x = n.fx;
+      n.y = n.fy;
+      n.vx = 0;
+      n.vy = 0;
+      continue;
+    }
+    n.vx *= 0.82;
+    n.vy *= 0.82;
+    n.x += n.vx;
+    n.y += n.vy;
+  }
+}
+
+function fitGraph() {
+  const nodes = graphState.nodes.filter((n) => typeVisible(n.type));
+  const canvas = $("graph-canvas");
+  if (!canvas || !nodes.length) {
+    graphState.pan = { x: 0, y: 0 };
+    graphState.scale = 1;
+    return;
+  }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x - n.r);
+    minY = Math.min(minY, n.y - n.r);
+    maxX = Math.max(maxX, n.x + n.r);
+    maxY = Math.max(maxY, n.y + n.r);
+  }
+  const w = maxX - minX || 1;
+  const h = maxY - minY || 1;
+  const pad = 48;
+  const sx = (canvas.width - pad * 2) / w;
+  const sy = (canvas.height - pad * 2) / h;
+  graphState.scale = Math.min(2.2, Math.max(0.35, Math.min(sx, sy)));
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  graphState.pan.x = canvas.width / 2 - cx * graphState.scale;
+  graphState.pan.y = canvas.height / 2 - cy * graphState.scale;
+}
+
+function drawGraph() {
+  const canvas = $("graph-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.translate(graphState.pan.x, graphState.pan.y);
+  ctx.scale(graphState.scale, graphState.scale);
+
+  const byId = new Map(graphState.nodes.map((n) => [n.id, n]));
+
+  // edges
+  for (const e of graphState.edges) {
+    const a = byId.get(e.from);
+    const b = byId.get(e.to);
+    if (!a || !b) continue;
+    if (!typeVisible(a.type) || !typeVisible(b.type)) continue;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    const isBlock = /block/i.test(e.type);
+    const isClaim = e.type === "CLAIMS" || e.type === "ABOUT";
+    ctx.strokeStyle = isBlock ? "#111" : isClaim ? "#737373" : "#a3a3a3";
+    ctx.lineWidth = isBlock ? 1.6 / graphState.scale : 1 / graphState.scale;
+    if (isClaim) ctx.setLineDash([4 / graphState.scale, 3 / graphState.scale]);
+    else if (isBlock) ctx.setLineDash([2 / graphState.scale, 2 / graphState.scale]);
+    else ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // edge label at mid if few edges or selected
+    if (
+      graphState.edges.length < 40 ||
+      a.id === graphState.selected ||
+      b.id === graphState.selected
+    ) {
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      ctx.font = `${10 / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = "#a3a3a3";
+      ctx.textAlign = "center";
+      ctx.fillText(e.type, mx, my - 3 / graphState.scale);
+    }
+  }
+
+  // nodes
+  for (const n of graphState.nodes) {
+    if (!typeVisible(n.type)) continue;
+    const selected = n.id === graphState.selected;
+    drawNodeShape(ctx, n, selected);
+    // label
+    ctx.font = `${11 / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillStyle = "#111";
+    ctx.textAlign = "center";
+    const label = truncateLabel(n.label, 22);
+    ctx.fillText(label, n.x, n.y + n.r + 12 / graphState.scale);
+    if (n.type === "Intent" && n.meta?.intent_type) {
+      ctx.fillStyle = "#737373";
+      ctx.font = `${9 / graphState.scale}px ui-monospace, monospace`;
+      ctx.fillText(n.meta.intent_type, n.x, n.y + n.r + 22 / graphState.scale);
+    }
+  }
+
+  ctx.restore();
+
+  // empty state
+  if (!graphState.nodes.length) {
+    ctx.fillStyle = "#737373";
+    ctx.font = `${14 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText(
+      "No graph nodes yet — waiting for bridge to project V1 events",
+      canvas.width / 2,
+      canvas.height / 2
+    );
+  }
+}
+
+function drawNodeShape(ctx, n, selected) {
+  const r = n.r;
+  ctx.save();
+  ctx.translate(n.x, n.y);
+  if (selected) {
+    ctx.beginPath();
+    ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = 2 / graphState.scale;
+    ctx.stroke();
+  }
+  ctx.lineWidth = 1.5 / graphState.scale;
+  ctx.strokeStyle = "#111";
+  ctx.fillStyle = "#fff";
+
+  if (n.type === "Person") {
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    // head+shoulders glyph
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.25, r * 0.28, 0, Math.PI * 2);
+    ctx.fillStyle = "#111";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, r * 0.55, r * 0.55, Math.PI, 0);
+    ctx.fill();
+  } else if (n.type === "PullRequest") {
+    ctx.fillStyle = "#111";
+    ctx.fillRect(-r * 0.7, -r * 0.7, r * 1.4, r * 1.4);
+    ctx.strokeRect(-r * 0.7, -r * 0.7, r * 1.4, r * 1.4);
+  } else if (n.type === "Issue" || n.type === "Ticket") {
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } else if (n.type === "Intent") {
+    ctx.setLineDash([3 / graphState.scale, 2 / graphState.scale]);
+    ctx.strokeRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#fafafa";
+    ctx.fillRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
+    ctx.strokeRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
+  } else if (n.type === "Repo") {
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#e5e5e5";
+    ctx.fill();
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function truncateLabel(s, n) {
+  const t = String(s || "");
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
 $("btn-refresh").addEventListener("click", async () => {
   await refreshHealth();
   await refreshOnboarding();
   await loadLatest();
   await refreshPulse();
   await refreshMetrics();
+  if (!$("view-graph")?.classList.contains("hidden")) {
+    await refreshGraph(false);
+  }
 });
 $("btn-sim").addEventListener("click", simulate);
 $("btn-publish").addEventListener("click", () => act("publish"));
@@ -485,6 +1157,24 @@ if ($("btn-team-refresh")) {
 }
 if ($("btn-team-add")) {
   $("btn-team-add").addEventListener("click", addTeamMember);
+}
+if ($("btn-graph-refresh")) {
+  $("btn-graph-refresh").addEventListener("click", () => refreshGraph(true));
+}
+if ($("btn-graph-fit")) {
+  $("btn-graph-fit").addEventListener("click", () => {
+    fitGraph();
+    drawGraph();
+  });
+}
+if ($("graph-live")) {
+  $("graph-live").addEventListener("change", () => {
+    if ($("view-graph")?.classList.contains("hidden")) return;
+    stopGraphLive();
+    if ($("graph-live").checked) {
+      graphState.liveTimer = setInterval(() => refreshGraph(false), 5000);
+    }
+  });
 }
 
 refreshHealth();

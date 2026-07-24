@@ -140,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
+        .route("/v3/tenants/{tenant_id}/graph", get(get_graph_snapshot))
         .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}/compile",
             post(compile_twin),
@@ -1311,6 +1312,142 @@ async fn get_conflicts_proxy(
             "reader": reader,
         }))),
     }
+}
+
+#[derive(Deserialize)]
+struct GraphSnapshotQ {
+    user_id: Option<String>,
+    node_limit: Option<usize>,
+    edge_limit: Option<usize>,
+}
+
+/// Product Graph map: ACL-safe V2 snapshot + team members for multi-person view.
+async fn get_graph_snapshot(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<GraphSnapshotQ>,
+) -> Result<impl IntoResponse, ApiError> {
+    let maps = st
+        .store
+        .list_slack_maps(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let reader = q
+        .user_id
+        .filter(|s| !s.is_empty())
+        .or_else(|| maps.first().map(|m| m.global_user_id.clone()))
+        .or_else(|| {
+            twins
+                .iter()
+                .find(|t| t.twin_kind == TwinKind::Person)
+                .map(|t| t.subject_id.clone())
+        })
+        // Bridge seeds bridge_reader with grp_eng so private-repo exhaust is visible
+        .unwrap_or_else(|| "bridge_reader".into());
+    let node_limit = q.node_limit.unwrap_or(400);
+    let edge_limit = q.edge_limit.unwrap_or(800);
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    // Ensure reader has eng group when using synthetic bridge reader name
+    let _ = probe_json(&format!(
+        "{v2}/v2/tenants/{tenant_id}/users"
+    ))
+    .await;
+    // Seed membership for reader (POST)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .ok();
+    if let Some(c) = &client {
+        let _ = c
+            .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+            .json(&json!({
+                "global_user_id": reader,
+                "groups": ["grp_eng", "grp_default"],
+            }))
+            .send()
+            .await;
+    }
+    let url = format!(
+        "{v2}/v2/tenants/{tenant_id}/snapshot?user_id={}&node_limit={node_limit}&edge_limit={edge_limit}",
+        urlencoding_simple(&reader)
+    );
+    // Snapshot can be larger than health probes — longer timeout than probe_json (2s).
+    let snap_raw = if let Some(c) = &client {
+        match c.get(&url).send().await {
+            Ok(res) if res.status().is_success() => res.json().await.ok(),
+            _ => None,
+        }
+    } else {
+        probe_json(&url).await
+    };
+    let mut snap = match snap_raw {
+        Some(v) => v,
+        None => {
+            return Ok(Json(json!({
+                "tenant_id": tenant_id,
+                "reader": reader,
+                "nodes": [],
+                "edges": [],
+                "totals": { "nodes": 0, "edges": 0 },
+                "team": { "members": [] },
+                "error": "v2_unreachable",
+                "as_of": Utc::now().to_rfc3339(),
+            })));
+        }
+    };
+
+    // Overlay person twins so mapped humans appear even before graph projection
+    let mut team_members = Vec::new();
+    for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+        let slack = maps
+            .iter()
+            .find(|m| m.global_user_id == t.subject_id)
+            .map(|m| m.slack_user_id.clone());
+        team_members.push(json!({
+            "subject_id": t.subject_id,
+            "display_name": t.display_name,
+            "twin_id": t.twin_id,
+            "slack_mapped": slack.is_some(),
+            "slack_user_id": slack,
+            "person_node_id": format!("person:{}", t.subject_id),
+        }));
+    }
+    if let Some(obj) = snap.as_object_mut() {
+        obj.insert("team".into(), json!({ "members": team_members }));
+        obj.insert("live".into(), json!(true));
+        obj.insert(
+            "poll_hint_secs".into(),
+            json!(5),
+        );
+        // Ensure orphan team people are present as nodes for the canvas
+        if let Some(nodes) = obj.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+            let existing: std::collections::HashSet<String> = nodes
+                .iter()
+                .filter_map(|n| n.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+                .collect();
+            for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+                let pid = format!("person:{}", t.subject_id);
+                if !existing.contains(&pid) {
+                    nodes.push(json!({
+                        "id": pid,
+                        "type": "Person",
+                        "label": if t.display_name.is_empty() { t.subject_id.clone() } else { t.display_name.clone() },
+                        "resource_id": t.subject_id,
+                        "intent_type": "",
+                        "title": "",
+                        "is_private": false,
+                        "from_team_map": true,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(Json(snap))
 }
 
 async fn upsert_twin(

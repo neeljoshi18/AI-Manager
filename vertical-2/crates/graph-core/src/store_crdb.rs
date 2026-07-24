@@ -524,6 +524,52 @@ impl GraphStore for CrdbGraphStore {
         out.truncate(limit);
         Ok(out)
     }
+
+    async fn snapshot(
+        &self,
+        ctx: &QueryContext,
+        node_limit: usize,
+        edge_limit: usize,
+    ) -> GraphResult<(Vec<GraphNode>, Vec<GraphEdge>)> {
+        let node_limit = node_limit.clamp(1, 2000);
+        let edge_limit = edge_limit.clamp(1, 4000);
+        let now = Utc::now();
+        let rows = sqlx::query(
+            r#"
+            SELECT tenant_id, node_id, node_type, display_name, resource_id,
+                   properties_json, is_private, allowed_group_ids, acl_version
+            FROM graph_node
+            WHERE tenant_id = $1
+            ORDER BY node_id
+            LIMIT $2
+            "#,
+        )
+        .bind(&ctx.tenant_id)
+        .bind(node_limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| GraphError::Storage(format!("snapshot nodes: {e}")))?;
+        let nodes: Vec<GraphNode> = rows
+            .iter()
+            .map(row_to_node)
+            .filter(|n| acl_allows(ctx, n.is_private, &n.allowed_group_ids))
+            .collect();
+        let ids: HashSet<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
+        let all_edges = self.load_edges(&ctx.tenant_id).await?;
+        let mut edges: Vec<GraphEdge> = all_edges
+            .into_iter()
+            .filter(|e| {
+                acl_allows(ctx, e.is_private, &e.allowed_group_ids)
+                    && e.valid_from <= now
+                    && e.valid_to.map(|t| t > now).unwrap_or(true)
+                    && ids.contains(&e.from_node_id)
+                    && ids.contains(&e.to_node_id)
+            })
+            .collect();
+        edges.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
+        edges.truncate(edge_limit);
+        Ok((nodes, edges))
+    }
 }
 
 pub struct CrdbMembership {

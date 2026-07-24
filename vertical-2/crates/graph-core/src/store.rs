@@ -66,6 +66,14 @@ pub trait GraphStore: Send + Sync {
         edge_type: &str,
         limit: usize,
     ) -> GraphResult<Vec<GraphEdge>>;
+
+    /// ACL-filtered tenant snapshot for product Graph UI (not god-mode: still ACL-gated).
+    async fn snapshot(
+        &self,
+        ctx: &QueryContext,
+        node_limit: usize,
+        edge_limit: usize,
+    ) -> GraphResult<(Vec<GraphNode>, Vec<GraphEdge>)>;
 }
 
 pub struct InMemoryGraphStore {
@@ -468,5 +476,41 @@ impl GraphStore for InMemoryGraphStore {
         out.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
         out.truncate(limit);
         Ok(out)
+    }
+
+    async fn snapshot(
+        &self,
+        ctx: &QueryContext,
+        node_limit: usize,
+        edge_limit: usize,
+    ) -> GraphResult<(Vec<GraphNode>, Vec<GraphEdge>)> {
+        let node_limit = node_limit.clamp(1, 2000);
+        let edge_limit = edge_limit.clamp(1, 4000);
+        let now = Utc::now();
+        let mut nodes: Vec<GraphNode> = self
+            .nodes
+            .iter()
+            .filter(|e| e.key().0 == ctx.tenant_id && Self::visible_node(ctx, e.value()))
+            .map(|e| e.value().clone())
+            .collect();
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        nodes.truncate(node_limit);
+
+        let mut edges: Vec<GraphEdge> = self
+            .edges
+            .get(&ctx.tenant_id)
+            .map(|g| g.read().clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| Self::visible_edge(ctx, e) && Self::active_edge(e, now))
+            .collect();
+        // Prefer edges whose endpoints are in the node set when truncated
+        if nodes.len() == node_limit {
+            let ids: HashSet<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
+            edges.retain(|e| ids.contains(&e.from_node_id) && ids.contains(&e.to_node_id));
+        }
+        edges.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
+        edges.truncate(edge_limit);
+        Ok((nodes, edges))
     }
 }

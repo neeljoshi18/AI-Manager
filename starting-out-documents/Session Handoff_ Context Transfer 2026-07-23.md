@@ -1,6 +1,6 @@
 # Session Handoff — Context Transfer
 
-**Date:** 2026-07-23  
+**Date:** 2026-07-23 (updated **2026-07-24**)  
 **Repo:** private monorepo `https://github.com/neeljoshi18/AI-Manager` (branch `main`)  
 **Purpose:** Full handoff for a **new chat**. Prefer this file + listed plans over compacted history.
 
@@ -29,13 +29,15 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 | M | Meaning | Status |
 |---|--------|--------|
 | M0–M3 | Strategy + V1/V2 engines + V3 twins | **Done** |
-| M4 | Sew & Show: demo, real Slack, GitHub live, **batched notify** | **Done enough** |
-| **M5** | Staging product: host, TLS, OAuth, GitHub App, product UI | **In progress** |
-| M6 | Design partner: Jira/Linear, Slack inbound, conflict v0 | Planned |
-| M7 | Self-serve multi-tenant | Planned |
-| M8+ | Intent graph V4, browser opt-in, richer agents | Roadmap only |
+| M4 | Sew & Show: demo, real Slack, GitHub live, **batched notify** | **Done** |
+| **M5** | Staging product: host, TLS, GitHub App, product UI, bridge | **Done enough** (`status.neel.world`) |
+| **M6** | Multi-member beta: connectors, intent/conflict v0, thin agents | **Next** |
+| M6.5 | Learning window 10–14d + training-pair export | After first partner |
+| M7 | Model Router + customer-prem SLM (ADR-016) + self-serve | After shadow gold |
+| M8+ | Richer agents, browser opt-in | Roadmap only |
 
-**Do not** invent Centaur/Buzz clones. **Do not** 1:1 webhook → Slack DM (ADR-014).
+**Do not** invent Centaur/Buzz clones. **Do not** 1:1 webhook → Slack DM (ADR-014).  
+**Do not** train local models before multi-person digests + shadow gold (ADR-016).
 
 ---
 
@@ -54,8 +56,10 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 | Deploy scaffold | `deploy/docker-compose.platform.yml`, `deploy/docker-compose.app.yml`, Dockerfiles for V1/V2/V3/egress, Caddy TLS profile, `deploy/oauth/` |
 | Dev ops | `./scripts/dev_up.sh` / `dev_down.sh` |
 | Connections last-event | V1 `/healthz` → twin `/v3/demo/status` → `/app/` Connections |
+| Staging URL | **https://status.neel.world/app/** (DO VPS always-on) |
+| Bridge | Always-on container: V1→V2 + twin upsert (`SLACK_USER_MAP`) — never Slack |
 
-**User confirmed:** real PR → Slack DM (then spam fixed via batching).
+**User confirmed:** real PR → Slack DM (then spam fixed via batching); staging live.
 
 ---
 
@@ -89,30 +93,33 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 
 ---
 
-## 6. Plan to follow until deployment (M5 cycle)
+## 6. Plan to follow (post-M5 → M6 beta → local model)
 
-**Primary plan file:** `plans/2026-07-23_demo-to-product-m5.md`  
-**Execution log:** `plans/2026-07-23_m5-and-product-ui.md`  
-**Living backlog:** `starting-out-documents/Product Roadmap_ Intent Capture to Digital Twins.md`
+**Vision / sequence:** `plans/2026-07-24_onprem-model-and-agents.md` + **ADR-016**  
+**Living backlog:** `starting-out-documents/Product Roadmap_ Intent Capture to Digital Twins.md`  
+**M5 parent plans:** `plans/2026-07-23_demo-to-product-m5.md`, `…_m5-multiservice-compose.md`
 
-### Ordered work until “deployed staging”
+### Sequence lock
 
-1. **Local reliability** — `dev_up` solid; wake-from-sleep documented (done).  
-2. **Product UI** — B&W shell at `/app/` (done v1); continue polish (connections last-event age, empty states).  
-3. **M5 host** — single VPS or Fly; `deploy/` compose for infra; TLS reverse proxy to 18083 (+ 18080 for webhooks).  
-4. **Containerize** — twin-api Dockerfile exists; add V1/V2/egress images + multi-service compose.  
-5. **Slack OAuth** — install link; bot token → egress vault only.  
-6. **GitHub App** — replace ngrok for real tenants.  
-7. **Onboarding wizard** in UI: tenant → Slack → GitHub → shadow → first digest.  
-8. **Definition of staging done:** stranger opens HTTPS URL, connects Slack+GitHub, gets ≤1 DM per notify window, can veto/publish.
+```
+M5 staging (done enough) → M6 multi-member + thin agents → design-partner shadow 10–14d
+  → gold pairs → M7 Model Router + customer-prem SLM
+```
 
-### After staging (do not jump early)
+### Next engineering (M6 — beta-ready)
 
-- Jira/Linear connector productization  
-- Slack channel ingest (metadata + short text)  
-- Intent classification v0 (rules → graph) — **not** full agent OS  
-- Conflict cards + thin monitor workers  
-- Design partner (M6)
+1. Multi-person Slack map (2+ humans)  
+2. Intent v0 (rules) + conflict v0  
+3. Thin monitors (ingest health, graph delta, conflict cards)  
+4. Linear **or** Jira productized; Slack channel metadata  
+5. Metrics: veto rate, DMs, empty windows  
+6. Design-partner one-pager + learning-window playbook  
+
+### After first partner shadow (not now)
+
+- Model Router (`rules` | `cloud` | `local`)  
+- Ollama/vLLM recipe on customer box  
+- Distill/LoRA on **approved digests + intent labels only** (not raw source)
 
 ### Intent classification (summary for next agent)
 
@@ -133,19 +140,16 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 ## 7. Next concrete tasks for the new session
 
 ```
-[x] Finish multi-service Docker compose for V1+V2+V3+egress
-[x] Staging HTTPS path scaffold (Caddy profile tls + deploy/README)
-[x] Connections UI: last event age from V1 when up
-[x] GitHub App + Slack OAuth scaffolding (manifests; stop for secrets)
-[ ] Host + public URL (need human host/DNS choice)
-[x] OAuth start endpoints (501 until secrets) + live onboarding steps API
-[ ] OAuth callback → vault write when Slack/GitHub credentials exist
-[x] Onboarding wizard polish in /app (server-driven steps)
-[ ] Keep ADRs; append Interaction Log on decisions
-[ ] Save any new plan under plans/YYYY-MM-DD_slug.md
+[x] Multi-service Docker + staging HTTPS (status.neel.world)
+[x] GitHub App + Slack vault + always-on bridge
+[x] ADR-016 + on-prem model / learning-window vision docs
+[ ] M6: multi-person twins + intent/conflict v0 + thin agents
+[ ] Design-partner learning window playbook (10–14d)
+[ ] M7: Model Router + customer-prem SLM (only after shadow gold)
+[ ] OAuth callback → vault write (self-serve polish)
 ```
 
-**Autonomous until:** human secrets (OAuth/App), hosting account, or real deploy credentials.
+**Autonomous until:** multi-member mapping product decisions, design-partner identity, or new connector secrets.
 
 ---
 
@@ -243,18 +247,18 @@ Read these ground-truth files first (in order):
 6. README.md
 7. vertical-3/Technical Architecture Specification_ Vertical 3.md (if attached)
 
-Mission: continue M5 “demo → product → staging deploy” autonomously.
-- Product UI is at :18083/app/ (light B&W Fish-inspired); lab at /demo/
-- Ingest continuous; Slack notify BATCHED (ADR-014). Bridge = V1→V2 only.
+Mission: continue M6 multi-member beta path (agents/intent/conflict), not local model training yet (ADR-016).
+- Staging: https://status.neel.world/app/ — Product UI light B&W; lab at /demo/
+- Ingest continuous; Slack notify BATCHED (ADR-014). Bridge = V1→V2 + twin upsert only (never DM).
 - Slack secrets only via egress vault (ADR-012). No Buzz/Centaur clones (ADR-011).
 - No silent private DM wiretap (ADR-015).
+- Local SLM / Model Router only after multi-person digests + learning-window gold (ADR-016).
 - Save new plans under plans/YYYY-MM-DD_slug.md
 - Commit and push cleanly when slices complete.
-- Stop only when you need human secrets (Slack OAuth, GitHub App, hosting) or confirmation.
 
-Next tasks (from handoff §7): multi-service Docker compose; staging HTTPS path; Connections last-event age; OAuth/App scaffolding; onboarding polish.
+Next tasks (handoff §7): multi-person twins; intent/conflict v0; thin agents; design-partner playbook.
 
-Start by confirming you read the handoff + M5 plan, then implement the next highest-value slice without waiting for me unless blocked.
+Read handoff + plans/2026-07-24_onprem-model-and-agents.md + Product Roadmap; implement highest-value M6 slice unless blocked.
 ```
 
 ---

@@ -97,6 +97,39 @@
 
 ---
 
+## 2026-07-24 — Session: Learning window + on-prem model + agent sequence
+
+### Context
+
+- Staging live at `status.neel.world`; continuous GitHub ingest + bridge + batched Slack.  
+- Founder vision: 10–14d learning/shadow period then prefer **local SLM on customer server** for inference cost + privacy; agents call that model instead of forever-paid cloud APIs.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | **Ingest always continuous**; only inference/policy changes after learning window | Company brain needs full exhaust (ADR-014) |
+| 2 | **ADR-016 Hybrid Model Router** (rules → optional cloud → customer-prem local) | Cost + privacy without Glean corpus or day-one GPU mandate |
+| 3 | Train/adapt on **structured gold** (ledgers, edits, intent labels)—not raw source dumps | ADR-006; structure-first; no inventing work items |
+| 4 | **M6 multi-member + thin agents before local train** | Beta value + training data; local model is M7 SKU |
+| 5 | Product name **“Learning window”** (10–14d) for shadow | Pitch clarity; not “we stopped watching” |
+| 6 | Droplet **always on** for staging | Founder ops preference |
+
+### Artifacts
+
+- `plans/2026-07-24_onprem-model-and-agents.md`  
+- ADR-016 in Architecture Decision Log  
+- Product Roadmap M6 / M6.5 / M7 sequence updates  
+- Session Handoff next-task list  
+
+### Open questions
+
+1. First design partner team identity?  
+2. Ollama vs vLLM for first on-prem recipe (default Ollama)?  
+3. Linear vs Jira as first M6 ticket connector?  
+
+---
+
 ## Template for future entries
 
 ```markdown

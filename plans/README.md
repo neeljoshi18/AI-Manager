@@ -13,8 +13,9 @@ Dated planning snapshots for AI Manager. Living backlog stays in `starting-out-d
 ## Index
 
 | Date | File | Topic |
-| 2026-07-23 | [2026-07-23_staging-host-status-neel-world.md](./2026-07-23_staging-host-status-neel-world.md) | Staging host status.neel.world (DO VPS) |
 |------|------|--------|
+| 2026-07-24 | [2026-07-24_onprem-model-and-agents.md](./2026-07-24_onprem-model-and-agents.md) | **Learning window + Model Router + agent sequence (ADR-016)** |
+| 2026-07-23 | [2026-07-23_staging-host-status-neel-world.md](./2026-07-23_staging-host-status-neel-world.md) | Staging host status.neel.world (DO VPS) |
 | 2026-07-23 | [2026-07-23_m5-multiservice-compose.md](./2026-07-23_m5-multiservice-compose.md) | Multi-service Docker + last-event age + OAuth scaffold |
 | 2026-07-23 | [Session Handoff — Context Transfer](../starting-out-documents/Session%20Handoff_%20Context%20Transfer%202026-07-23.md) | **New chat pack** + paste prompt |
 | 2026-07-23 | [2026-07-23_m5-and-product-ui.md](./2026-07-23_m5-and-product-ui.md) | Execution: B&W UI + deploy compose foundation |
@@ -25,4 +26,4 @@ Dated planning snapshots for AI Manager. Living backlog stays in `starting-out-d
 
 - `starting-out-documents/Product Roadmap_ Intent Capture to Digital Twins.md`
 - `starting-out-documents/Interaction Log_ Product Decisions.md`
-- `starting-out-documents/Architecture Decision Log_ Pivotal Choices.md`
+- `starting-out-documents/Architecture Decision Log_ Pivotal Choices.md` (incl. **ADR-016**)

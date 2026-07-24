@@ -4,7 +4,7 @@
 
 **How to use:** Append new decisions as ADRs (Architecture Decision Records). Never delete old entries — mark them *Superseded* if replaced.
 
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-24
 
 ---
 
@@ -27,6 +27,7 @@
 | ADR-013 | 2026-07-22 | Vertical 3 product + stack | Status twins, veto-first Slack, Cockroach `status_twins` | Active (MVP implemented) |
 | ADR-014 | 2026-07-22 | Notify vs ingest cadence | Continuous ingest; batched Slack notify | Active |
 | ADR-015 | 2026-07-22 | Private Slack DMs | No silent 1:1 wiretap; bot/opt-in capture only | Active |
+| ADR-016 | 2026-07-24 | Inference after learning window | **Hybrid Model Router** (rules → optional cloud → customer-prem local) | Active (planned) |
 
 ---
 
@@ -343,6 +344,24 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | **Why** | Trust is the product; mid-market can’t buy spyware; technical bot membership model |
 | **Revisit if** | Enterprise customer contracts compliance API with dual-control policy |
 
+## ADR-016 — Customer-prem model inference after learning window
+
+| Field | Content |
+|-------|---------|
+| **Date** | 2026-07-24 |
+| **Status** | Active (**planned** — docs first; code after M6 multi-member beta path) |
+| **Context** | Founder vision: 10–14 day shadow/learning window with continuous ingest; after the company is a live client, prefer **local SLM/LLM on customer sandbox** so agents do not forever pay cloud token tax and inference stays in the customer boundary. Must not become Glean (no proprietary corpus hosting) or Centaur (not a multiplayer agent OS). |
+| **Options** | (A) Always cloud paid APIs for all prose/intent (B) Local model day-one before product works (C) **Hybrid Model Router: rules default → optional cloud during shadow → customer-prem local after gold pairs exist** |
+| **Choice** | **C — Hybrid Model Router** |
+| **Runner-up** | Always cloud for SMB SKU only |
+| **Why** | Continuous **ingest** is the company brain (ADR-014); continuous **paid inference** is not required. Structure-first digests already work rules-only. Shadow produces approved text/intent labels for distill/LoRA without hosting source. Customer-prem inference matches privacy pitch and unit economics at mid-market volume. |
+| **What we train on** | Structured ledgers, human edit/veto gold text, intent labels — **not** raw git blobs or Drive dumps (ADR-006). |
+| **What agents do** | Watch graph + draft via router; humans veto (ADR-011). Local model does not hold Slack/GitHub long-lived tokens (ADR-012 egress for tools). |
+| **Sequence** | M6 multi-member + thin agents + intent/conflict v0 → design-partner shadow → **then** Model Router + local serve (Ollama/vLLM recipe). Do not train before multi-person product. |
+| **Trade-offs** | On-prem GPU/CPU ops burden for some customers; small tenants may stay rules/cloud; training quality depends on shadow participation. |
+| **Ground truth** | `plans/2026-07-24_onprem-model-and-agents.md`; Product Roadmap § Learning window |
+| **Revisit if** | Open models fail rewrite quality gates; enterprise mandates specific hosted model; or mid-market refuses any GPU and cloud cost is still acceptable |
+
 ## Changelog
 
 | Date | Change |
@@ -352,3 +371,4 @@ Then evaluate **Memgraph projection** first; full SoT migration only with a writ
 | 2026-07-22 | Buzz/Centaur research; **ADR-011** product stance; **ADR-012** egress secrets planned; companion docs in starting-out-documents. |
 | 2026-07-22 | **ADR-012** MVP in `vertical-security/`; **ADR-013** V3 status twins TAS + session handoff for new chat. |
 | 2026-07-22 | V3 MVP + sew + GitHub/Slack live; **ADR-014** batch notify; **ADR-015** private DM policy; product roadmap file. |
+| 2026-07-24 | **ADR-016** hybrid Model Router / customer-prem inference after learning window; plan `2026-07-24_onprem-model-and-agents.md`. |

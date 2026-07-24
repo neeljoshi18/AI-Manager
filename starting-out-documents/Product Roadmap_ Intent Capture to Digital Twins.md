@@ -1,8 +1,8 @@
 # Product Roadmap — Intent Capture → Digital Twins → Conflict Resolution
 
-**Date:** 2026-07-22  
-**Status:** Living plan (post-M4 foundation)  
-**Related:** Session Handoff; ADR-006/011/012/013; V1–V3 TAS  
+**Date:** 2026-07-22 (updated 2026-07-24)  
+**Status:** Living plan (post-M5 staging foundation)  
+**Related:** Session Handoff; ADR-006/011/012/013/014/015/**016**; V1–V3 TAS; `plans/2026-07-24_onprem-model-and-agents.md`  
 **Purpose:** Single place for **what we build next**, expanded scope, privacy rules, and how it stays on-thesis.
 
 ---
@@ -15,11 +15,20 @@
 | **Meeting elimination** via evidence-backed status | Buzz multiplayer workspace / Git forge |
 | **Intent capture** for conflict resolution & twins | Centaur multiplayer agent OS (steal egress only) |
 | Success: meetings deleted / focus time reclaimed | Engagement rankings / LOC surveillance product |
+| **Continuous ingest**; optional **customer-prem inference** after learning window | Forever paying cloud token tax for every digest rewrite |
 
 **Spine (already shipping in code):**
 
 ```
 Sources → V1 ingest (ACL) → V2 org graph → V3 status twins → Slack (egress, veto-first, batched notify)
+```
+
+**Target spine (agents + Model Router — ADR-016):**
+
+```
+Sources → V1 → V2 → agents/workers → Model Router (rules | cloud via egress | local SLM)
+                                              ↓
+                                    V3 ledger / Slack (veto, batched)
 ```
 
 Everything below **extends this spine**. It does not replace it.
@@ -30,14 +39,16 @@ Everything below **extends this spine**. It does not replace it.
 
 | Layer | Status |
 |-------|--------|
-| V1 GitHub webhooks | Live via ngrok + tenant secrets |
-| V2 graph projection | Live (HTTP bridge + project API) |
-| V3 ledgers + veto + demo console | Live |
+| V1 GitHub webhooks | **Live** on staging (`status.neel.world`) + GitHub App |
+| V2 graph projection | Live (bridge + project API) |
+| V3 ledgers + veto + product UI `/app/` | Live |
 | Slack **outbound** DM/channel | Live via egress |
 | Batched notify (not 1:1 webhook→DM) | Live (`NOTIFY_INTERVAL_SECS`, etc.) |
+| Always-on V1→V2 bridge + twin upsert | Live on staging |
 | Slack **inbound** (read channels/DMs) | **Not built** (bot scopes may allow later) |
 | Jira / Linear / docs / browser | Normalizers partial (Jira etc. in V1); not productized |
-| Multi-agent / conflict resolver | Spec only (phase later) |
+| Multi-agent / conflict resolver | Spec only → **M6** |
+| Customer-prem Model Router / local SLM | **Planned ADR-016** (after M6 shadow gold) |
 | Self-serve onboarding / deploy | M5–M7 |
 
 ---
@@ -154,16 +165,19 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 
 ## 7. Product surface: E2E + onboarding
 
-### 7.1 Client onboarding (M5–M7)
+### 7.1 Client onboarding (M5–M7) — **Learning window**
 
 1. **Create workspace** (tenant)  
 2. **Connect Slack** (OAuth install — bot + optional events)  
 3. **Connect GitHub** (GitHub App preferred over manual webhooks)  
 4. **Connect Jira/Linear** (OAuth + webhooks)  
-5. **Map users** (provider id → global_user_id)  
-6. **Shadow mode** 7–10 days (compile only)  
+5. **Map users** (provider id → global_user_id → Slack) — **multi-person required for beta**  
+6. **Learning window / shadow** **10–14 days**: ingest **continuous**; digests private; high auto-publish **off**; edits/vetoes = training gold  
 7. **First standup kill** (enable Medium silence / High auto carefully)  
-8. **Admin console** (health, connectors, last ledger, ACL audit)
+8. **Optional: local Model Router** (customer-prem SLM after gold pairs) — ADR-016  
+9. **Admin console** (health, connectors, last ledger, ACL audit, veto metrics)  
+
+**UI name:** “Learning window” — not “we stopped watching.” Ingest never stops.
 
 ### 7.2 Ease-of-use gaps to close
 
@@ -189,27 +203,43 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 ### Phase M5 — Staging product
 
 - [x] Multi-service container path + Caddy HTTPS scaffold  
-- [ ] Single-tenant public host (VM or Fly/Render) + real DNS/TLS  
-- [ ] Secrets vault path (not only file)  
-- [ ] Slack OAuth install link (wired; manifests exist)  
-- [ ] GitHub App production install  
+- [x] Single-tenant public host + DNS/TLS (`status.neel.world`)  
+- [x] Slack bot via egress vault + OAuth env scaffolding  
+- [x] GitHub App install + webhook HMAC on staging  
+- [x] Always-on bridge (V1→V2 + twin upsert)  
 - [x] Health dashboard last-event age + deploy runbooks  
+- [ ] Secrets vault path beyond file (later)  
+- [ ] OAuth callback → vault write (when polishing self-serve)  
 
+### Phase M6 — Design partner / multi-member beta path (**next engineering**)
 
-### Phase M6 — Design partner
-
+- [ ] Multi-person Slack map UX (2+ humans, not founder-only)  
 - [ ] Jira **or** Linear webhook path productized  
 - [ ] Slack **channel** message ingest (metadata + short text)  
 - [ ] Bot-DM intent capture (“I’m working on X”)  
-- [ ] Weekly metrics: standups canceled, DMs sent, veto rate  
+- [ ] Intent classification **v0** (rules → graph)  
 - [ ] Conflict detector **v0** (rule-based on BLOCKS + dual owners)  
+- [ ] Thin monitor workers: ingest health, graph delta, conflict surface  
+- [ ] Weekly metrics: standups canceled, DMs sent, veto rate  
+- [ ] Design-partner one-pager + shadow playbook  
 
-### Phase M7 — Self-serve + twins depth
+**Beta outreach gate:** multi-person digests + veto loop + at least one team-visible conflict/blocker surface. **Local model is not a gate.**
 
+### Phase M6.5 — Learning window program (10–14 days)
+
+- [ ] Product copy + admin: Learning window state machine  
+- [ ] Export **training pairs** (structured ledger → approved draft text; intent labels)  
+- [ ] Scorecard: DMs sent, veto %, empty windows, standups canceled  
+- [ ] Partner finishes shadow with go/no-go for auto-publish  
+
+### Phase M7 — On-prem inference SKU + self-serve depth (ADR-016)
+
+- [ ] **Model Router** abstraction (`rules` | `cloud` | `local`) for rewrite / intent / conflict prose  
+- [ ] Customer-prem serve recipe (Ollama or vLLM) + open base model  
+- [ ] Distill/LoRA job on **approved** pairs only (no raw source corpus)  
 - [ ] Multi-tenant control plane  
 - [ ] Onboarding wizard  
 - [ ] Person profile API (digital twin read model)  
-- [ ] Optional browser extension (opt-in host/title)  
 - [ ] Sub-agent monitors as first-class workers  
 - [ ] Billing / seats (if SaaS)  
 
@@ -219,6 +249,16 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 - [ ] Twin-to-twin negotiation  
 - [ ] Docs metadata connectors (Notion/Confluence) without full-text index  
 - [ ] IDE extension  
+- [ ] Optional browser extension (opt-in host/title)  
+
+### Sequence lock (founder rule 2026-07-24)
+
+```
+M5 staging  →  M6 multi-member + thin agents  →  design-partner shadow (10–14d)
+     → collect gold  →  M7 Model Router + local SLM  →  richer agents
+```
+
+Do **not** implement full local training before multi-person product + one shadow program.
 
 ---
 
@@ -235,6 +275,8 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 | Conflict cards | V2/V3 or new `vertical-4-intent` |
 | Onboarding + deploy | Platform / M5 |
 | Sub-agent monitors | Platform workers |
+| Learning window + training-pair export | V3 + Platform |
+| Model Router + customer-prem SLM | Platform / M7 (ADR-016) |
 
 ### Explicitly out / constrained
 
@@ -242,9 +284,11 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 |---------|------|
 | Silent private DM wiretap | **No** |
 | Full doc corpus + vectors | **No** (ADR-006) |
+| Train on raw git / Drive dumps | **No** — structured ledgers + approved text only |
 | Individual productivity rankings | **No** |
 | Full Centaur sandboxes as product | **No** (ADR-011) |
 | Hosting proprietary source | **No** |
+| Local model **before** multi-member beta path | **No** — sequence lock §8 |
 
 ---
 
@@ -255,11 +299,12 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 | **V1** | Telemetry / connectors / ACL membership |
 | **V2** | Org + intent graph |
 | **V3** | Status twins / delivery / bot UX |
-| **V4 Intent & Conflicts** (new when started) | Intent nodes, conflict resolver, agent monitors — **only after** M5 path stable |
+| **V4 Intent & Conflicts** (new when started) | Intent nodes, conflict resolver, agent monitors — **M6** (M5 staging green enough) |
 | **vertical-security** | Egress / secrets |
-| **Platform** | Deploy, onboarding, multi-tenant |
+| **Platform** | Deploy, onboarding, multi-tenant, **Model Router / on-prem serve (M7)** |
 
-Do **not** start V4 coding until M5 checklist is mostly green (founder rule).
+Do **not** start V4 coding until M5 checklist is mostly green (**done enough**).  
+Do **not** start local model training code until multi-member beta path + shadow gold (ADR-016).
 
 ---
 
@@ -279,9 +324,10 @@ Do **not** start V4 coding until M5 checklist is mostly green (founder rule).
 | Phase | Metric |
 |-------|--------|
 | M4 | Human sees real GitHub → ledger → Slack without spam |
-| M5 | Stranger can open URL, connect Slack+GitHub, get a DM |
-| M6 | Partner cancels ≥1 standup/week; veto rate measured |
-| M7 | Self-serve tenant in <30 minutes |
+| M5 | Stranger can open HTTPS URL, connect Slack+GitHub, get ≤1 DM / window |
+| M6 | Multi-person team digests; conflict/blocker surface; ready for design partners |
+| M6.5 | 10–14d learning window complete; veto rate + gold pairs exported |
+| M7 | Customer can run local inference SKU; self-serve tenant path |
 | Intent | Conflicts surfaced with evidence before status theater |
 
 ---

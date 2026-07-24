@@ -24,6 +24,9 @@ TWIN = os.environ.get("TWIN_BASE_URL", "http://127.0.0.1:18083").rstrip("/")
 TENANT = os.environ.get("TENANT_ID", "ten_github")
 STATE = os.environ.get("STATE_FILE", f"/tmp/ai_manager_bridge_seen_{TENANT}.txt")
 POLL = float(os.environ.get("POLL_SECS", "5"))
+# Cap work per tick so embedded graph-api is not flooded (avoids hangs on small VPS).
+MAX_PER_TICK = int(os.environ.get("BRIDGE_MAX_PER_TICK", "3"))
+PROJECT_PAUSE = float(os.environ.get("BRIDGE_PROJECT_PAUSE_SECS", "0.4"))
 READER_PROVIDER = os.environ.get("BRIDGE_READER_PROVIDER_ID", "bridge_reader")
 DEFAULT_SLACK = os.environ.get("SLACK_TEST_USER_ID", "").strip()
 DEFAULT_CHANNEL = os.environ.get("SLACK_TEST_CHANNEL_ID", "").strip()
@@ -109,22 +112,35 @@ def wait_health(url: str, tries: int = 60) -> None:
     raise RuntimeError(f"timeout waiting for {url}/healthz")
 
 
+def is_bot_actor(actor: dict) -> bool:
+    login = (actor.get("display_name") or "").strip().lower()
+    pu = str(actor.get("provider_user_id") or "").strip().lower()
+    if "[bot]" in login or login.endswith("bot") or login.endswith("[bot]"):
+        return True
+    if "bot" in login and login not in {"", "neel"}:
+        # vercel[bot], dependabot, etc.
+        return True
+    if pu.endswith("[bot]"):
+        return True
+    return False
+
+
 def slack_for_actor(actor: dict) -> str | None:
-    """Resolve Slack user id for a canonical actor."""
+    """Resolve Slack user id for a canonical actor.
+
+    Prefer explicit SLACK_USER_MAP keys (provider id, login, global id).
+    Only fall back to SLACK_TEST_USER_ID when the map is empty (single-dev demos).
+    Never map bots.
+    """
+    if is_bot_actor(actor):
+        return None
     gu = (actor.get("global_user_id") or "").strip()
     pu = str(actor.get("provider_user_id") or "").strip()
     login = (actor.get("display_name") or "").strip()
     for key in (gu, pu, login):
         if key and key in SLACK_MAP:
             return SLACK_MAP[key]
-    # Default: human actors only (skip empty / bots if no map entry)
-    if DEFAULT_SLACK and pu and not pu.endswith("[bot]") and "bot" not in login.lower():
-        # Prefer mapped only if we have any map; else use default for all non-bot
-        if not SLACK_MAP or pu in SLACK_MAP or login in SLACK_MAP or gu in SLACK_MAP:
-            return SLACK_MAP.get(pu) or SLACK_MAP.get(login) or SLACK_MAP.get(gu) or DEFAULT_SLACK
-        # If map exists but actor unknown, still use default for first-product single-founder setup
-        return DEFAULT_SLACK
-    if DEFAULT_SLACK and gu and not login.lower().endswith("[bot]"):
+    if not SLACK_MAP and DEFAULT_SLACK:
         return DEFAULT_SLACK
     return None
 
@@ -133,15 +149,12 @@ def ensure_twin(actor: dict) -> None:
     if not TWIN:
         return
     gu = (actor.get("global_user_id") or "").strip()
-    if not gu:
+    if not gu or is_bot_actor(actor):
         return
     slack = slack_for_actor(actor)
     if not slack:
         return
     name = (actor.get("display_name") or "").strip() or DEFAULT_NAME
-    # Skip obvious bots
-    if "[bot]" in name.lower() or name.lower().endswith("bot"):
-        return
     body = {
         "twin_kind": "person",
         "subject_id": gu,
@@ -210,16 +223,24 @@ def main() -> None:
             events = data.get("events") or []
             # Process oldest first so graph order is sensible
             events = list(reversed(events))
+            done = 0
             for ev in events:
+                if done >= MAX_PER_TICK:
+                    break
                 eid = ev.get("event_id")
                 if not eid or eid in seen:
                     continue
                 try:
                     project_event(ev)
                     mark_seen(eid, seen)
+                    done += 1
+                    if PROJECT_PAUSE > 0:
+                        time.sleep(PROJECT_PAUSE)
                 except Exception as e:
                     print(f"project fail {eid}: {e}", flush=True)
-                    # do not mark seen — retry next loop
+                    # do not mark seen — retry next loop; back off hard if V2 wedged
+                    time.sleep(max(POLL, 5.0))
+                    break
         except Exception as e:
             print(f"loop err: {e}", flush=True)
         time.sleep(POLL)

@@ -1347,40 +1347,52 @@ async fn get_graph_snapshot(
                 .find(|t| t.twin_kind == TwinKind::Person)
                 .map(|t| t.subject_id.clone())
         })
-        // Bridge seeds bridge_reader with grp_eng so private-repo exhaust is visible
+        // Prefer eng-seeded bridge reader so private-repo exhaust is visible in Graph.
         .unwrap_or_else(|| "bridge_reader".into());
     let node_limit = q.node_limit.unwrap_or(400);
     let edge_limit = q.edge_limit.unwrap_or(800);
     let v2 = st.cfg.v2_base_url.trim_end_matches('/');
-    // Ensure reader has eng group when using synthetic bridge reader name
-    let _ = probe_json(&format!(
-        "{v2}/v2/tenants/{tenant_id}/users"
-    ))
-    .await;
-    // Seed membership for reader (POST)
+    let v2_up = probe(&format!("{v2}/healthz")).await;
+
+    // Seed membership for reader (POST) + bridge_reader so snapshots see eng groups
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .ok();
     if let Some(c) = &client {
-        let _ = c
-            .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
-            .json(&json!({
-                "global_user_id": reader,
-                "groups": ["grp_eng", "grp_default"],
-            }))
-            .send()
-            .await;
+        for uid in [&reader, "bridge_reader"] {
+            let _ = c
+                .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+                .json(&json!({
+                    "global_user_id": uid,
+                    "groups": ["grp_eng", "grp_default"],
+                }))
+                .send()
+                .await;
+        }
     }
+    // Prefer bridge_reader for snapshot ACL (grp_eng) when V2 is up.
+    let snap_reader = if v2_up {
+        "bridge_reader".to_string()
+    } else {
+        reader.clone()
+    };
     let url = format!(
         "{v2}/v2/tenants/{tenant_id}/snapshot?user_id={}&node_limit={node_limit}&edge_limit={edge_limit}",
-        urlencoding_simple(&reader)
+        urlencoding_simple(&snap_reader)
     );
     // Snapshot can be larger than health probes — longer timeout than probe_json (2s).
     let snap_raw = if let Some(c) = &client {
         match c.get(&url).send().await {
             Ok(res) if res.status().is_success() => res.json().await.ok(),
-            _ => None,
+            Ok(res) => {
+                tracing::debug!(status = %res.status(), "graph snapshot non-success");
+                None
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "graph snapshot request failed");
+                None
+            }
         }
     } else {
         probe_json(&url).await
@@ -1388,15 +1400,26 @@ async fn get_graph_snapshot(
     let mut snap = match snap_raw {
         Some(v) => v,
         None => {
+            let msg = if !v2_up {
+                "V2 graph-api is down or unhealthy. Bridge pauses projections until /healthz recovers; autoheal restarts wedged containers."
+            } else {
+                "V2 is up but snapshot failed (ACL/empty). Wait for bridge re-project, or check bridge logs."
+            };
             return Ok(Json(json!({
                 "tenant_id": tenant_id,
-                "reader": reader,
+                "reader": snap_reader,
+                "v2_up": v2_up,
+                "status": if v2_up { "empty_or_error" } else { "v2_down" },
+                "message": msg,
                 "nodes": [],
                 "edges": [],
                 "totals": { "nodes": 0, "edges": 0 },
+                "returned": { "nodes": 0, "edges": 0 },
                 "team": { "members": [] },
-                "error": "v2_unreachable",
+                "error": if v2_up { "snapshot_failed" } else { "v2_unreachable" },
                 "as_of": Utc::now().to_rfc3339(),
+                "live": true,
+                "poll_hint_secs": 5,
             })));
         }
     };
@@ -1420,6 +1443,9 @@ async fn get_graph_snapshot(
     if let Some(obj) = snap.as_object_mut() {
         obj.insert("team".into(), json!({ "members": team_members }));
         obj.insert("live".into(), json!(true));
+        obj.insert("v2_up".into(), json!(v2_up));
+        obj.insert("status".into(), json!("ok"));
+        obj.insert("reader".into(), json!(snap_reader));
         obj.insert(
             "poll_hint_secs".into(),
             json!(5),

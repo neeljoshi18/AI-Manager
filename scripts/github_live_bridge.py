@@ -6,9 +6,11 @@ Does NOT Slack-DM. Status delivery is owned by twin-api's scheduled notify
 loop (STATUS_WINDOW / NOTIFY_INTERVAL) so high-volume GitHub webhooks never
 spam developers (ADR-014).
 
-Reads events via a seeded ACL reader (grp_eng) so private-repo exhaust is
-visible. Upserts twins + Slack map for known actors when SLACK_USER_MAP /
-SLACK_TEST_USER_ID are set.
+Hardening (permanent graph reliability):
+- Gate on V2 /healthz before projecting (no stampede when V2 is wedged).
+- Exponential backoff when V2 is down / timing out.
+- Poison-skip events that fail repeatedly so one bad payload cannot stall the map.
+- Periodic re-project when embedded V2 restarts empty (clears seen state).
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections import defaultdict
 
 V1 = os.environ.get("V1_BASE_URL", "http://127.0.0.1:18080").rstrip("/")
 V2 = os.environ.get("V2_BASE_URL", "http://127.0.0.1:18082").rstrip("/")
@@ -27,6 +30,10 @@ POLL = float(os.environ.get("POLL_SECS", "5"))
 # Cap work per tick so embedded graph-api is not flooded (avoids hangs on small VPS).
 MAX_PER_TICK = int(os.environ.get("BRIDGE_MAX_PER_TICK", "3"))
 PROJECT_PAUSE = float(os.environ.get("BRIDGE_PROJECT_PAUSE_SECS", "0.4"))
+PROJECT_TIMEOUT = float(os.environ.get("BRIDGE_PROJECT_TIMEOUT_SECS", "12"))
+HEALTH_TIMEOUT = float(os.environ.get("BRIDGE_HEALTH_TIMEOUT_SECS", "2.5"))
+MAX_EVENT_FAILURES = int(os.environ.get("BRIDGE_MAX_EVENT_FAILURES", "5"))
+EMPTY_GRAPH_CHECK_SECS = float(os.environ.get("BRIDGE_EMPTY_GRAPH_CHECK_SECS", "45"))
 READER_PROVIDER = os.environ.get("BRIDGE_READER_PROVIDER_ID", "bridge_reader")
 DEFAULT_SLACK = os.environ.get("SLACK_TEST_USER_ID", "").strip()
 DEFAULT_CHANNEL = os.environ.get("SLACK_TEST_CHANNEL_ID", "").strip()
@@ -53,6 +60,10 @@ def parse_slack_map(raw: str) -> dict[str, str]:
 # Env map is base; twin team API overlays (admin UI) for multi-person beta.
 SLACK_MAP: dict[str, str] = parse_slack_map(RAW_MAP)
 _LAST_TEAM_FETCH = 0.0
+_LAST_EMPTY_CHECK = 0.0
+_EVENT_FAILS: dict[str, int] = defaultdict(int)
+_V2_BACKOFF = 0.0  # seconds to sleep when V2 unhealthy
+_V2_DOWN_SINCE: float | None = None
 
 
 def refresh_team_map(force: bool = False) -> None:
@@ -119,6 +130,12 @@ def mark_seen(eid: str, seen: set[str]) -> None:
     seen.add(eid)
 
 
+def clear_seen(seen: set[str]) -> None:
+    seen.clear()
+    os.makedirs(os.path.dirname(STATE) or ".", exist_ok=True)
+    open(STATE, "w").close()
+
+
 def ensure_reader() -> str:
     """Seed V1 membership so we can ACL-read private events (grp_eng)."""
     out = post(
@@ -128,6 +145,7 @@ def ensure_reader() -> str:
             "display_name": "Bridge Reader",
             "groups": ["grp_eng", "grp_default"],
         },
+        timeout=10,
     )
     gid = out.get("global_user_id") or ""
     if not gid:
@@ -136,7 +154,7 @@ def ensure_reader() -> str:
 
 
 def wait_health(url: str, tries: int = 60) -> None:
-    for i in range(tries):
+    for _ in range(tries):
         try:
             get(f"{url}/healthz", timeout=3)
             return
@@ -145,13 +163,75 @@ def wait_health(url: str, tries: int = 60) -> None:
     raise RuntimeError(f"timeout waiting for {url}/healthz")
 
 
+def v2_healthy() -> bool:
+    try:
+        get(f"{V2}/healthz", timeout=HEALTH_TIMEOUT)
+        return True
+    except Exception:
+        return False
+
+
+def v2_node_count() -> int | None:
+    """Return node count or None if V2 unreachable."""
+    try:
+        stats = get(f"{V2}/v2/tenants/{TENANT}/stats", timeout=HEALTH_TIMEOUT + 1)
+        return int(stats.get("nodes") or 0)
+    except Exception:
+        return None
+
+
+def note_v2_down() -> None:
+    global _V2_DOWN_SINCE, _V2_BACKOFF
+    now = time.time()
+    if _V2_DOWN_SINCE is None:
+        _V2_DOWN_SINCE = now
+        print("V2 unhealthy — pausing projections until /healthz recovers", flush=True)
+    # Exponential backoff 2s → 60s
+    if _V2_BACKOFF <= 0:
+        _V2_BACKOFF = 2.0
+    else:
+        _V2_BACKOFF = min(60.0, _V2_BACKOFF * 1.5)
+
+
+def note_v2_up() -> None:
+    global _V2_DOWN_SINCE, _V2_BACKOFF
+    if _V2_DOWN_SINCE is not None:
+        dur = time.time() - _V2_DOWN_SINCE
+        print(f"V2 healthy again (was down ~{dur:.0f}s) — resuming projections", flush=True)
+    _V2_DOWN_SINCE = None
+    _V2_BACKOFF = 0.0
+
+
+def maybe_reproject_empty_graph(seen: set[str]) -> None:
+    """If embedded V2 restarted empty but we already saw events, clear seen once."""
+    global _LAST_EMPTY_CHECK
+    now = time.time()
+    if now - _LAST_EMPTY_CHECK < EMPTY_GRAPH_CHECK_SECS:
+        return
+    _LAST_EMPTY_CHECK = now
+    if not seen:
+        return
+    if not v2_healthy():
+        return
+    n = v2_node_count()
+    if n is None:
+        return
+    if n == 0:
+        print(
+            f"V2 graph empty (nodes=0) with {len(seen)} seen ids — "
+            "clearing seen to re-project already-ingested signals",
+            flush=True,
+        )
+        clear_seen(seen)
+        _EVENT_FAILS.clear()
+
+
 def is_bot_actor(actor: dict) -> bool:
     login = (actor.get("display_name") or "").strip().lower()
     pu = str(actor.get("provider_user_id") or "").strip().lower()
     if "[bot]" in login or login.endswith("bot") or login.endswith("[bot]"):
         return True
     if "bot" in login and login not in {"", "neel"}:
-        # vercel[bot], dependabot, etc.
         return True
     if pu.endswith("[bot]"):
         return True
@@ -199,7 +279,7 @@ def ensure_twin(actor: dict) -> None:
     if DEFAULT_CHANNEL:
         body["channel_id"] = DEFAULT_CHANNEL
     try:
-        post(f"{TWIN}/v3/tenants/{TENANT}/twins", body, timeout=15)
+        post(f"{TWIN}/v3/tenants/{TENANT}/twins", body, timeout=12)
         print(f"twin upsert subject={gu} slack={slack} name={name}", flush=True)
     except Exception as e:
         print(f"twin upsert fail subject={gu}: {e}", flush=True)
@@ -213,11 +293,11 @@ def project_event(ev: dict) -> None:
             post(
                 f"{V2}/v2/tenants/{TENANT}/users",
                 {"global_user_id": gu, "groups": ["grp_eng"]},
-                timeout=10,
+                timeout=min(8.0, PROJECT_TIMEOUT),
             )
         except Exception:
             pass
-    out = post(f"{V2}/v2/project", ev, timeout=25)
+    out = post(f"{V2}/v2/project", ev, timeout=PROJECT_TIMEOUT)
     print(
         f"ingest {ev.get('event_id')} {ev.get('event_type')} → V2 {out.get('status')} actor={gu}",
         flush=True,
@@ -228,12 +308,12 @@ def project_event(ev: dict) -> None:
 def main() -> None:
     print(
         f"bridge start tenant={TENANT} poll={POLL}s v1={V1} v2={V2} twin={TWIN} "
-        f"slack_map={len(SLACK_MAP)} default_slack={'set' if DEFAULT_SLACK else 'none'}",
+        f"slack_map={len(SLACK_MAP)} default_slack={'set' if DEFAULT_SLACK else 'none'} "
+        f"max_per_tick={MAX_PER_TICK} project_timeout={PROJECT_TIMEOUT}s",
         flush=True,
     )
     wait_health(V1)
     wait_health(V2)
-    # twin optional at start (may boot later)
     try:
         wait_health(TWIN, tries=30)
     except Exception as e:
@@ -243,27 +323,24 @@ def main() -> None:
     print(f"bridge reader global_user_id={reader}", flush=True)
     refresh_team_map(force=True)
     seen = load_seen()
-
-    # Embedded V2 loses graph on container recreate; replay V1 exhaust so Graph UI is full.
-    # Only wipe once per process start when the graph is empty (not when only unmapped
-    # event types were seen — those leave nodes=0 but still need re-projection of PRs).
-    try:
-        stats = get(f"{V2}/v2/tenants/{TENANT}/stats", timeout=10)
-        v2_nodes = int(stats.get("nodes") or 0)
-        if v2_nodes == 0 and seen:
-            print(
-                f"V2 graph empty (nodes=0) but bridge has {len(seen)} seen ids — "
-                "clearing seen state to re-project already-ingested signals",
-                flush=True,
-            )
-            seen = set()
-            open(STATE, "w").close()
-    except Exception as e:
-        print(f"v2 stats check warn: {e}", flush=True)
+    maybe_reproject_empty_graph(seen)
+    # Force check immediately at boot
+    global _LAST_EMPTY_CHECK
+    _LAST_EMPTY_CHECK = 0.0
+    maybe_reproject_empty_graph(seen)
 
     while True:
         try:
-            # Re-seed reader periodically (embedded V1 loses membership on restart)
+            # --- V2 health gate ---
+            if not v2_healthy():
+                note_v2_down()
+                time.sleep(max(POLL, _V2_BACKOFF or 2.0))
+                continue
+            note_v2_up()
+
+            # Embedded V2 wipe recovery
+            maybe_reproject_empty_graph(seen)
+
             try:
                 reader = ensure_reader()
             except Exception as e:
@@ -275,7 +352,7 @@ def main() -> None:
                 timeout=20,
             )
             events = data.get("events") or []
-            # Process oldest first so graph order is sensible
+            # Oldest first
             events = list(reversed(events))
             done = 0
             for ev in events:
@@ -284,19 +361,39 @@ def main() -> None:
                 eid = ev.get("event_id")
                 if not eid or eid in seen:
                     continue
+                # Poison skip: never stall the whole map on one bad event
+                if _EVENT_FAILS[eid] >= MAX_EVENT_FAILURES:
+                    print(
+                        f"poison skip {eid} after {_EVENT_FAILS[eid]} failures "
+                        f"type={ev.get('event_type')}",
+                        flush=True,
+                    )
+                    mark_seen(eid, seen)
+                    continue
+                if not v2_healthy():
+                    note_v2_down()
+                    break
                 try:
                     project_event(ev)
                     mark_seen(eid, seen)
+                    _EVENT_FAILS.pop(eid, None)
                     done += 1
                     if PROJECT_PAUSE > 0:
                         time.sleep(PROJECT_PAUSE)
                 except Exception as e:
-                    print(f"project fail {eid}: {e}", flush=True)
-                    # do not mark seen — retry next loop; back off hard if V2 wedged
-                    time.sleep(max(POLL, 5.0))
+                    _EVENT_FAILS[eid] += 1
+                    print(
+                        f"project fail {eid} (try {_EVENT_FAILS[eid]}/{MAX_EVENT_FAILURES}): {e}",
+                        flush=True,
+                    )
+                    # V2 likely wedged or slow — back off; do not mark seen
+                    note_v2_down()
+                    time.sleep(max(POLL, _V2_BACKOFF or 5.0))
                     break
         except Exception as e:
             print(f"loop err: {e}", flush=True)
+            time.sleep(max(POLL, 3.0))
+            continue
         time.sleep(POLL)
 
 

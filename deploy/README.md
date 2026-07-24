@@ -41,8 +41,9 @@ Embedded mode: no Cockroach required. Good for demos and first staging VPS.
 | Process | Role |
 |---------|------|
 | **V1** | Accept GitHub App webhooks continuously |
-| **bridge** | Poll V1 → project V2 + register person twins / Slack map |
+| **bridge** | Poll V1 → project V2 + register person twins / Slack map; health-gates V2; re-projects when graph empty |
 | **twin-api scheduler** | Every `COMPILE_INTERVAL_SECS` compile twins; DM at most every `NOTIFY_INTERVAL_SECS` |
+| **autoheal** | Restarts containers labeled `autoheal=true` when Docker marks them unhealthy (keeps Graph map alive) |
 
 Bridge **never** posts Slack (ADR-014). Env:
 

@@ -762,11 +762,23 @@ function renderGraphFilters() {
 function renderGraphChrome(data) {
   const statsEl = $("graph-stats");
   const totals = data.totals || {};
-  const returned = data.returned || {};
+  const returned = data.returned || {
+    nodes: (data.nodes || []).length,
+    edges: (data.edges || []).length,
+  };
   const live = $("graph-live")?.checked;
+  const v2Up = data.v2_up !== false && data.error !== "v2_unreachable";
+  const status = data.status || (v2Up ? "ok" : "v2_down");
   if (statsEl) {
+    const statusPill =
+      status === "v2_down" || !v2Up
+        ? `<span class="pill down">V2 down — recovering</span>`
+        : status === "empty_or_error" && !(totals.nodes > 0)
+          ? `<span class="pill mid">V2 up · map empty (bridge re-projecting)</span>`
+          : `<span class="pill up">V2 up</span>`;
     statsEl.innerHTML = [
       live ? `<span class="pill up"><span class="graph-live-dot"></span>live</span>` : `<span class="pill mid">paused</span>`,
+      statusPill,
       `<span class="pill mid">nodes ${returned.nodes ?? graphState.nodes.length}/${totals.nodes ?? "—"}</span>`,
       `<span class="pill mid">edges ${returned.edges ?? graphState.edges.length}/${totals.edges ?? "—"}</span>`,
       data.truncated ? `<span class="pill mid">truncated</span>` : "",
@@ -775,6 +787,32 @@ function renderGraphChrome(data) {
     ]
       .filter(Boolean)
       .join("");
+  }
+  // Banner under toolbar for durable ops signal
+  let banner = $("graph-banner");
+  if (!banner && $("graph-stats")?.parentElement) {
+    banner = document.createElement("div");
+    banner.id = "graph-banner";
+    banner.className = "graph-banner hidden";
+    $("graph-stats").parentElement.insertBefore(banner, $("graph-stats").nextSibling);
+  }
+  if (banner) {
+    if (!v2Up || data.error === "v2_unreachable") {
+      banner.classList.remove("hidden");
+      banner.innerHTML = `<strong>Graph service (V2) is unreachable.</strong> ${esc(
+        data.message ||
+          "Autoheal restarts unhealthy V2; bridge pauses until /healthz recovers, then re-projects ingested events."
+      )}`;
+    } else if ((totals.nodes === 0 || totals.nodes == null) && !(data.nodes || []).length) {
+      banner.classList.remove("hidden");
+      banner.innerHTML = `<strong>Map is empty.</strong> ${esc(
+        data.message ||
+          "Bridge re-projects V1 events into V2 every ~45s when the graph is empty after a restart. Wait or click Refresh."
+      )}`;
+    } else {
+      banner.classList.add("hidden");
+      banner.innerHTML = "";
+    }
   }
   const legend = $("graph-legend");
   if (legend) {
@@ -1052,14 +1090,15 @@ function drawGraph() {
 
   // empty state
   if (!graphState.nodes.length) {
+    const raw = graphState.raw || {};
+    const v2Up = raw.v2_up !== false && raw.error !== "v2_unreachable";
     ctx.fillStyle = "#737373";
     ctx.font = `${14 * dpr}px ui-sans-serif, system-ui, sans-serif`;
     ctx.textAlign = "center";
-    ctx.fillText(
-      "No graph nodes yet — waiting for bridge to project V1 events",
-      canvas.width / 2,
-      canvas.height / 2
-    );
+    const msg = !v2Up
+      ? "V2 graph-api is down — autoheal restarting; map will refill"
+      : "No graph nodes yet — bridge re-projecting ingested V1 events";
+    ctx.fillText(msg, canvas.width / 2, canvas.height / 2);
   }
 }
 

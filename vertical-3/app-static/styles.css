@@ -540,6 +540,18 @@ code {
   margin-right: 6px;
   animation: graph-pulse 1.4s ease-in-out infinite;
 }
+.graph-banner {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.graph-banner.hidden { display: none; }
+.graph-banner strong { font-weight: 600; }
 @keyframes graph-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }

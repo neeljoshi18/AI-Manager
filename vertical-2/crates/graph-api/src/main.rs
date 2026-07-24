@@ -20,6 +20,8 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -30,6 +32,8 @@ struct Metrics {
     projects_duplicate: AtomicU64,
     projects_skipped: AtomicU64,
     projects_error: AtomicU64,
+    projects_timeout: AtomicU64,
+    projects_busy: AtomicU64,
     acl_revocations: AtomicU64,
 }
 
@@ -42,6 +46,9 @@ struct AppState {
     default_hops: usize,
     mode: String,
     metrics: Arc<Metrics>,
+    /// Cap concurrent projections so healthz stays responsive on small VPS.
+    project_sem: Arc<Semaphore>,
+    project_timeout: Duration,
 }
 
 #[tokio::main]
@@ -54,9 +61,13 @@ async fn main() -> anyhow::Result<()> {
     let cfg = GraphConfig::from_env();
     let state = build_state(cfg.clone()).await?;
 
-    let app = Router::new()
+    // Health routes stay outside heavy work paths (always fast).
+    let health = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .with_state(state.clone());
+
+    let api = Router::new()
         .route("/metrics", get(metrics))
         .route("/v2/project", post(project_event))
         .route("/v2/project/acl", post(project_acl))
@@ -77,6 +88,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
+    let app = health.merge(api);
+
     let addr: SocketAddr = cfg.http_bind.parse()?;
     info!(%addr, mode = %cfg.runtime_mode, "graph-api listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -86,6 +99,24 @@ async fn main() -> anyhow::Result<()> {
 
 async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
     let metrics = Arc::new(Metrics::default());
+    // 2 concurrent projects max keeps /healthz snappy on 2vCPU staging.
+    let project_limit: usize = std::env::var("GRAPH_PROJECT_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2)
+        .clamp(1, 8);
+    let project_timeout_secs: u64 = std::env::var("GRAPH_PROJECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10)
+        .clamp(3, 60);
+    let project_sem = Arc::new(Semaphore::new(project_limit));
+    let project_timeout = Duration::from_secs(project_timeout_secs);
+    info!(
+        project_limit,
+        project_timeout_secs, "graph project concurrency limits"
+    );
+
     if cfg.is_embedded() {
         info!("runtime mode=embedded");
         let store: Arc<dyn GraphStore> = InMemoryGraphStore::new();
@@ -99,6 +130,8 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
             default_hops: cfg.default_hops,
             mode: "embedded".into(),
             metrics,
+            project_sem,
+            project_timeout,
         });
     }
 
@@ -128,6 +161,8 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
         default_hops: cfg.default_hops,
         mode: "production".into(),
         metrics,
+        project_sem,
+        project_timeout,
     })
 }
 
@@ -161,6 +196,9 @@ async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
         "projects_duplicate": st.metrics.projects_duplicate.load(Ordering::Relaxed),
         "projects_skipped": st.metrics.projects_skipped.load(Ordering::Relaxed),
         "projects_error": st.metrics.projects_error.load(Ordering::Relaxed),
+        "projects_timeout": st.metrics.projects_timeout.load(Ordering::Relaxed),
+        "projects_busy": st.metrics.projects_busy.load(Ordering::Relaxed),
+        "project_permits_available": st.project_sem.available_permits(),
         "acl_revocations": st.metrics.acl_revocations.load(Ordering::Relaxed),
     }))
 }
@@ -169,14 +207,37 @@ async fn project_event(
     State(st): State<AppState>,
     Json(event): Json<V1CanonicalEvent>,
 ) -> Result<Json<ProjectOutcome>, ApiError> {
-    match st.engine.project_event(&event).await {
-        Ok(out) => {
+    // Non-blocking try: if saturated, return 503 so bridge backs off instead of wedging.
+    let permit = match st.project_sem.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            st.metrics.projects_busy.fetch_add(1, Ordering::Relaxed);
+            return Err(ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: "graph project concurrency limit; retry".into(),
+            });
+        }
+    };
+    let result = tokio::time::timeout(st.project_timeout, st.engine.project_event(&event)).await;
+    drop(permit);
+    match result {
+        Ok(Ok(out)) => {
             record_project_outcome(&st.metrics, &out);
             Ok(Json(out))
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             st.metrics.projects_error.fetch_add(1, Ordering::Relaxed);
             Err(ApiError::from(e))
+        }
+        Err(_elapsed) => {
+            st.metrics.projects_timeout.fetch_add(1, Ordering::Relaxed);
+            Err(ApiError {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                message: format!(
+                    "project timed out after {}s",
+                    st.project_timeout.as_secs()
+                ),
+            })
         }
     }
 }

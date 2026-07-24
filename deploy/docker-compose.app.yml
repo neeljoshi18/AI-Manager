@@ -135,6 +135,35 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # V1 → V2 projection + person twin registration (never Slack-DMs; twin scheduler does).
+  bridge:
+    build:
+      context: ../scripts
+      dockerfile: ../deploy/Dockerfile.bridge
+    image: ai-manager-bridge:local
+    env_file:
+      - path: .env.staging
+        required: false
+    environment:
+      V1_BASE_URL: http://v1:18080
+      V2_BASE_URL: http://v2:18082
+      TWIN_BASE_URL: http://twin-api:18083
+      TENANT_ID: ${DEFAULT_TENANT_ID:-ten_github}
+      STATE_FILE: /var/lib/ai-manager/bridge_seen.txt
+      POLL_SECS: ${BRIDGE_POLL_SECS:-5}
+      SLACK_TEST_USER_ID: ${SLACK_TEST_USER_ID:-U0APK7W1X99}
+      SLACK_TEST_CHANNEL_ID: ${SLACK_TEST_CHANNEL_ID:-C0APN754MQV}
+      DEFAULT_DISPLAY_NAME: ${DEFAULT_DISPLAY_NAME:-Neel}
+      # GitHub provider user id / login → Slack user id (comma-separated)
+      SLACK_USER_MAP: ${SLACK_USER_MAP:-222674398:U0APK7W1X99,neeljoshi18:U0APK7W1X99}
+    volumes:
+      - bridge_state:/var/lib/ai-manager
+    depends_on:
+      - v1
+      - v2
+      - twin-api
+    restart: unless-stopped
+
   # Optional TLS edge (profile: tls). Needs DOMAIN env.
   # Exposes 80/443; proxies product UI + webhooks.
   caddy:
@@ -157,3 +186,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  bridge_state:

@@ -1,0 +1,8 @@
+# Lightweight always-on V1→V2 bridge (+ twin registration).
+# Build: docker build -f deploy/Dockerfile.bridge -t ai-manager-bridge ./scripts
+FROM python:3.12-slim
+WORKDIR /app
+COPY github_live_bridge.py /app/github_live_bridge.py
+ENV PYTHONUNBUFFERED=1
+# State persists via volume in compose
+CMD ["python3", "/app/github_live_bridge.py"]

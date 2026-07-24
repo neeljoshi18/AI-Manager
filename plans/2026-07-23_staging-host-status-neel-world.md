@@ -94,3 +94,10 @@ Caddy routes (repo `deploy/Caddyfile`):
 
 HMAC verified locally against V1 (`accepted` + last-event age).
 
+## Always-on path (2026-07-24)
+
+- `bridge` service in `deploy/docker-compose.app.yml`: V1 → V2 + twin upsert
+- `scripts/github_live_bridge.py` uses ACL `bridge_reader` + `SLACK_USER_MAP`
+- Twin-api still owns batched Slack DMs (`NOTIFY_INTERVAL_SECS=1800`)
+- Bridge never DMs
+

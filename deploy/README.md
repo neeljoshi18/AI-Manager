@@ -36,6 +36,25 @@ curl -s http://127.0.0.1:18080/healthz | jq .
 
 Embedded mode: no Cockroach required. Good for demos and first staging VPS.
 
+### Live path (PR → graph → batched Slack)
+
+| Process | Role |
+|---------|------|
+| **V1** | Accept GitHub App webhooks continuously |
+| **bridge** | Poll V1 → project V2 + register person twins / Slack map |
+| **twin-api scheduler** | Every `COMPILE_INTERVAL_SECS` compile twins; DM at most every `NOTIFY_INTERVAL_SECS` |
+
+Bridge **never** posts Slack (ADR-014). Env:
+
+| Var | Purpose |
+|-----|---------|
+| `SLACK_USER_MAP` | `githubProviderId:SLACK_UID,login:SLACK_UID` |
+| `SLACK_TEST_USER_ID` | Fallback Slack user for unmapped human actors |
+| `SLACK_TEST_CHANNEL_ID` | Optional team channel on twin |
+| `BRIDGE_POLL_SECS` | Default 5 |
+
+Webhook URL: `https://$DOMAIN/v1/tenants/ten_github/webhooks/github`
+
 Stop:
 
 ```bash

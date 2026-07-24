@@ -1,102 +1,227 @@
 #!/usr/bin/env python3
 """
-Ingest bridge only: V1 events → V2 graph.
+Always-on ingest bridge: V1 events → V2 graph → ensure person twins.
 
-Does NOT compile or Slack-DM. Status delivery is owned by twin-api's
-scheduled notify loop (STATUS_WINDOW / NOTIFY_INTERVAL) so high-volume
-GitHub webhooks never spam developers.
+Does NOT Slack-DM. Status delivery is owned by twin-api's scheduled notify
+loop (STATUS_WINDOW / NOTIFY_INTERVAL) so high-volume GitHub webhooks never
+spam developers (ADR-014).
+
+Reads events via a seeded ACL reader (grp_eng) so private-repo exhaust is
+visible. Upserts twins + Slack map for known actors when SLACK_USER_MAP /
+SLACK_TEST_USER_ID are set.
 """
+from __future__ import annotations
+
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 
-V1 = os.environ.get("V1_BASE_URL", "http://127.0.0.1:18080")
-V2 = os.environ.get("V2_BASE_URL", "http://127.0.0.1:18082")
+V1 = os.environ.get("V1_BASE_URL", "http://127.0.0.1:18080").rstrip("/")
+V2 = os.environ.get("V2_BASE_URL", "http://127.0.0.1:18082").rstrip("/")
+TWIN = os.environ.get("TWIN_BASE_URL", "http://127.0.0.1:18083").rstrip("/")
 TENANT = os.environ.get("TENANT_ID", "ten_github")
 STATE = os.environ.get("STATE_FILE", f"/tmp/ai_manager_bridge_seen_{TENANT}.txt")
-POLL = float(os.environ.get("POLL_SECS", "4"))
-WATCH = set(filter(None, os.environ.get("WATCH_USERS", "").split(",")))
+POLL = float(os.environ.get("POLL_SECS", "5"))
+READER_PROVIDER = os.environ.get("BRIDGE_READER_PROVIDER_ID", "bridge_reader")
+DEFAULT_SLACK = os.environ.get("SLACK_TEST_USER_ID", "").strip()
+DEFAULT_CHANNEL = os.environ.get("SLACK_TEST_CHANNEL_ID", "").strip()
+DEFAULT_NAME = os.environ.get("DEFAULT_DISPLAY_NAME", "Engineer").strip() or "Engineer"
+# provider_user_id:slack_uid,login:slack_uid,global_user_id:slack_uid
+RAW_MAP = os.environ.get("SLACK_USER_MAP", "")
 
 
-def get(url):
-    with urllib.request.urlopen(url, timeout=10) as r:
+def parse_slack_map(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if k and v:
+            out[k] = v
+    return out
+
+
+SLACK_MAP = parse_slack_map(RAW_MAP)
+
+
+def get(url: str, timeout: float = 15):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
-def post(url, obj):
+def post(url: str, obj: dict, timeout: float = 20):
     req = urllib.request.Request(
         url,
         data=json.dumps(obj).encode(),
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode()
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as e:
+        err = e.read().decode(errors="replace")
+        raise RuntimeError(f"HTTP {e.code} {url}: {err[:300]}") from e
 
 
-def load_state():
+def load_seen() -> set[str]:
     if not os.path.exists(STATE):
+        os.makedirs(os.path.dirname(STATE) or ".", exist_ok=True)
         open(STATE, "a").close()
-        return set(), set()
-    lines = open(STATE).read().splitlines()
-    seen = {ln for ln in lines if not ln.startswith("user:")}
-    users = {ln.replace("user:", "") for ln in lines if ln.startswith("user:")}
-    return seen, users
+        return set()
+    return {ln.strip() for ln in open(STATE) if ln.strip() and not ln.startswith("#")}
 
 
-def mark(eid, actor, seen):
+def mark_seen(eid: str, seen: set[str]) -> None:
     with open(STATE, "a") as f:
         f.write(eid + "\n")
-        f.write("user:" + actor + "\n")
     seen.add(eid)
 
 
-def main():
-    seen, users = load_state()
-    users |= WATCH
-    seeds = {
-        "gu_d11c3177-d61b-4dd3-8fd9-e8881397895d",
-        "gu_9cf2a501-b7d0-41ea-9c72-bf0f8364d1eb",
-        "gu_alice",
+def ensure_reader() -> str:
+    """Seed V1 membership so we can ACL-read private events (grp_eng)."""
+    out = post(
+        f"{V1}/v1/tenants/{TENANT}/users",
+        {
+            "provider_user_id": READER_PROVIDER,
+            "display_name": "Bridge Reader",
+            "groups": ["grp_eng", "grp_default"],
+        },
+    )
+    gid = out.get("global_user_id") or ""
+    if not gid:
+        raise RuntimeError(f"bridge reader seed failed: {out}")
+    return gid
+
+
+def wait_health(url: str, tries: int = 60) -> None:
+    for i in range(tries):
+        try:
+            get(f"{url}/healthz", timeout=3)
+            return
+        except Exception:
+            time.sleep(1)
+    raise RuntimeError(f"timeout waiting for {url}/healthz")
+
+
+def slack_for_actor(actor: dict) -> str | None:
+    """Resolve Slack user id for a canonical actor."""
+    gu = (actor.get("global_user_id") or "").strip()
+    pu = str(actor.get("provider_user_id") or "").strip()
+    login = (actor.get("display_name") or "").strip()
+    for key in (gu, pu, login):
+        if key and key in SLACK_MAP:
+            return SLACK_MAP[key]
+    # Default: human actors only (skip empty / bots if no map entry)
+    if DEFAULT_SLACK and pu and not pu.endswith("[bot]") and "bot" not in login.lower():
+        # Prefer mapped only if we have any map; else use default for all non-bot
+        if not SLACK_MAP or pu in SLACK_MAP or login in SLACK_MAP or gu in SLACK_MAP:
+            return SLACK_MAP.get(pu) or SLACK_MAP.get(login) or SLACK_MAP.get(gu) or DEFAULT_SLACK
+        # If map exists but actor unknown, still use default for first-product single-founder setup
+        return DEFAULT_SLACK
+    if DEFAULT_SLACK and gu and not login.lower().endswith("[bot]"):
+        return DEFAULT_SLACK
+    return None
+
+
+def ensure_twin(actor: dict) -> None:
+    if not TWIN:
+        return
+    gu = (actor.get("global_user_id") or "").strip()
+    if not gu:
+        return
+    slack = slack_for_actor(actor)
+    if not slack:
+        return
+    name = (actor.get("display_name") or "").strip() or DEFAULT_NAME
+    # Skip obvious bots
+    if "[bot]" in name.lower() or name.lower().endswith("bot"):
+        return
+    body = {
+        "twin_kind": "person",
+        "subject_id": gu,
+        "display_name": name,
+        "slack_user_id": slack,
     }
+    if DEFAULT_CHANNEL:
+        body["channel_id"] = DEFAULT_CHANNEL
+    try:
+        post(f"{TWIN}/v3/tenants/{TENANT}/twins", body, timeout=15)
+        print(f"twin upsert subject={gu} slack={slack} name={name}", flush=True)
+    except Exception as e:
+        print(f"twin upsert fail subject={gu}: {e}", flush=True)
+
+
+def project_event(ev: dict) -> None:
+    actor = ev.get("actor") or {}
+    gu = (actor.get("global_user_id") or "").strip() or "unknown"
+    if gu and gu != "unknown":
+        try:
+            post(
+                f"{V2}/v2/tenants/{TENANT}/users",
+                {"global_user_id": gu, "groups": ["grp_eng"]},
+                timeout=10,
+            )
+        except Exception:
+            pass
+    out = post(f"{V2}/v2/project", ev, timeout=25)
     print(
-        f"bridge (ingest-only) tenant={TENANT} poll={POLL}s — no Slack; twin-api schedules DMs",
+        f"ingest {ev.get('event_id')} {ev.get('event_type')} → V2 {out.get('status')} actor={gu}",
         flush=True,
     )
+    ensure_twin(actor)
+
+
+def main() -> None:
+    print(
+        f"bridge start tenant={TENANT} poll={POLL}s v1={V1} v2={V2} twin={TWIN} "
+        f"slack_map={len(SLACK_MAP)} default_slack={'set' if DEFAULT_SLACK else 'none'}",
+        flush=True,
+    )
+    wait_health(V1)
+    wait_health(V2)
+    # twin optional at start (may boot later)
+    try:
+        wait_health(TWIN, tries=30)
+    except Exception as e:
+        print(f"twin not ready yet ({e}); will retry twin upserts later", flush=True)
+
+    reader = ensure_reader()
+    print(f"bridge reader global_user_id={reader}", flush=True)
+    seen = load_seen()
 
     while True:
         try:
-            for seed in list(users | seeds):
-                try:
-                    data = get(f"{V1}/v1/tenants/{TENANT}/events?user_id={seed}&limit=50")
-                except Exception:
+            # Re-seed reader periodically (embedded V1 loses membership on restart)
+            try:
+                reader = ensure_reader()
+            except Exception as e:
+                print(f"reader seed warn: {e}", flush=True)
+
+            data = get(
+                f"{V1}/v1/tenants/{TENANT}/events?user_id={reader}&limit=100",
+                timeout=20,
+            )
+            events = data.get("events") or []
+            # Process oldest first so graph order is sensible
+            events = list(reversed(events))
+            for ev in events:
+                eid = ev.get("event_id")
+                if not eid or eid in seen:
                     continue
-                for ev in data.get("events") or []:
-                    eid = ev.get("event_id")
-                    if not eid or eid in seen:
-                        continue
-                    actor = (ev.get("actor") or {}).get("global_user_id") or seed
-                    users.add(actor)
-                    try:
-                        post(
-                            f"{V2}/v2/tenants/{TENANT}/users",
-                            {"global_user_id": actor, "groups": ["grp_eng"]},
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        out = post(f"{V2}/v2/project", ev)
-                        print(
-                            f"ingest {eid} → V2 {out.get('status')} actor={actor}",
-                            flush=True,
-                        )
-                    except Exception as e:
-                        print(f"project fail {eid}: {e}", flush=True)
-                        continue
-                    mark(eid, actor, seen)
+                try:
+                    project_event(ev)
+                    mark_seen(eid, seen)
+                except Exception as e:
+                    print(f"project fail {eid}: {e}", flush=True)
+                    # do not mark seen — retry next loop
         except Exception as e:
-            print("loop err", e, flush=True)
+            print(f"loop err: {e}", flush=True)
         time.sleep(POLL)
 
 

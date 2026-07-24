@@ -345,15 +345,32 @@ button:disabled {
   border-collapse: collapse;
   font-size: 13.5px;
 }
+.kv th {
+  text-align: left;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .kv td {
   padding: 10px 4px;
   border-bottom: 1px solid var(--border);
+  vertical-align: top;
 }
 .kv td:first-child {
   color: var(--muted);
   width: 48%;
   font-family: var(--mono);
   font-size: 12px;
+}
+#team-table.kv td:first-child {
+  color: var(--text);
+  font-family: var(--font);
+  width: auto;
+  font-size: 13.5px;
 }
 .hidden { display: none; }
 code {

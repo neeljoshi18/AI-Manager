@@ -70,6 +70,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v2/tenants/{tenant_id}/path", get(path_query))
         .route("/v2/tenants/{tenant_id}/state", get(state_query))
         .route("/v2/tenants/{tenant_id}/blockers", get(blockers))
+        .route("/v2/tenants/{tenant_id}/intents", get(list_intents))
+        .route("/v2/tenants/{tenant_id}/conflicts", get(list_conflicts))
         .route("/v2/tenants/{tenant_id}/stats", get(stats))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -357,6 +359,92 @@ async fn blockers(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({ "blockers": edges })))
+}
+
+#[derive(Deserialize)]
+struct IntentsQ {
+    user_id: String,
+    limit: Option<usize>,
+}
+
+/// List Intent nodes visible to user (rules-classified claims).
+async fn list_intents(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<IntentsQ>,
+) -> Result<impl IntoResponse, ApiError> {
+    let ctx = ctx_for(&st, &tenant_id, &q.user_id).await?;
+    let limit = q.limit.unwrap_or(100);
+    let intents = st
+        .store
+        .list_nodes_by_type(&ctx, "Intent", limit)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "count": intents.len(),
+        "intents": intents,
+    })))
+}
+
+#[derive(Deserialize)]
+struct ConflictsQ {
+    user_id: String,
+    limit: Option<usize>,
+}
+
+/// Conflict detector v0: dual owners, SHIP vs FREEZE, BLOCKS, open BLOCKED intents.
+async fn list_conflicts(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<ConflictsQ>,
+) -> Result<impl IntoResponse, ApiError> {
+    let ctx = ctx_for(&st, &tenant_id, &q.user_id).await?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    // Gather intent + work neighborhood via type lists + BLOCKS edges
+    let intents = st
+        .store
+        .list_nodes_by_type(&ctx, "Intent", 300)
+        .await
+        .map_err(ApiError::from)?;
+    let blocks = st
+        .store
+        .list_edges_by_type(&ctx, "BLOCKS", 300)
+        .await
+        .map_err(ApiError::from)?;
+    let about = st
+        .store
+        .list_edges_by_type(&ctx, "ABOUT", 300)
+        .await
+        .map_err(ApiError::from)?;
+    let claims = st
+        .store
+        .list_edges_by_type(&ctx, "CLAIMS", 300)
+        .await
+        .map_err(ApiError::from)?;
+    let mut nodes = intents;
+    // Pull endpoints of BLOCKS for context (best-effort)
+    for e in blocks.iter().chain(about.iter()) {
+        for nid in [&e.from_node_id, &e.to_node_id] {
+            if nodes.iter().any(|n| &n.node_id == nid) {
+                continue;
+            }
+            if let Ok(Some(n)) = st.store.get_node(&ctx, nid).await {
+                nodes.push(n);
+            }
+        }
+    }
+    let mut edges = blocks;
+    edges.extend(about);
+    edges.extend(claims);
+    let mut cards = graph_core::intent::detect_conflicts(&tenant_id, &nodes, &edges, chrono::Utc::now());
+    cards.truncate(limit);
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "count": cards.len(),
+        "conflicts": cards,
+        "engine": "rules_v0",
+    })))
 }
 
 async fn stats(

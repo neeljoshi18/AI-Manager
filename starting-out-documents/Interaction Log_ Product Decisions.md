@@ -130,6 +130,39 @@
 
 ---
 
+## 2026-07-24 — Session: M6 multi-member beta implementation
+
+### Context
+
+- Execute M6 path (not M7 training): multi-person digests, intent/conflict v0, thin monitors, partner playbook.  
+- Sequence lock ADR-016: agents + multi-member before local SLM.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Intent nodes attached at **V2 project** time (rules only) | Continuous structure-first; no LLM invent |
+| 2 | Owner-scoped intent ids (`intent:{owner}:{work}`) | Dual-owner conflicts surface |
+| 3 | Team map admin in V3 + bridge merges `bridge_slack_map` | Multi-person without redeploy env only |
+| 4 | Thin monitors cache **pulse** (no Slack from monitor) | ADR-014 batch notify; UI surfaces conflicts |
+| 5 | Linear deferred as next connector slice | Default if undecided; not blocking team map / conflicts |
+| 6 | Design-partner one-pager + 10–14d playbook written | Beta outreach gate |
+
+### Artifacts
+
+- `plans/2026-07-24_m6-multi-member-beta.md`  
+- `vertical-2/.../intent.rs`, conflicts/intents APIs  
+- `/app/` Team view + Today conflicts  
+- `Design Partner_ One-Pager.md`, `Design Partner_ Learning Window Playbook.md`  
+
+### Open questions
+
+1. Second human Slack IDs for staging map?  
+2. Design partner team identity?  
+3. Linear OAuth secrets when ready?
+
+---
+
 ## Template for future entries
 
 ```markdown

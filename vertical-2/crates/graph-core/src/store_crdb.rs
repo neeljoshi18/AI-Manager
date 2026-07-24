@@ -471,6 +471,59 @@ impl GraphStore for CrdbGraphStore {
         .map_err(|e| GraphError::Storage(e.to_string()))?;
         Ok(n.0 > 0)
     }
+
+    async fn list_nodes_by_type(
+        &self,
+        ctx: &QueryContext,
+        node_type: &str,
+        limit: usize,
+    ) -> GraphResult<Vec<GraphNode>> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = sqlx::query(
+            r#"
+            SELECT tenant_id, node_id, node_type, display_name, resource_id,
+                   properties_json, is_private, allowed_group_ids, acl_version
+            FROM graph_node
+            WHERE tenant_id = $1 AND lower(node_type) = lower($2)
+            ORDER BY node_id
+            LIMIT $3
+            "#,
+        )
+        .bind(&ctx.tenant_id)
+        .bind(node_type)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| GraphError::Storage(format!("list nodes by type: {e}")))?;
+        Ok(rows
+            .iter()
+            .map(row_to_node)
+            .filter(|n| acl_allows(ctx, n.is_private, &n.allowed_group_ids))
+            .collect())
+    }
+
+    async fn list_edges_by_type(
+        &self,
+        ctx: &QueryContext,
+        edge_type: &str,
+        limit: usize,
+    ) -> GraphResult<Vec<GraphEdge>> {
+        let limit = limit.clamp(1, 500);
+        let now = Utc::now();
+        let edges = self.load_edges(&ctx.tenant_id).await?;
+        let mut out: Vec<GraphEdge> = edges
+            .into_iter()
+            .filter(|e| {
+                acl_allows(ctx, e.is_private, &e.allowed_group_ids)
+                    && e.valid_from <= now
+                    && e.valid_to.map(|t| t > now).unwrap_or(true)
+                    && e.edge_type.eq_ignore_ascii_case(edge_type)
+            })
+            .collect();
+        out.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
+        out.truncate(limit);
+        Ok(out)
+    }
 }
 
 pub struct CrdbMembership {

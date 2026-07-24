@@ -19,6 +19,7 @@
       <nav>
         <button class="nav-item active" data-view="today">Today</button>
         <button class="nav-item" data-view="status">My status</button>
+        <button class="nav-item" data-view="team">Team</button>
         <button class="nav-item" data-view="connections">Connections</button>
         <button class="nav-item" data-view="settings">Settings</button>
         <button class="nav-item lab" data-view="lab">Lab</button>
@@ -67,8 +68,53 @@
           </ul>
         </div>
         <div class="card">
+          <h2>Team blockers &amp; conflicts</h2>
+          <p class="muted small">Rules v0 — dual owners, BLOCKS, SHIP vs FREEZE. Human-gated; not auto-resolved.</p>
+          <div id="today-conflicts" class="empty-hint">Loading pulse…</div>
+        </div>
+        <div class="card">
           <h2>Latest status snapshot</h2>
           <div id="today-latest" class="empty-hint">No status yet. Open <strong>My status</strong> or send a test under <strong>Connections</strong>.</div>
+        </div>
+      </section>
+
+      <!-- TEAM -->
+      <section id="view-team" class="view hidden">
+        <div class="card">
+          <h2>Multi-person Slack map</h2>
+          <p class="muted small">Map ≥2 humans for multi-member digests. Bridge merges this map with <code>SLACK_USER_MAP</code> (never DMs — ingest only).</p>
+          <label>Tenant <input id="team-tenant" value="ten_github" /></label>
+          <div class="actions" style="margin-top:0.75rem;">
+            <button id="btn-team-refresh" class="ghost">Refresh team</button>
+          </div>
+          <div id="team-ready" class="meta-row" style="margin-top:0.75rem;"></div>
+          <table class="kv" id="team-table">
+            <thead>
+              <tr><th>Name</th><th>Subject / provider</th><th>Slack</th><th>Mapped</th></tr>
+            </thead>
+            <tbody id="team-body">
+              <tr><td colspan="4" class="muted">Load team…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Add / update member</h2>
+          <label>Subject id (global_user_id) <input id="tm-subject" placeholder="gu_… or provider key" /></label>
+          <label>Display name <input id="tm-name" placeholder="Alex" /></label>
+          <label>Slack user ID <input id="tm-slack" placeholder="U0…" /></label>
+          <label>Provider aliases (comma: github login, numeric id)
+            <input id="tm-aliases" placeholder="alice, 123456" />
+          </label>
+          <label>Team channel (optional) <input id="tm-channel" placeholder="C0…" /></label>
+          <div class="actions">
+            <button id="btn-team-add" class="primary">Save member</button>
+          </div>
+          <p class="muted small" id="team-add-msg"></p>
+        </div>
+        <div class="card">
+          <h2>Intents (rules v0)</h2>
+          <p class="muted small">Classified from PR/issue titles &amp; labels — SHIP / BLOCKED / FIX / …</p>
+          <ul id="team-intents" class="item-list"><li class="muted">Refresh team to load pulse</li></ul>
         </div>
       </section>
 
@@ -154,6 +200,16 @@ Send a test status from Connections, or wait for a scheduled window
             <tr><td>Slack delivery</td><td id="cfg-slack">—</td></tr>
           </table>
           <p class="muted small">Change via env when starting twin-api. See plans/2026-07-23_demo-to-product-m5.md.</p>
+        </div>
+        <div class="card">
+          <h2>Beta metrics (stubs)</h2>
+          <table class="kv">
+            <tr><td>DMs sent</td><td id="met-dms">—</td></tr>
+            <tr><td>Veto rate</td><td id="met-veto">—</td></tr>
+            <tr><td>Empty windows</td><td id="met-empty">—</td></tr>
+            <tr><td>Conflict hits</td><td id="met-conflicts">—</td></tr>
+          </table>
+          <p class="muted small">From <code>/metrics</code>. Learning-window scorecard uses these.</p>
         </div>
         <div class="card">
           <h2>What we don’t build</h2>

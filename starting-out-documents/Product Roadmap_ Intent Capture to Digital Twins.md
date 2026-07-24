@@ -213,15 +213,15 @@ Aligned with **ADR-011**: agents **monitor and draft**, humans **veto**.
 
 ### Phase M6 — Design partner / multi-member beta path (**next engineering**)
 
-- [ ] Multi-person Slack map UX (2+ humans, not founder-only)  
+- [x] Multi-person Slack map UX (2+ humans, not founder-only) — `/app/` Team + bridge merge  
 - [ ] Jira **or** Linear webhook path productized  
 - [ ] Slack **channel** message ingest (metadata + short text)  
 - [ ] Bot-DM intent capture (“I’m working on X”)  
-- [ ] Intent classification **v0** (rules → graph)  
-- [ ] Conflict detector **v0** (rule-based on BLOCKS + dual owners)  
-- [ ] Thin monitor workers: ingest health, graph delta, conflict surface  
-- [ ] Weekly metrics: standups canceled, DMs sent, veto rate  
-- [ ] Design-partner one-pager + shadow playbook  
+- [x] Intent classification **v0** (rules → graph)  
+- [x] Conflict detector **v0** (rule-based on BLOCKS + dual owners)  
+- [x] Thin monitor workers: ingest health, graph delta, conflict surface  
+- [x] Metrics stubs: DMs sent, veto rate, empty windows (standups = human report)  
+- [x] Design-partner one-pager + shadow playbook  
 
 **Beta outreach gate:** multi-person digests + veto loop + at least one team-visible conflict/blocker surface. **Local model is not a gate.**
 

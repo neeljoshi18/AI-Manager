@@ -42,6 +42,11 @@ struct Metrics {
     publish_fail: AtomicU64,
     acl_empty: AtomicU64,
     egress_fail: AtomicU64,
+    /// Compiles with no ledger items / blockers (empty window skip).
+    empty_windows: AtomicU64,
+    /// Conflict monitor ticks that found ≥1 card.
+    conflict_hits: AtomicU64,
+    monitor_ticks: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -61,6 +66,8 @@ struct AppState {
     last_demo: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
     /// Last Slack notify time per (tenant, twin_id) for debounce.
     last_notify: Arc<Mutex<std::collections::HashMap<(String, String), chrono::DateTime<Utc>>>>,
+    /// Cached team pulse (conflicts + intent counts) per tenant from thin monitor.
+    last_pulse: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
 }
 
 #[tokio::main]
@@ -89,6 +96,10 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = run_scheduled_compiles(&st).await {
                     tracing::warn!(error = %e, "scheduled compile tick failed");
                 }
+                // Thin monitor: ingest-ish health + conflict cards (no Slack spam)
+                if let Err(e) = run_thin_monitors(&st).await {
+                    tracing::debug!(error = %e, "thin monitor tick failed");
+                }
             }
         });
     }
@@ -114,11 +125,21 @@ async fn main() -> anyhow::Result<()> {
         .route("/v3/onboarding/status", get(onboarding_status))
         .route("/v3/oauth/slack/start", get(oauth_slack_start))
         .route("/v3/oauth/github/start", get(oauth_github_start))
-        .route("/v3/tenants/{tenant_id}/twins", post(upsert_twin))
+        .route(
+            "/v3/tenants/{tenant_id}/twins",
+            get(list_twins_route).post(upsert_twin),
+        )
         .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}",
             get(get_twin),
         )
+        .route("/v3/tenants/{tenant_id}/team", get(get_team))
+        .route(
+            "/v3/tenants/{tenant_id}/team/members",
+            post(upsert_team_member),
+        )
+        .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
+        .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
         .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}/compile",
             post(compile_twin),
@@ -202,6 +223,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
 
     let last_demo = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let last_notify = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let last_pulse = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     if cfg.is_embedded() {
         info!("runtime mode=embedded");
@@ -237,6 +259,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
             cfg,
             last_demo,
             last_notify: last_notify.clone(),
+            last_pulse: last_pulse.clone(),
         });
     }
 
@@ -283,6 +306,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         cfg,
         last_demo,
         last_notify,
+        last_pulse,
     })
 }
 
@@ -343,6 +367,9 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
             // Empty medium windows: don't nag
             let empty = outcome.ledger.ledger.items.is_empty()
                 && outcome.ledger.ledger.open_blockers.is_empty();
+            if empty {
+                st.metrics.empty_windows.fetch_add(1, Ordering::Relaxed);
+            }
             let allow_notify = should_notify && !empty;
 
             let service =
@@ -368,6 +395,97 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Thin monitor workers (M6): graph delta → conflicts cache; multi-person readiness.
+/// Does **not** Slack-DM (ADR-014). Surfaces via `/v3/tenants/{id}/pulse`.
+async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
+    st.metrics.monitor_ticks.fetch_add(1, Ordering::Relaxed);
+    let mut tenants: Vec<String> = st.last_demo.lock().keys().cloned().collect();
+    for t in ["ten_github", "ten_demo", "ten_live", "ten_q", "ten_platform"] {
+        if !tenants.iter().any(|x| x == t) {
+            tenants.push(t.into());
+        }
+    }
+    // Also scan tenants that already have twins
+    for t in tenants.clone() {
+        let twins = st.store.list_twins(&t).await.unwrap_or_default();
+        if twins.is_empty() && !matches!(t.as_str(), "ten_github" | "ten_demo") {
+            continue;
+        }
+        let maps = st.store.list_slack_maps(&t).await.unwrap_or_default();
+        let person_twins: Vec<_> = twins
+            .iter()
+            .filter(|tw| tw.twin_kind == TwinKind::Person && tw.enabled)
+            .collect();
+        let mapped = maps.len();
+        // Prefer a real mapped human as ACL reader for V2 conflicts
+        let reader = maps
+            .first()
+            .map(|m| m.global_user_id.clone())
+            .or_else(|| person_twins.first().map(|tw| tw.subject_id.clone()))
+            .unwrap_or_else(|| "bridge_reader".into());
+
+        let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+        let conflicts_url = format!(
+            "{v2}/v2/tenants/{t}/conflicts?user_id={}&limit=30",
+            urlencoding_simple(&reader)
+        );
+        let intents_url = format!(
+            "{v2}/v2/tenants/{t}/intents?user_id={}&limit=50",
+            urlencoding_simple(&reader)
+        );
+        let conflicts = probe_json(&conflicts_url).await;
+        let intents = probe_json(&intents_url).await;
+        let conflict_count = conflicts
+            .as_ref()
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0);
+        if conflict_count > 0 {
+            st.metrics.conflict_hits.fetch_add(1, Ordering::Relaxed);
+        }
+        let intent_count = intents
+            .as_ref()
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0);
+        let v1_base = st.cfg.v1_base_url.trim_end_matches('/');
+        let v1_health = probe_json(&format!("{v1_base}/healthz")).await;
+        let pulse = json!({
+            "tenant_id": t,
+            "as_of": Utc::now().to_rfc3339(),
+            "team": {
+                "person_twins": person_twins.len(),
+                "slack_mapped": mapped,
+                "multi_person_ready": mapped >= 2 && person_twins.len() >= 2,
+            },
+            "intents": {
+                "count": intent_count,
+                "sample": intents.as_ref().and_then(|v| v.get("intents")).cloned().unwrap_or(json!([])),
+            },
+            "conflicts": {
+                "count": conflict_count,
+                "cards": conflicts.as_ref().and_then(|v| v.get("conflicts")).cloned().unwrap_or(json!([])),
+                "engine": "rules_v0",
+            },
+            "ingest": {
+                "v1_up": v1_health.is_some(),
+                "v1_accepted": v1_health.as_ref().and_then(|v| v.get("accepted").cloned()),
+                "v1_last_accepted_unix": v1_health.as_ref().and_then(|v| v.get("last_accepted_unix").cloned()),
+            },
+            "monitor": "thin_v0",
+        });
+        st.last_pulse.lock().insert(t, pulse);
+    }
+    Ok(())
+}
+
+fn urlencoding_simple(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            _ => format!("%{:02X}", c as u8),
+        })
+        .collect()
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -873,18 +991,326 @@ async fn readyz(State(st): State<AppState>) -> impl IntoResponse {
 }
 
 async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
+    let dms = st.metrics.drafts_sent.load(Ordering::Relaxed);
+    let vetoes = st.metrics.veto_total.load(Ordering::Relaxed);
+    let publishes = st.metrics.publish_ok.load(Ordering::Relaxed);
+    let decided = vetoes + publishes;
+    let veto_rate = if decided == 0 {
+        0.0
+    } else {
+        vetoes as f64 / decided as f64
+    };
     Json(json!({
         "service": "twin-api",
         "mode": st.mode,
         "twin_compile_total_ok": st.metrics.compile_ok.load(Ordering::Relaxed),
         "twin_compile_total_error": st.metrics.compile_error.load(Ordering::Relaxed),
-        "twin_drafts_sent_total": st.metrics.drafts_sent.load(Ordering::Relaxed),
-        "twin_veto_total": st.metrics.veto_total.load(Ordering::Relaxed),
-        "twin_publish_total_ok": st.metrics.publish_ok.load(Ordering::Relaxed),
+        "twin_drafts_sent_total": dms,
+        "twin_veto_total": vetoes,
+        "twin_publish_total_ok": publishes,
         "twin_publish_total_fail": st.metrics.publish_fail.load(Ordering::Relaxed),
         "twin_acl_empty_total": st.metrics.acl_empty.load(Ordering::Relaxed),
         "twin_egress_fail_total": st.metrics.egress_fail.load(Ordering::Relaxed),
+        // M6 beta metrics stubs
+        "twin_empty_windows_total": st.metrics.empty_windows.load(Ordering::Relaxed),
+        "twin_conflict_hits_total": st.metrics.conflict_hits.load(Ordering::Relaxed),
+        "twin_monitor_ticks_total": st.metrics.monitor_ticks.load(Ordering::Relaxed),
+        "twin_veto_rate": veto_rate,
+        "twin_dms_sent_total": dms,
     }))
+}
+
+async fn list_twins_route(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "tenant_id": tenant_id, "twins": twins })))
+}
+
+/// Multi-person team map: person twins + Slack destinations (beta gate: ≥2 humans).
+async fn get_team(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let maps = st
+        .store
+        .list_slack_maps(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let map_by: std::collections::HashMap<_, _> = maps
+        .iter()
+        .map(|m| (m.global_user_id.clone(), m.clone()))
+        .collect();
+    let mut members = Vec::new();
+    for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+        let slack = map_by.get(&t.subject_id);
+        let aliases = t
+            .config_json
+            .get("provider_aliases")
+            .cloned()
+            .unwrap_or(json!([]));
+        members.push(json!({
+            "twin_id": t.twin_id,
+            "subject_id": t.subject_id,
+            "display_name": t.display_name,
+            "enabled": t.enabled,
+            "channel_id": t.channel_id,
+            "slack_user_id": slack.map(|s| s.slack_user_id.clone()),
+            "slack_mapped": slack.is_some(),
+            "provider_aliases": aliases,
+            "shadow_until": t.shadow_until,
+        }));
+    }
+    // Slack maps without twins (bridge map keys pending first event)
+    for m in &maps {
+        if !members
+            .iter()
+            .any(|x| x.get("subject_id").and_then(|v| v.as_str()) == Some(m.global_user_id.as_str()))
+        {
+            members.push(json!({
+                "twin_id": null,
+                "subject_id": m.global_user_id,
+                "display_name": "",
+                "enabled": false,
+                "channel_id": "",
+                "slack_user_id": m.slack_user_id,
+                "slack_mapped": true,
+                "provider_aliases": [],
+                "shadow_until": null,
+            }));
+        }
+    }
+    let mapped = members
+        .iter()
+        .filter(|m| m.get("slack_mapped").and_then(|v| v.as_bool()) == Some(true))
+        .count();
+    // Flatten map for bridge: subject + provider aliases → slack
+    let mut bridge_map = serde_json::Map::new();
+    for m in &members {
+        let slack = m
+            .get("slack_user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if slack.is_empty() {
+            continue;
+        }
+        if let Some(sub) = m.get("subject_id").and_then(|v| v.as_str()) {
+            if !sub.is_empty() {
+                bridge_map.insert(sub.to_string(), json!(slack));
+            }
+        }
+        if let Some(arr) = m.get("provider_aliases").and_then(|v| v.as_array()) {
+            for a in arr {
+                if let Some(s) = a.as_str() {
+                    if !s.is_empty() {
+                        bridge_map.insert(s.to_string(), json!(slack));
+                    }
+                }
+            }
+        }
+    }
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "members": members,
+        "person_count": members.len(),
+        "slack_mapped_count": mapped,
+        "multi_person_ready": mapped >= 2,
+        "bridge_slack_map": bridge_map,
+        "note": "Map ≥2 humans for multi-member digests. Bridge merges this with SLACK_USER_MAP env.",
+    })))
+}
+
+#[derive(Deserialize)]
+struct TeamMemberBody {
+    subject_id: String,
+    display_name: Option<String>,
+    slack_user_id: String,
+    channel_id: Option<String>,
+    /// GitHub login / provider ids that should resolve to this Slack user (bridge map).
+    provider_aliases: Option<Vec<String>>,
+    enabled: Option<bool>,
+    skip_shadow: Option<bool>,
+}
+
+/// Upsert one team member (person twin + Slack map + optional provider aliases).
+async fn upsert_team_member(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(body): Json<TeamMemberBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    if body.subject_id.trim().is_empty() {
+        return Err(ApiError::bad("subject_id required"));
+    }
+    if body.slack_user_id.trim().is_empty() {
+        return Err(ApiError::bad("slack_user_id required"));
+    }
+    let now = Utc::now();
+    let twin_id = person_twin_id(&body.subject_id);
+    let existing = st
+        .store
+        .get_twin(&tenant_id, &twin_id)
+        .await
+        .map_err(ApiError::from)?;
+    let mut config = existing
+        .as_ref()
+        .map(|t| t.config_json.clone())
+        .unwrap_or_else(|| json!({}));
+    if let Some(aliases) = &body.provider_aliases {
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("provider_aliases".into(), json!(aliases));
+        }
+    }
+    let shadow_until = if body.skip_shadow.unwrap_or(false) || st.cfg.shadow_mode_days <= 0 {
+        None
+    } else {
+        existing
+            .as_ref()
+            .and_then(|t| t.shadow_until)
+            .or_else(|| Some(now + Duration::days(st.cfg.shadow_mode_days)))
+    };
+    let twin = Twin {
+        tenant_id: tenant_id.clone(),
+        twin_id: twin_id.clone(),
+        twin_kind: TwinKind::Person,
+        subject_id: body.subject_id.clone(),
+        display_name: body
+            .display_name
+            .or_else(|| existing.as_ref().map(|t| t.display_name.clone()))
+            .unwrap_or_else(|| body.subject_id.clone()),
+        timezone: existing
+            .as_ref()
+            .map(|t| t.timezone.clone())
+            .unwrap_or_else(|| "UTC".into()),
+        channel_id: body
+            .channel_id
+            .or_else(|| existing.as_ref().map(|t| t.channel_id.clone()))
+            .unwrap_or_default(),
+        shadow_until,
+        high_auto_publish: existing
+            .as_ref()
+            .map(|t| t.high_auto_publish)
+            .unwrap_or(false),
+        enabled: body
+            .enabled
+            .unwrap_or(existing.as_ref().map(|t| t.enabled).unwrap_or(true)),
+        config_json: config,
+        created_at: existing.as_ref().map(|t| t.created_at).unwrap_or(now),
+        updated_at: now,
+    };
+    st.store
+        .upsert_twin(twin.clone())
+        .await
+        .map_err(ApiError::from)?;
+    st.store
+        .put_slack_map(SlackUserMap {
+            tenant_id: tenant_id.clone(),
+            global_user_id: body.subject_id.clone(),
+            slack_user_id: body.slack_user_id.clone(),
+            slack_team_id: String::new(),
+        })
+        .await
+        .map_err(ApiError::from)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "twin": twin,
+            "slack_user_id": body.slack_user_id,
+            "provider_aliases": body.provider_aliases.unwrap_or_default(),
+        })),
+    ))
+}
+
+#[derive(Deserialize)]
+struct PulseQ {
+    tenant_id: Option<String>,
+    refresh: Option<bool>,
+}
+
+async fn get_pulse(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<PulseQ>,
+) -> Result<impl IntoResponse, ApiError> {
+    let _ = q.tenant_id;
+    if q.refresh.unwrap_or(false) {
+        let _ = run_thin_monitors(&st).await;
+    }
+    if let Some(p) = st.last_pulse.lock().get(&tenant_id).cloned() {
+        return Ok(Json(p));
+    }
+    // Lazy one-shot if scheduler has not run
+    let _ = run_thin_monitors(&st).await;
+    match st.last_pulse.lock().get(&tenant_id).cloned() {
+        Some(p) => Ok(Json(p)),
+        None => Ok(Json(json!({
+            "tenant_id": tenant_id,
+            "team": { "multi_person_ready": false, "person_twins": 0, "slack_mapped": 0 },
+            "conflicts": { "count": 0, "cards": [] },
+            "intents": { "count": 0, "sample": [] },
+            "note": "No pulse yet — add team members and ingest GitHub events.",
+        }))),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConflictsProxyQ {
+    user_id: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Proxy V2 conflicts for product UI (uses first team member as ACL reader).
+async fn get_conflicts_proxy(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<ConflictsProxyQ>,
+) -> Result<impl IntoResponse, ApiError> {
+    let maps = st
+        .store
+        .list_slack_maps(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let reader = q
+        .user_id
+        .filter(|s| !s.is_empty())
+        .or_else(|| maps.first().map(|m| m.global_user_id.clone()))
+        .or_else(|| {
+            twins
+                .iter()
+                .find(|t| t.twin_kind == TwinKind::Person)
+                .map(|t| t.subject_id.clone())
+        })
+        .unwrap_or_else(|| "bridge_reader".into());
+    let limit = q.limit.unwrap_or(30);
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let url = format!(
+        "{v2}/v2/tenants/{tenant_id}/conflicts?user_id={}&limit={limit}",
+        urlencoding_simple(&reader)
+    );
+    match probe_json(&url).await {
+        Some(v) => Ok(Json(v)),
+        None => Ok(Json(json!({
+            "tenant_id": tenant_id,
+            "count": 0,
+            "conflicts": [],
+            "error": "v2_unreachable_or_empty",
+            "reader": reader,
+        }))),
+    }
 }
 
 async fn upsert_twin(

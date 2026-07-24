@@ -4,6 +4,7 @@ pub mod acl;
 pub mod config;
 pub mod error;
 pub mod ids;
+pub mod intent;
 pub mod membership;
 pub mod model;
 pub mod project;

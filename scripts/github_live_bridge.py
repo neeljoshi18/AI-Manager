@@ -33,6 +33,8 @@ DEFAULT_CHANNEL = os.environ.get("SLACK_TEST_CHANNEL_ID", "").strip()
 DEFAULT_NAME = os.environ.get("DEFAULT_DISPLAY_NAME", "Engineer").strip() or "Engineer"
 # provider_user_id:slack_uid,login:slack_uid,global_user_id:slack_uid
 RAW_MAP = os.environ.get("SLACK_USER_MAP", "")
+# How often to refresh multi-person map from twin-api team admin (M6).
+TEAM_MAP_REFRESH = float(os.environ.get("TEAM_MAP_REFRESH_SECS", "60"))
 
 
 def parse_slack_map(raw: str) -> dict[str, str]:
@@ -48,7 +50,38 @@ def parse_slack_map(raw: str) -> dict[str, str]:
     return out
 
 
-SLACK_MAP = parse_slack_map(RAW_MAP)
+# Env map is base; twin team API overlays (admin UI) for multi-person beta.
+SLACK_MAP: dict[str, str] = parse_slack_map(RAW_MAP)
+_LAST_TEAM_FETCH = 0.0
+
+
+def refresh_team_map(force: bool = False) -> None:
+    """Merge GET /v3/tenants/{t}/team bridge_slack_map into SLACK_MAP (never DMs)."""
+    global SLACK_MAP, _LAST_TEAM_FETCH
+    if not TWIN:
+        return
+    now = time.time()
+    if not force and (now - _LAST_TEAM_FETCH) < TEAM_MAP_REFRESH:
+        return
+    _LAST_TEAM_FETCH = now
+    try:
+        data = get(f"{TWIN}/v3/tenants/{TENANT}/team", timeout=10)
+        overlay = data.get("bridge_slack_map") or {}
+        if isinstance(overlay, dict):
+            added = 0
+            for k, v in overlay.items():
+                ks, vs = str(k).strip(), str(v).strip()
+                if ks and vs and SLACK_MAP.get(ks) != vs:
+                    SLACK_MAP[ks] = vs
+                    added += 1
+            if added:
+                print(
+                    f"team map merge +{added} keys total={len(SLACK_MAP)} "
+                    f"multi_person={data.get('multi_person_ready')}",
+                    flush=True,
+                )
+    except Exception as e:
+        print(f"team map refresh warn: {e}", flush=True)
 
 
 def get(url: str, timeout: float = 15):
@@ -128,12 +161,14 @@ def is_bot_actor(actor: dict) -> bool:
 def slack_for_actor(actor: dict) -> str | None:
     """Resolve Slack user id for a canonical actor.
 
-    Prefer explicit SLACK_USER_MAP keys (provider id, login, global id).
+    Prefer explicit SLACK_USER_MAP keys (provider id, login, global id),
+    merged with twin-api team admin map (multi-person).
     Only fall back to SLACK_TEST_USER_ID when the map is empty (single-dev demos).
     Never map bots.
     """
     if is_bot_actor(actor):
         return None
+    refresh_team_map()
     gu = (actor.get("global_user_id") or "").strip()
     pu = str(actor.get("provider_user_id") or "").strip()
     login = (actor.get("display_name") or "").strip()
@@ -206,6 +241,7 @@ def main() -> None:
 
     reader = ensure_reader()
     print(f"bridge reader global_user_id={reader}", flush=True)
+    refresh_team_map(force=True)
     seen = load_seen()
 
     while True:
@@ -215,6 +251,7 @@ def main() -> None:
                 reader = ensure_reader()
             except Exception as e:
                 print(f"reader seed warn: {e}", flush=True)
+            refresh_team_map()
 
             data = get(
                 f"{V1}/v1/tenants/{TENANT}/events?user_id={reader}&limit=100",

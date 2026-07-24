@@ -292,7 +292,8 @@ async fn tc_g05() -> TestResult {
         }
     }
     let edges = store.count_edges("ten_g").await.unwrap();
-    let passed = dups == 999 && edges == 2; // AUTHORED + BELONGS_TO once
+    // AUTHORED + BELONGS_TO + CLAIMS + ABOUT (intent v0) once after 1000 replays
+    let passed = dups == 999 && edges == 4;
     TestResult {
         id: "TC-G05",
         name: "Idempotent event replay",

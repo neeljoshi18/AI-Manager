@@ -31,7 +31,7 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin → Slac
 | M0–M3 | Strategy + V1/V2 engines + V3 twins | **Done** |
 | M4 | Sew & Show: demo, real Slack, GitHub live, **batched notify** | **Done** |
 | **M5** | Staging product: host, TLS, GitHub App, product UI, bridge | **Done enough** (`status.neel.world`) |
-| **M6** | Multi-member beta: connectors, intent/conflict v0, thin agents | **Next** |
+| **M6** | Multi-member beta: connectors, intent/conflict v0, thin agents | **In progress** (team map + intent/conflict v0 + playbook shipped; Linear next) |
 | M6.5 | Learning window 10–14d + training-pair export | After first partner |
 | M7 | Model Router + customer-prem SLM (ADR-016) + self-serve | After shadow gold |
 | M8+ | Richer agents, browser opt-in | Roadmap only |
@@ -143,13 +143,15 @@ M5 staging (done enough) → M6 multi-member + thin agents → design-partner sh
 [x] Multi-service Docker + staging HTTPS (status.neel.world)
 [x] GitHub App + Slack vault + always-on bridge
 [x] ADR-016 + on-prem model / learning-window vision docs
-[ ] M6: multi-person twins + intent/conflict v0 + thin agents
-[ ] Design-partner learning window playbook (10–14d)
+[x] M6: multi-person team map + intent/conflict v0 + thin monitors + UI
+[x] Design-partner one-pager + learning window playbook (10–14d)
+[ ] M6 cont: Linear connector productized; Slack channel metadata
+[ ] Staging: map 2nd human; verify multi-person digests live
 [ ] M7: Model Router + customer-prem SLM (only after shadow gold)
 [ ] OAuth callback → vault write (self-serve polish)
 ```
 
-**Autonomous until:** multi-member mapping product decisions, design-partner identity, or new connector secrets.
+**Autonomous until:** design-partner identity, Linear/Jira OAuth secrets, or extra Slack maps.
 
 ---
 

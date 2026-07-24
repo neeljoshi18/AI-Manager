@@ -57,10 +57,14 @@ function showView(name) {
   const titles = {
     today: ["Today", "Org pulse — what the graph knows right now"],
     status: ["My status", "Scheduled digests · veto-first · evidence-backed"],
+    team: ["Team", "Multi-person Slack map · intents · conflicts"],
     connections: ["Connections", "Services and on-demand test status"],
-    settings: ["Settings", "Cadence and product boundaries"],
+    settings: ["Settings", "Cadence, metrics, product boundaries"],
     lab: ["Lab", "Engineer console and raw JSON"],
   };
+  if (name === "team") {
+    refreshTeam();
+  }
   const t = titles[name] || ["AI Manager", ""];
   $("view-title").textContent = t[0];
   $("view-sub").textContent = t[1];
@@ -297,10 +301,173 @@ async function startOAuth(kind) {
   }
 }
 
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function refreshPulse() {
+  const tenant =
+    $("team-tenant")?.value?.trim() ||
+    $("tenant")?.value?.trim() ||
+    "ten_github";
+  const el = $("today-conflicts");
+  try {
+    const pulse = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=1`
+    );
+    const cards = pulse.conflicts?.cards || [];
+    const count = pulse.conflicts?.count ?? cards.length;
+    const multi = pulse.team?.multi_person_ready;
+    if (el) {
+      if (!count) {
+        el.innerHTML = `<p class="muted">No open conflicts for <code>${esc(tenant)}</code>. Multi-person ready: <strong>${multi ? "yes" : "no"}</strong> (${pulse.team?.slack_mapped ?? 0} mapped).</p>`;
+      } else {
+        el.innerHTML =
+          `<div class="meta-row"><span class="pill ${count ? "down" : "mid"}">${count} conflict(s)</span>` +
+          `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "ready" : "need ≥2 maps"}</span></div>` +
+          `<ul class="item-list">` +
+          cards
+            .slice(0, 12)
+            .map(
+              (c) =>
+                `<li><strong>[${esc(c.severity || c.kind)}]</strong> ${esc(c.summary)} <span class="muted small">${esc(c.kind)}</span></li>`
+            )
+            .join("") +
+          `</ul>`;
+      }
+    }
+    const intentUl = $("team-intents");
+    if (intentUl) {
+      const sample = pulse.intents?.sample || [];
+      if (!sample.length) {
+        intentUl.innerHTML = `<li class="muted">No intent nodes yet (project PRs/issues with titles/labels).</li>`;
+      } else {
+        intentUl.innerHTML = sample
+          .slice(0, 20)
+          .map((n) => {
+            const ty =
+              n.properties?.intent_type ||
+              n.intent_type ||
+              "?";
+            return `<li><strong>[${esc(ty)}]</strong> ${esc(n.display_name || n.node_id)}</li>`;
+          })
+          .join("");
+      }
+    }
+  } catch (e) {
+    if (el) {
+      el.innerHTML = `<p class="muted">Pulse unavailable: ${esc(e.message || e)}</p>`;
+    }
+  }
+}
+
+async function refreshTeam() {
+  const tenant = $("team-tenant")?.value?.trim() || "ten_github";
+  const body = $("team-body");
+  const ready = $("team-ready");
+  try {
+    const team = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`);
+    if (ready) {
+      ready.innerHTML = [
+        `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2 Slack maps"}</span>`,
+        `<span class="pill mid">${team.slack_mapped_count ?? 0} mapped / ${team.person_count ?? 0} members</span>`,
+      ].join("");
+    }
+    if (body) {
+      const members = team.members || [];
+      if (!members.length) {
+        body.innerHTML = `<tr><td colspan="4" class="muted">No members yet — add two humans below.</td></tr>`;
+      } else {
+        body.innerHTML = members
+          .map((m) => {
+            const aliases = Array.isArray(m.provider_aliases)
+              ? m.provider_aliases.join(", ")
+              : "";
+            const sub = aliases
+              ? `${esc(m.subject_id)} <span class="muted">(${esc(aliases)})</span>`
+              : esc(m.subject_id);
+            return `<tr>
+              <td>${esc(m.display_name || "—")}</td>
+              <td><code class="small">${sub}</code></td>
+              <td><code class="small">${esc(m.slack_user_id || "—")}</code></td>
+              <td>${m.slack_mapped ? "✓" : "○"}</td>
+            </tr>`;
+          })
+          .join("");
+      }
+    }
+    await refreshPulse();
+  } catch (e) {
+    if (body) {
+      body.innerHTML = `<tr><td colspan="4" class="muted">Team load failed: ${esc(e.message || e)}</td></tr>`;
+    }
+  }
+}
+
+async function addTeamMember() {
+  const tenant = $("team-tenant")?.value?.trim() || "ten_github";
+  const subject = $("tm-subject")?.value?.trim();
+  const slack = $("tm-slack")?.value?.trim();
+  const name = $("tm-name")?.value?.trim();
+  const channel = $("tm-channel")?.value?.trim();
+  const aliasesRaw = $("tm-aliases")?.value?.trim() || "";
+  const msg = $("team-add-msg");
+  if (!subject || !slack) {
+    if (msg) msg.textContent = "subject_id and slack_user_id are required";
+    return;
+  }
+  const provider_aliases = aliasesRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  try {
+    await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team/members`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject_id: subject,
+        display_name: name || subject,
+        slack_user_id: slack,
+        channel_id: channel || undefined,
+        provider_aliases,
+        skip_shadow: true,
+        enabled: true,
+      }),
+    });
+    if (msg) msg.textContent = "Saved. Bridge will pick up map on next poll.";
+    $("tm-subject").value = "";
+    $("tm-aliases").value = "";
+    await refreshTeam();
+  } catch (e) {
+    if (msg) msg.textContent = "Save failed: " + (e.message || e);
+  }
+}
+
+async function refreshMetrics() {
+  try {
+    const m = await jfetch("/metrics");
+    if ($("met-dms")) $("met-dms").textContent = String(m.twin_dms_sent_total ?? m.twin_drafts_sent_total ?? "—");
+    if ($("met-veto")) {
+      const r = m.twin_veto_rate;
+      $("met-veto").textContent =
+        r == null ? "—" : `${Math.round(Number(r) * 1000) / 10}%`;
+    }
+    if ($("met-empty")) $("met-empty").textContent = String(m.twin_empty_windows_total ?? "—");
+    if ($("met-conflicts")) $("met-conflicts").textContent = String(m.twin_conflict_hits_total ?? "—");
+  } catch {
+    /* ignore */
+  }
+}
+
 $("btn-refresh").addEventListener("click", async () => {
   await refreshHealth();
   await refreshOnboarding();
   await loadLatest();
+  await refreshPulse();
+  await refreshMetrics();
 });
 $("btn-sim").addEventListener("click", simulate);
 $("btn-publish").addEventListener("click", () => act("publish"));
@@ -313,9 +480,19 @@ if ($("btn-slack-oauth")) {
 if ($("btn-gh-app")) {
   $("btn-gh-app").addEventListener("click", () => startOAuth("github"));
 }
+if ($("btn-team-refresh")) {
+  $("btn-team-refresh").addEventListener("click", refreshTeam);
+}
+if ($("btn-team-add")) {
+  $("btn-team-add").addEventListener("click", addTeamMember);
+}
 
 refreshHealth();
 refreshOnboarding();
 loadLatest();
+refreshPulse();
+refreshMetrics();
 setInterval(refreshHealth, 10000);
 setInterval(refreshOnboarding, 15000);
+setInterval(refreshPulse, 30000);
+setInterval(refreshMetrics, 20000);

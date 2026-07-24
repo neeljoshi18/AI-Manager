@@ -361,11 +361,14 @@ fn map_pull_request(event: &V1CanonicalEvent) -> GraphMutation {
         }
     }
 
-    GraphMutation {
+    let pr_id = pr.node_id.clone();
+    let base = GraphMutation {
         nodes: vec![person, repo, pr],
         edges,
         states: vec![state],
-    }
+    };
+    // Intent v0: rules classify PR title/labels → Intent node + CLAIMS/ABOUT
+    crate::intent::merge_intent_into(base, event, &pr_id)
 }
 
 /// Extract assignee identity from attributes (GitHub/Jira/Linear shapes).
@@ -547,11 +550,14 @@ fn map_issue(event: &V1CanonicalEvent) -> GraphMutation {
         edges.push(assigned);
     }
 
-    GraphMutation {
+    let issue_id = issue.node_id.clone();
+    let base = GraphMutation {
         nodes,
         edges,
         states: vec![state],
-    }
+    };
+    // Intent v0: rules classify issue title/labels → Intent node + CLAIMS/ABOUT
+    crate::intent::merge_intent_into(base, event, &issue_id)
 }
 
 /// MEMBER_OF: Person → Team from identity / member events.

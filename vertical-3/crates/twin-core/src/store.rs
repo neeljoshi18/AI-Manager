@@ -19,6 +19,8 @@ pub trait TwinStore: Send + Sync {
         tenant_id: &str,
         global_user_id: &str,
     ) -> TwinResult<Option<SlackUserMap>>;
+    /// All Slack maps for a tenant (multi-person team admin).
+    async fn list_slack_maps(&self, tenant_id: &str) -> TwinResult<Vec<SlackUserMap>>;
 
     /// Insert or replace ledger snapshot. Idempotent on unique period key.
     /// Returns false if an existing published draft blocks replace (ledger already published).
@@ -146,6 +148,15 @@ impl TwinStore for InMemoryTwinStore {
             .slack_map
             .get(&(tenant_id.to_string(), global_user_id.to_string()))
             .map(|m| m.clone()))
+    }
+
+    async fn list_slack_maps(&self, tenant_id: &str) -> TwinResult<Vec<SlackUserMap>> {
+        Ok(self
+            .slack_map
+            .iter()
+            .filter(|e| e.key().0 == tenant_id)
+            .map(|e| e.value().clone())
+            .collect())
     }
 
     async fn put_ledger(&self, snap: LedgerSnapshot) -> TwinResult<()> {

@@ -168,6 +168,27 @@ impl TwinStore for CrdbTwinStore {
         }))
     }
 
+    async fn list_slack_maps(&self, tenant_id: &str) -> TwinResult<Vec<SlackUserMap>> {
+        let rows = sqlx::query(
+            r#"SELECT tenant_id, global_user_id, slack_user_id, slack_team_id
+               FROM slack_user_map WHERE tenant_id = $1
+               ORDER BY global_user_id"#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| TwinError::Storage(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| SlackUserMap {
+                tenant_id: r.get("tenant_id"),
+                global_user_id: r.get("global_user_id"),
+                slack_user_id: r.get("slack_user_id"),
+                slack_team_id: r.get("slack_team_id"),
+            })
+            .collect())
+    }
+
     async fn put_ledger(&self, snap: LedgerSnapshot) -> TwinResult<()> {
         let ledger_json = serde_json::to_value(&snap.ledger)
             .map_err(|e| TwinError::Internal(e.to_string()))?;

@@ -50,6 +50,22 @@ pub trait GraphStore: Send + Sync {
     async fn count_nodes(&self, tenant_id: &str) -> GraphResult<u64>;
     async fn count_edges(&self, tenant_id: &str) -> GraphResult<u64>;
     async fn event_applied(&self, tenant_id: &str, event_id: &str) -> GraphResult<bool>;
+
+    /// ACL-filtered nodes of a given type (monitor / conflict / intent surfaces).
+    async fn list_nodes_by_type(
+        &self,
+        ctx: &QueryContext,
+        node_type: &str,
+        limit: usize,
+    ) -> GraphResult<Vec<GraphNode>>;
+
+    /// ACL-filtered edges of a given type (e.g. BLOCKS).
+    async fn list_edges_by_type(
+        &self,
+        ctx: &QueryContext,
+        edge_type: &str,
+        limit: usize,
+    ) -> GraphResult<Vec<GraphEdge>>;
 }
 
 pub struct InMemoryGraphStore {
@@ -405,5 +421,52 @@ impl GraphStore for InMemoryGraphStore {
         Ok(self
             .applied
             .contains_key(&(tenant_id.to_string(), event_id.to_string())))
+    }
+
+    async fn list_nodes_by_type(
+        &self,
+        ctx: &QueryContext,
+        node_type: &str,
+        limit: usize,
+    ) -> GraphResult<Vec<GraphNode>> {
+        let limit = limit.clamp(1, 500);
+        let mut out: Vec<GraphNode> = self
+            .nodes
+            .iter()
+            .filter(|e| {
+                e.key().0 == ctx.tenant_id
+                    && e.value().node_type.eq_ignore_ascii_case(node_type)
+                    && Self::visible_node(ctx, e.value())
+            })
+            .map(|e| e.value().clone())
+            .collect();
+        out.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    async fn list_edges_by_type(
+        &self,
+        ctx: &QueryContext,
+        edge_type: &str,
+        limit: usize,
+    ) -> GraphResult<Vec<GraphEdge>> {
+        let limit = limit.clamp(1, 500);
+        let now = Utc::now();
+        let mut out: Vec<GraphEdge> = self
+            .edges
+            .get(&ctx.tenant_id)
+            .map(|g| g.read().clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| {
+                Self::visible_edge(ctx, e)
+                    && Self::active_edge(e, now)
+                    && e.edge_type.eq_ignore_ascii_case(edge_type)
+            })
+            .collect();
+        out.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
+        out.truncate(limit);
+        Ok(out)
     }
 }

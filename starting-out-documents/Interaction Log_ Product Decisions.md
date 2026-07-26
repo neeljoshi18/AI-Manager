@@ -163,6 +163,38 @@
 
 ---
 
+## 2026-07-26/27 — Session: Reality check, anti-slop, Notify Policy v1
+
+### Context
+
+- Founder unhappy with half-done surfaces, spammy Slack, and shabby positioning from “honest” low confidence scores.  
+- Planning session: score vision vs reality; position only what exists; path to &gt;50% stranger-pilot confidence.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | **Airtight or don’t ship** is standing ground rule | Half features destroy trust and pitch |
+| 2 | Separate vision % from pilot confidence | 45% vision ≠ worthless core path |
+| 3 | **A1–A7** before Linear/models/outreach at scale | Anti-spam + multi-person + package first |
+| 4 | Product language: **Approve / Edit / Don’t send** | “Veto” is internal jargon |
+| 5 | **Notify Policy v1**: change-only + 1 DM/day | Developer-first; stop 30m same-PR spam |
+| 6 | Positioning after airtight: status from PRs you approve | Not “founder-operated pipeline” / not agent OS |
+| 7 | Local model still post multi-person + shadow gold | ADR-016 unchanged |
+
+### Artifacts
+
+- `starting-out-documents/Session Handoff_ Context Transfer 2026-07-27.md`  
+- `plans/2026-07-27_confidence-airtight-pilot.md`  
+- Commit `d1e660b` Notify Policy v1  
+
+### Open questions
+
+1. Second human fields for A2 dry-run?  
+2. When to soft-outreach (only after A1 verify + A2)?  
+
+---
+
 ## Template for future entries
 
 ```markdown

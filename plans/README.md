@@ -14,6 +14,8 @@ Dated planning snapshots for AI Manager. Living backlog stays in `starting-out-d
 
 | Date | File | Topic |
 |------|------|--------|
+| 2026-07-27 | [2026-07-27_confidence-airtight-pilot.md](./2026-07-27_confidence-airtight-pilot.md) | **Airtight pilot path, anti-slop ground rule, A1–A7 confidence** |
+| 2026-07-27 | [Session Handoff 2026-07-27](../starting-out-documents/Session%20Handoff_%20Context%20Transfer%202026-07-27.md) | **Current new-chat pack** + paste prompt |
 | 2026-07-24 | [2026-07-24_m6-multi-member-beta.md](./2026-07-24_m6-multi-member-beta.md) | **M6 slice: team map, intent/conflict v0, thin monitors, partner playbook** |
 | 2026-07-24 | [2026-07-24_onprem-model-and-agents.md](./2026-07-24_onprem-model-and-agents.md) | **Learning window + Model Router + agent sequence (ADR-016)** |
 | 2026-07-23 | [2026-07-23_staging-host-status-neel-world.md](./2026-07-23_staging-host-status-neel-world.md) | Staging host status.neel.world (DO VPS) |

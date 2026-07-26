@@ -8,7 +8,7 @@ mod worker;
 pub use mock_slack::{MockSlackClient, SlackCall};
 pub use policy::DeliveryPolicy;
 pub use slack::{EgressSlackClient, SlackClient, SlackPostResult};
-pub use worker::{DeliveryService, StartDeliveryOpts};
+pub use worker::{DeliveryService, DeliveryStartResult, StartDeliveryOpts};
 
 use twin_core::model::*;
 use twin_core::state_machine::{apply_delivery_event, DeliveryEvent};

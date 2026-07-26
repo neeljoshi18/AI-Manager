@@ -47,6 +47,8 @@ struct Metrics {
     /// Conflict monitor ticks that found ≥1 card.
     conflict_hits: AtomicU64,
     monitor_ticks: AtomicU64,
+    /// Notify Policy v1: DMs not sent (unchanged / daily_cap / quiet).
+    dms_suppressed: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -217,10 +219,9 @@ fn app_static_dir() -> PathBuf {
 
 async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
     let metrics = Arc::new(Metrics::default());
-    let policy = DeliveryPolicy {
-        medium_veto_window_secs: cfg.medium_veto_window_secs,
-        blocker_veto_window_secs: cfg.blocker_veto_window_secs,
-    };
+    let mut policy = DeliveryPolicy::default();
+    policy.medium_veto_window_secs = cfg.medium_veto_window_secs;
+    policy.blocker_veto_window_secs = cfg.blocker_veto_window_secs;
 
     let last_demo = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let last_notify = Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -375,16 +376,17 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
 
             let service =
                 DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
-            let draft = service
+            let del = service
                 .start_after_compile_opts(
                     &twin,
                     &outcome.ledger,
                     &outcome.draft_text,
                     now,
                     allow_notify,
+                    false, // never force on scheduler — Notify Policy v1
                 )
                 .await?;
-            if allow_notify && !draft.slack_dm_ts.is_empty() {
+            if del.dm_sent {
                 st.last_notify.lock().insert(key, now);
                 st.metrics.drafts_sent.fetch_add(1, Ordering::Relaxed);
                 info!(
@@ -392,6 +394,15 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
                     ledger = %outcome.ledger.ledger_id,
                     "scheduled status DM sent"
                 );
+            } else if allow_notify {
+                if let Some(reason) = del.suppressed {
+                    st.metrics.dms_suppressed.fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(
+                        twin = %twin.twin_id,
+                        reason,
+                        "status DM suppressed (notify policy v1)"
+                    );
+                }
             }
         }
     }
@@ -924,13 +935,21 @@ async fn demo_simulate(
         .map_err(ApiError::from)?;
     st.metrics.compile_ok.fetch_add(1, Ordering::Relaxed);
 
-    // Demo button is an explicit on-demand notify tool
+    // Demo button is an explicit on-demand notify tool (force_notify bypasses daily cap)
     let service = DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
-    let draft = service
-        .start_after_compile_opts(&twin, &outcome.ledger, &outcome.draft_text, now, true)
+    let del = service
+        .start_after_compile_opts(
+            &twin,
+            &outcome.ledger,
+            &outcome.draft_text,
+            now,
+            true,
+            true,
+        )
         .await
         .map_err(ApiError::from)?;
-    if !draft.slack_dm_ts.is_empty() {
+    let draft = del.draft;
+    if del.dm_sent {
         st.last_notify
             .lock()
             .insert((tenant.clone(), twin.twin_id.clone()), now);
@@ -1016,8 +1035,10 @@ async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
         "twin_empty_windows_total": st.metrics.empty_windows.load(Ordering::Relaxed),
         "twin_conflict_hits_total": st.metrics.conflict_hits.load(Ordering::Relaxed),
         "twin_monitor_ticks_total": st.metrics.monitor_ticks.load(Ordering::Relaxed),
+        "twin_dms_suppressed_total": st.metrics.dms_suppressed.load(Ordering::Relaxed),
         "twin_veto_rate": veto_rate,
         "twin_dms_sent_total": dms,
+        "notify_policy": "v1_change_only_daily_cap",
     }))
 }
 
@@ -1636,20 +1657,26 @@ async fn compile_twin(
     };
 
     let service = DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
-    let draft = service
+    let del = service
         .start_after_compile_opts(
             &twin,
             &outcome.ledger,
             &outcome.draft_text,
             now,
             allow_notify,
+            force, // force_notify from body or NOTIFY_ON_COMPILE
         )
         .await
         .map_err(ApiError::from)?;
+    let draft = del.draft;
 
-    if allow_notify && !draft.slack_dm_ts.is_empty() {
+    if del.dm_sent {
         st.last_notify.lock().insert(key, now);
         st.metrics.drafts_sent.fetch_add(1, Ordering::Relaxed);
+    } else if allow_notify {
+        if del.suppressed.is_some() {
+            st.metrics.dms_suppressed.fetch_add(1, Ordering::Relaxed);
+        }
     }
     if draft.status == DraftStatus::Published {
         st.metrics.publish_ok.fetch_add(1, Ordering::Relaxed);

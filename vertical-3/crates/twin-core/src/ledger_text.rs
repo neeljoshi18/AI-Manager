@@ -70,7 +70,7 @@ pub fn render_draft_text(ledger: &StatusLedger) -> String {
         lines.push("Please unblock or reply before this posts to the team channel.".into());
     } else {
         lines.push(
-            "This is a scheduled summary (not every GitHub ping). Publish / Edit / Veto when ready."
+            "Scheduled summary (only when something changes). Approve · Edit · Don't send."
                 .into(),
         );
     }

@@ -56,7 +56,7 @@ function showView(name) {
   if (btn) btn.classList.add("active");
   const titles = {
     today: ["Today", "Org pulse — what the graph knows right now"],
-    status: ["My status", "Scheduled digests · veto-first · evidence-backed"],
+    status: ["My status", "Approve / edit / don't send · change-only Slack"],
     team: ["Team", "Multi-person Slack map · intents · conflicts"],
     graph: ["Graph", "Live context map — people, work, intents, edges"],
     connections: ["Connections", "Services and on-demand test status"],
@@ -456,6 +456,7 @@ async function refreshMetrics() {
   try {
     const m = await jfetch("/metrics");
     if ($("met-dms")) $("met-dms").textContent = String(m.twin_dms_sent_total ?? m.twin_drafts_sent_total ?? "—");
+    if ($("met-suppress")) $("met-suppress").textContent = String(m.twin_dms_suppressed_total ?? "—");
     if ($("met-veto")) {
       const r = m.twin_veto_rate;
       $("met-veto").textContent =

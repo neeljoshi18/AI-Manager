@@ -177,11 +177,17 @@ Send a test status from Connections, or wait for a scheduled window
 (default: every 30 minutes — not every GitHub event).</pre>
           <h3>Items</h3>
           <ul id="st-items" class="item-list"></ul>
+          <p class="muted small" id="st-actions-help">
+            <strong>Approve</strong> = share this status.
+            <strong>Edit</strong> = fix the words first.
+            <strong>Don't send</strong> = reject this draft (never posts).
+            We'll only Slack you again if the story changes (not every 30 minutes).
+          </p>
           <div class="actions">
-            <button id="btn-publish" class="ok">Publish</button>
+            <button id="btn-publish" class="ok">Approve</button>
             <button id="btn-edit" class="ghost">Edit…</button>
-            <button id="btn-veto" class="danger">Veto</button>
-            <button id="btn-silence" class="ghost">Silence → publish</button>
+            <button id="btn-veto" class="danger">Don't send</button>
+            <button id="btn-silence" class="ghost">Silence → auto-share (medium only)</button>
           </div>
         </div>
       </section>
@@ -249,7 +255,8 @@ Send a test status from Connections, or wait for a scheduled window
           <h2>Beta metrics (stubs)</h2>
           <table class="kv">
             <tr><td>DMs sent</td><td id="met-dms">—</td></tr>
-            <tr><td>Veto rate</td><td id="met-veto">—</td></tr>
+            <tr><td>DMs suppressed (no spam)</td><td id="met-suppress">—</td></tr>
+            <tr><td>Reject rate</td><td id="met-veto">—</td></tr>
             <tr><td>Empty windows</td><td id="met-empty">—</td></tr>
             <tr><td>Conflict hits</td><td id="met-conflicts">—</td></tr>
           </table>

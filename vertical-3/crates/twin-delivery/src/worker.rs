@@ -4,6 +4,9 @@ use chrono::{Duration, Utc};
 use std::sync::Arc;
 use twin_core::ids::body_hash;
 use twin_core::model::*;
+use twin_core::notify_policy::{
+    decide_notify, load_notify_state, record_dm_sent, write_notify_state, SuppressReason,
+};
 use twin_core::state_machine::{
     apply_delivery_event, initial_draft_status, silence_may_publish, DeliveryEvent,
 };
@@ -14,6 +17,15 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Default)]
 pub struct StartDeliveryOpts {
     pub force_now: Option<chrono::DateTime<Utc>>,
+}
+
+/// Result of draft + optional DM (Notify Policy v1).
+#[derive(Debug, Clone)]
+pub struct DeliveryStartResult {
+    pub draft: DraftDelivery,
+    pub dm_sent: bool,
+    /// Why Slack was skipped (if any).
+    pub suppressed: Option<&'static str>,
 }
 
 pub struct DeliveryService {
@@ -50,8 +62,10 @@ impl DeliveryService {
         draft_text: &str,
         now: chrono::DateTime<Utc>,
     ) -> TwinResult<DraftDelivery> {
-        self.start_after_compile_opts(twin, snap, draft_text, now, true)
-            .await
+        Ok(self
+            .start_after_compile_opts(twin, snap, draft_text, now, true, false)
+            .await?
+            .draft)
     }
 
     pub async fn start_after_compile_opts(
@@ -61,7 +75,8 @@ impl DeliveryService {
         draft_text: &str,
         now: chrono::DateTime<Utc>,
         allow_notify: bool,
-    ) -> TwinResult<DraftDelivery> {
+        force_notify: bool,
+    ) -> TwinResult<DeliveryStartResult> {
         // Idempotent: one draft per ledger — refresh text if still open
         if let Some(mut existing) = self
             .store
@@ -79,18 +94,54 @@ impl DeliveryService {
                 existing.updated_at = now;
                 self.store.update_draft(existing.clone()).await?;
             }
-            return Ok(existing);
+            let already = !existing.slack_dm_ts.is_empty();
+            return Ok(DeliveryStartResult {
+                draft: existing,
+                dm_sent: already,
+                suppressed: if already {
+                    None
+                } else {
+                    Some("existing_draft")
+                },
+            });
         }
 
         let in_shadow = twin.is_in_shadow(now);
+        let mut notify_state = load_notify_state(twin);
+        let decision = decide_notify(
+            &snap.ledger,
+            &notify_state,
+            now,
+            self.policy.max_dms_per_day,
+            allow_notify,
+            force_notify,
+            in_shadow,
+        );
+
         // Quiet recompiles stay shadow-like for notify purposes when !allow_notify
         let mut status =
             initial_draft_status(in_shadow, snap.confidence_rollup, twin.high_auto_publish);
-        if !allow_notify && !in_shadow {
-            // Still track draft as pending for later scheduled notify, but skip Slack below
+        if (!allow_notify && !force_notify) && !in_shadow {
             if status == DraftStatus::PublishQueued {
                 status = DraftStatus::Pending;
             }
+        }
+        // Notify Policy v1: do not DM — still keep draft for UI
+        let mut will_dm = decision.allow_dm
+            && matches!(
+                status,
+                DraftStatus::Pending | DraftStatus::ForceHuman | DraftStatus::PublishQueued
+            );
+        if decision.suppress == Some(SuppressReason::Unchanged)
+            || decision.suppress == Some(SuppressReason::DailyCap)
+            || decision.suppress == Some(SuppressReason::Empty)
+            || decision.suppress == Some(SuppressReason::Quiet)
+        {
+            will_dm = false;
+        }
+        if in_shadow || decision.suppress == Some(SuppressReason::Shadow) {
+            will_dm = false;
+            status = DraftStatus::Shadow;
         }
 
         let veto_deadline = match (status, snap.confidence_rollup) {
@@ -122,10 +173,22 @@ impl DeliveryService {
             updated_at: now,
         };
 
-        // Shadow or quiet compile: no Slack calls
-        if status == DraftStatus::Shadow || !allow_notify {
+        // Shadow or quiet / suppressed: no Slack calls
+        if status == DraftStatus::Shadow || !will_dm {
             self.store.put_draft(draft.clone()).await?;
-            return Ok(draft);
+            // Remember fingerprint when we suppress unchanged so we stay quiet
+            if decision.suppress == Some(SuppressReason::Unchanged) {
+                notify_state.last_fingerprint = decision.fingerprint.clone();
+                let mut t = twin.clone();
+                write_notify_state(&mut t, &notify_state);
+                let _ = self.store.upsert_twin(t).await;
+            }
+            let suppressed = decision.suppress.map(|s| s.as_str()).or(Some("no_dm"));
+            return Ok(DeliveryStartResult {
+                draft,
+                dm_sent: false,
+                suppressed,
+            });
         }
 
         // High auto-publish: optional short DM then queue
@@ -152,14 +215,21 @@ impl DeliveryService {
             }
             self.store.put_draft(draft.clone()).await?;
             let _ = self.try_publish_channel(twin, &mut draft).await?;
-            return Ok(draft);
+            record_dm_sent(&mut notify_state, &decision.fingerprint, now);
+            let mut t = twin.clone();
+            write_notify_state(&mut t, &notify_state);
+            let _ = self.store.upsert_twin(t).await;
+            let dm_sent = !draft.slack_dm_ts.is_empty();
+            return Ok(DeliveryStartResult {
+                draft,
+                dm_sent,
+                suppressed: None,
+            });
         }
 
-        // Medium / High(no auto) / Blocker: required DM (except we still DM for high when not auto)
-        if matches!(
-            status,
-            DraftStatus::Pending | DraftStatus::ForceHuman
-        ) {
+        // Medium / High(no auto) / Blocker: DM when policy allows
+        let mut dm_sent = false;
+        if matches!(status, DraftStatus::Pending | DraftStatus::ForceHuman) {
             let slack_user = self
                 .store
                 .get_slack_map(&twin.tenant_id, &twin.subject_id)
@@ -171,18 +241,25 @@ impl DeliveryService {
                 .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
                 .unwrap_or_else(|| "none".into());
             let dm_text = format!(
-                "{draft_text}\n\n[Publish as-is] · [Edit] · [Veto]\nReply window until {deadline_s}."
+                "{draft_text}\n\n*Approve* · *Edit* · *Don't send*\n\
+                 We'll only ping again if this status story changes.\n\
+                 Window until {deadline_s}."
             );
             match self.slack.post_dm(&slack_user, &dm_text).await {
                 Ok(dm) => {
                     draft.slack_dm_channel = dm.channel;
                     draft.slack_dm_ts = dm.ts;
+                    dm_sent = true;
                     let _ = apply_delivery_event(
                         draft.status,
                         &DeliveryEvent::DmSent,
                         snap.confidence_rollup,
                         twin.high_auto_publish,
                     );
+                    record_dm_sent(&mut notify_state, &decision.fingerprint, now);
+                    let mut t = twin.clone();
+                    write_notify_state(&mut t, &notify_state);
+                    let _ = self.store.upsert_twin(t).await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "dm failed; draft still stored");
@@ -190,10 +267,17 @@ impl DeliveryService {
             }
         }
 
-        // Re-check status after potential transitions (none for dm)
         draft.status = status;
         self.store.put_draft(draft.clone()).await?;
-        Ok(draft)
+        Ok(DeliveryStartResult {
+            draft,
+            dm_sent,
+            suppressed: if dm_sent {
+                None
+            } else {
+                decision.suppress.map(|s| s.as_str())
+            },
+        })
     }
 
     pub async fn silence_timeout(

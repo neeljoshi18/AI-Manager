@@ -170,7 +170,8 @@ services:
       SLACK_TEST_CHANNEL_ID: ${SLACK_TEST_CHANNEL_ID:-C0APN754MQV}
       DEFAULT_DISPLAY_NAME: ${DEFAULT_DISPLAY_NAME:-Neel}
       # GitHub provider user id / login → Slack user id (comma-separated)
-      SLACK_USER_MAP: ${SLACK_USER_MAP:-222674398:U0APK7W1X99,neeljoshi18:U0APK7W1X99}
+      # Person 1: neeljoshi18 · Person 2: paneerjeera (A2 multi-person). Team UI overlays too.
+      SLACK_USER_MAP: ${SLACK_USER_MAP:-222674398:U0APK7W1X99,neeljoshi18:U0APK7W1X99,309182469:U0BLN0N7VB5,paneerjeera:U0BLN0N7VB5}
     volumes:
       - bridge_state:/var/lib/ai-manager
     depends_on:

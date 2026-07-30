@@ -16,7 +16,7 @@
 | Graph not mystery-empty | Connections shows **Graph: filled** (nodes &gt; 0) or “empty — re-projecting” (not silent 0/0) |
 | Secrets | Slack bot token **only** in egress vault (`vertical-security/secrets/…`). Never on `twin-api` env (ADR-012) |
 | Notify Policy v1 | Settings / `/metrics`: `notify_policy: v1_change_only_daily_cap` |
-| Tenant | Default pilot tenant `ten_github` (or partner tenant once multi-tenant) |
+| Tenant | Default pilot tenant **`ten_github`** — this is *our* internal workspace id on staging (not a GitHub setting). Partners do not invent it; founder uses `ten_github` until multi-tenant self-serve exists. |
 
 **Do not start** Linear / local model training until multi-person digests are proven (ADR-016).
 

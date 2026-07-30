@@ -34,7 +34,16 @@ pub fn build_embedded(config: AppConfig) -> Vertical1Runtime {
     let object_store: Arc<dyn ObjectStore> = InMemoryObjectStore::new(&config.s3_bucket);
     let acl: Arc<dyn AclStore> = InMemoryAclStore::new();
     let bus: Arc<dyn EventBus> = InMemoryBus::new();
-    let store: Arc<dyn EventStore> = InMemoryEventStore::new();
+    let mem = InMemoryEventStore::new();
+    // Survive container restarts on staging (pilot durability).
+    if let Ok(p) = std::env::var("V1_EMBEDDED_STATE_PATH") {
+        let path = std::path::PathBuf::from(p);
+        if let Err(e) = mem.load_from_path(&path) {
+            tracing::warn!(error = %e, "V1 event journal load failed");
+        }
+        mem.set_persist_path(Some(path));
+    }
+    let store: Arc<dyn EventStore> = mem;
     let metrics = IngestMetrics::new();
 
     let pipeline = Arc::new(IngestPipeline {

@@ -58,8 +58,11 @@ services:
       SKIP_AUTH: "false"
       SECRETS_FILE: /secrets/dev_secrets.json
       EGRESS_PROXY_URL: http://egress:18090
+      # Survive restarts: event journal on disk (bridge re-projects into V2)
+      V1_EMBEDDED_STATE_PATH: ${V1_EMBEDDED_STATE_PATH:-/var/lib/ai-manager/v1_events.json}
     volumes:
       - ../vertical-security/secrets:/secrets:ro
+      - v1_state:/var/lib/ai-manager
     depends_on:
       - egress
     healthcheck:
@@ -83,6 +86,10 @@ services:
       # Keep /healthz responsive under bridge load (small VPS).
       GRAPH_PROJECT_CONCURRENCY: ${GRAPH_PROJECT_CONCURRENCY:-2}
       GRAPH_PROJECT_TIMEOUT_SECS: ${GRAPH_PROJECT_TIMEOUT_SECS:-10}
+      # Survive restarts: graph nodes/edges on disk (no mystery empty map)
+      GRAPH_EMBEDDED_STATE_PATH: ${GRAPH_EMBEDDED_STATE_PATH:-/var/lib/ai-manager/v2_graph.json}
+    volumes:
+      - v2_state:/var/lib/ai-manager
     labels:
       # willfarrell/autoheal restarts unhealthy containers
       autoheal: "true"
@@ -228,3 +235,5 @@ volumes:
   caddy_config:
   bridge_state:
   twin_state:
+  v1_state:
+  v2_state:

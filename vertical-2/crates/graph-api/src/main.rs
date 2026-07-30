@@ -83,6 +83,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v2/tenants/{tenant_id}/blockers", get(blockers))
         .route("/v2/tenants/{tenant_id}/intents", get(list_intents))
         .route("/v2/tenants/{tenant_id}/conflicts", get(list_conflicts))
+        .route(
+            "/v2/tenants/{tenant_id}/seed/intent_demo",
+            post(seed_intent_demo),
+        )
         .route("/v2/tenants/{tenant_id}/snapshot", get(graph_snapshot))
         .route("/v2/tenants/{tenant_id}/stats", get(stats))
         .layer(TraceLayer::new_for_http())
@@ -119,7 +123,17 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
 
     if cfg.is_embedded() {
         info!("runtime mode=embedded");
-        let store: Arc<dyn GraphStore> = InMemoryGraphStore::new();
+        let mem = InMemoryGraphStore::new();
+        if let Ok(p) = std::env::var("GRAPH_EMBEDDED_STATE_PATH") {
+            let path = std::path::PathBuf::from(p);
+            match mem.load_from_path(&path) {
+                Ok(true) => info!(path = %path.display(), "restored embedded graph state"),
+                Ok(false) => info!(path = %path.display(), "no graph state file yet"),
+                Err(e) => tracing::warn!(error = %e, "graph state load failed"),
+            }
+            mem.set_persist_path(Some(path));
+        }
+        let store: Arc<dyn GraphStore> = mem;
         let membership: Arc<dyn MembershipStore> = InMemoryMembership::new();
         let engine = Arc::new(ProjectEngine::new(store.clone(), membership.clone()));
         return Ok(AppState {
@@ -516,6 +530,228 @@ async fn stats(
     let nodes = st.store.count_nodes(&tenant_id).await.map_err(ApiError::from)?;
     let edges = st.store.count_edges(&tenant_id).await.map_err(ApiError::from)?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+}
+
+/// Seed multi-person intent + conflict cards for pilot UI (rules_v0 proof).
+/// Idempotent-ish: stable node/edge ids overwrite same entities.
+async fn seed_intent_demo(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    use graph_core::ids::stable_edge_id;
+    use graph_core::model::{GraphEdge, GraphMutation, GraphNode};
+    let now = chrono::Utc::now();
+    let groups = vec!["grp_eng".to_string(), "grp_default".to_string()];
+    let p1 = format!("person:gu_demo_alice");
+    let p2 = format!("person:gu_demo_bob");
+    let pr = format!("pr:{tenant_id}/demo-repo/pr/42");
+    let repo = format!("repo:{tenant_id}/demo-repo");
+    let i_ship = format!("intent:{p1}:{pr}");
+    let i_freeze = format!("intent:{p2}:{pr}");
+    let i_blocked = format!("intent:{p1}:{pr}:blocked");
+
+    // Ensure membership for ACL readers
+    let group_ids = vec!["grp_eng".to_string(), "grp_default".to_string()];
+    for uid in ["gu_demo_alice", "gu_demo_bob", "bridge_reader"] {
+        let _ = st
+            .membership
+            .set_groups(&tenant_id, uid, &group_ids)
+            .await;
+    }
+
+    let mk_person = |id: &str, name: &str| GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: id.into(),
+        node_type: "Person".into(),
+        display_name: name.into(),
+        resource_id: name.into(),
+        properties: json!({ "seed": "intent_demo" }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+    let pr_node = GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: pr.clone(),
+        node_type: "PullRequest".into(),
+        display_name: "Ship release — DO NOT MERGE until freeze lifts".into(),
+        resource_id: format!("{tenant_id}/demo-repo/pr/42"),
+        properties: json!({ "title": "Ship release — DO NOT MERGE until freeze lifts", "state": "OPEN", "seed": "intent_demo" }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+    let repo_node = GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: repo.clone(),
+        node_type: "Repo".into(),
+        display_name: format!("{tenant_id}/demo-repo"),
+        resource_id: format!("{tenant_id}/demo-repo"),
+        properties: json!({ "seed": "intent_demo" }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+    let intent_ship = GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: i_ship.clone(),
+        node_type: "Intent".into(),
+        display_name: "SHIP: ready to ship release".into(),
+        resource_id: pr_node.resource_id.clone(),
+        properties: json!({
+            "intent_type": "SHIP",
+            "confidence": 0.9,
+            "evidence": ["text:ready to ship", "seed:intent_demo"],
+            "about_node_id": pr,
+            "owner_node_id": p1,
+            "classified_by": "rules_v0",
+        }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+    let intent_freeze = GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: i_freeze.clone(),
+        node_type: "Intent".into(),
+        display_name: "FREEZE: code freeze — do not merge".into(),
+        resource_id: pr_node.resource_id.clone(),
+        properties: json!({
+            "intent_type": "FREEZE",
+            "confidence": 0.95,
+            "evidence": ["text:do not merge", "label:freeze", "seed:intent_demo"],
+            "about_node_id": pr,
+            "owner_node_id": p2,
+            "classified_by": "rules_v0",
+        }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+    let intent_blocked = GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: i_blocked.clone(),
+        node_type: "Intent".into(),
+        display_name: "BLOCKED: waiting on security review".into(),
+        resource_id: pr_node.resource_id.clone(),
+        properties: json!({
+            "intent_type": "BLOCKED",
+            "confidence": 0.9,
+            "evidence": ["text:blocked on", "seed:intent_demo"],
+            "about_node_id": pr,
+            "owner_node_id": p1,
+            "classified_by": "rules_v0",
+        }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+
+    let edge = |etype: &str, from: &str, to: &str| GraphEdge {
+        tenant_id: tenant_id.clone(),
+        edge_id: stable_edge_id(&tenant_id, etype, from, to),
+        edge_type: etype.into(),
+        from_node_id: from.into(),
+        to_node_id: to.into(),
+        valid_from: now,
+        valid_to: None,
+        event_id: format!("seed-intent-demo-{etype}"),
+        properties: json!({ "seed": "intent_demo" }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+
+    let mut m = GraphMutation {
+        nodes: vec![
+            mk_person(&p1, "alice"),
+            mk_person(&p2, "bob"),
+            repo_node,
+            pr_node,
+            intent_ship,
+            intent_freeze,
+            intent_blocked,
+        ],
+        edges: vec![
+            edge("AUTHORED", &p1, &pr),
+            edge("BELONGS_TO", &pr, &repo),
+            edge("CLAIMS", &p1, &i_ship),
+            edge("CLAIMS", &p2, &i_freeze),
+            edge("CLAIMS", &p1, &i_blocked),
+            edge("ABOUT", &i_ship, &pr),
+            edge("ABOUT", &i_freeze, &pr),
+            edge("ABOUT", &i_blocked, &pr),
+            // open blocker edge for dual-blocks / open blocker surface
+            edge("BLOCKS", &pr, &format!("pr:{tenant_id}/demo-repo/pr/7")),
+        ],
+        states: vec![],
+    };
+    // Second PR blocked by first
+    m.nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: format!("pr:{tenant_id}/demo-repo/pr/7"),
+        node_type: "PullRequest".into(),
+        display_name: "Depends on release PR".into(),
+        resource_id: format!("{tenant_id}/demo-repo/pr/7"),
+        properties: json!({ "title": "Depends on release PR", "seed": "intent_demo" }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+
+    st.store
+        .apply_mutation(m)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Verify conflicts visible
+    let ctx = ctx_for(&st, &tenant_id, "gu_demo_alice").await?;
+    let intents = st
+        .store
+        .list_nodes_by_type(&ctx, "Intent", 50)
+        .await
+        .map_err(ApiError::from)?;
+    let blocks = st
+        .store
+        .list_edges_by_type(&ctx, "BLOCKS", 50)
+        .await
+        .map_err(ApiError::from)?;
+    let about = st
+        .store
+        .list_edges_by_type(&ctx, "ABOUT", 50)
+        .await
+        .map_err(ApiError::from)?;
+    let claims = st
+        .store
+        .list_edges_by_type(&ctx, "CLAIMS", 50)
+        .await
+        .map_err(ApiError::from)?;
+    let mut nodes = intents.clone();
+    for e in blocks.iter().chain(about.iter()) {
+        for nid in [&e.from_node_id, &e.to_node_id] {
+            if nodes.iter().any(|n| &n.node_id == nid) {
+                continue;
+            }
+            if let Ok(Some(n)) = st.store.get_node(&ctx, nid).await {
+                nodes.push(n);
+            }
+        }
+    }
+    let mut edges = blocks;
+    edges.extend(about);
+    edges.extend(claims);
+    let cards =
+        graph_core::intent::detect_conflicts(&tenant_id, &nodes, &edges, chrono::Utc::now());
+
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "seeded": true,
+        "intent_count": intents.len(),
+        "conflict_count": cards.len(),
+        "conflicts": cards,
+        "engine": "rules_v0",
+        "note": "SHIP vs FREEZE dual owners + BLOCKED + BLOCKS edge for Team blockers UI",
+    })))
 }
 
 #[derive(Deserialize)]

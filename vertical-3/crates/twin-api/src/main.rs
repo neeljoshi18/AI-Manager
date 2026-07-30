@@ -330,6 +330,10 @@ async fn main() -> anyhow::Result<()> {
             "/v3/tenants/{tenant_id}/team/compile",
             post(compile_team),
         )
+        .route(
+            "/v3/tenants/{tenant_id}/seed/intent_demo",
+            post(seed_intent_demo_proxy),
+        )
         .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
         .route("/v3/tenants/{tenant_id}/graph", get(get_graph_snapshot))
@@ -1752,6 +1756,37 @@ async fn compile_team(
         "results": results,
         "note": "force_notify=false respects change-only + daily cap. Empty ledgers never DM.",
     })))
+}
+
+/// Proxy V2 intent/conflict seed so product UI can show Team blockers without raw V2 access.
+async fn seed_intent_demo_proxy(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let url = format!("{v2}/v2/tenants/{tenant_id}/seed/intent_demo");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
+    let res = client
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| ApiError::from(TwinError::Upstream(format!("v2 seed: {e}"))))?;
+    let status = res.status();
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "error": "bad_json" }));
+    if !status.is_success() {
+        return Err(ApiError::from(TwinError::Upstream(format!(
+            "v2 seed HTTP {status}: {body}"
+        ))));
+    }
+    // Refresh pulse cache so Today blockers update immediately
+    let _ = run_thin_monitors(&st).await;
+    Ok(Json(body))
 }
 
 #[derive(Deserialize)]

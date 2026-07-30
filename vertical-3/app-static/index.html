@@ -70,7 +70,11 @@
         </div>
         <div class="card">
           <h2>Team blockers &amp; conflicts</h2>
-          <p class="muted small">Rules v0 — dual owners, BLOCKS, SHIP vs FREEZE. Human-gated; not auto-resolved.</p>
+          <p class="muted small">Rules v0 — dual owners, BLOCKS, SHIP vs FREEZE. Human-gated; not auto-resolved. Empty after redeploy until real PRs or seed.</p>
+          <div class="actions" style="margin-bottom:0.5rem;">
+            <button type="button" id="btn-seed-intent" class="ghost">Load intent demo (SHIP vs FREEZE)</button>
+          </div>
+          <p class="muted small" id="seed-intent-msg"></p>
           <div id="today-conflicts" class="empty-hint">Loading pulse…</div>
         </div>
         <div class="card">

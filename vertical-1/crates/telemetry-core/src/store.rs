@@ -2,15 +2,22 @@
 //!
 //! Spec §4.4: ReplacingMergeTree-style dedup on event_id / acl_version.
 //! Query-time ACL filter mandatory on every read (Invariant #2).
+//!
+//! Embedded durability: optional JSON snapshot so container restarts do not wipe
+//! the pilot event journal (bridge can re-project into V2 after reboot).
 
 use crate::acl::acl_allows;
 use crate::error::{CoreError, CoreResult};
 use crate::model::{CanonicalEventRecord, EventQuery, QueryContext};
 use async_trait::async_trait;
+use chrono::Utc;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[async_trait]
 pub trait EventStore: Send + Sync {
@@ -46,12 +53,24 @@ pub trait EventStore: Send + Sync {
     ) -> CoreResult<Option<CanonicalEventRecord>>;
 }
 
+/// On-disk snapshot for embedded staging durability.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EventPersistSnapshot {
+    pub version: u32,
+    pub saved_at: Option<String>,
+    pub events: Vec<CanonicalEventRecord>,
+}
+
 /// In-memory ReplacingMergeTree analogue.
 pub struct InMemoryEventStore {
     /// tenant_id → event_id → record
     by_id: DashMap<String, DashMap<String, CanonicalEventRecord>>,
     /// tenant_id → resource_id → ordered events (by event_timestamp)
     by_resource: DashMap<String, DashMap<String, RwLock<Vec<CanonicalEventRecord>>>>,
+    /// Optional path for embedded persistence.
+    persist_path: RwLock<Option<std::path::PathBuf>>,
+    /// Writes since last successful save (for periodic flush).
+    dirty: AtomicU64,
 }
 
 impl InMemoryEventStore {
@@ -59,28 +78,114 @@ impl InMemoryEventStore {
         Arc::new(Self {
             by_id: DashMap::new(),
             by_resource: DashMap::new(),
+            persist_path: RwLock::new(None),
+            dirty: AtomicU64::new(0),
         })
     }
 
-}
+    pub fn set_persist_path(&self, path: Option<std::path::PathBuf>) {
+        *self.persist_path.write() = path;
+    }
 
-impl Default for InMemoryEventStore {
-    fn default() -> Self {
-        Self {
-            by_id: DashMap::new(),
-            by_resource: DashMap::new(),
+    pub fn export_snapshot(&self) -> EventPersistSnapshot {
+        let mut events = Vec::new();
+        for tenant in self.by_id.iter() {
+            for e in tenant.value().iter() {
+                events.push(e.value().clone());
+            }
+        }
+        EventPersistSnapshot {
+            version: 1,
+            saved_at: Some(Utc::now().to_rfc3339()),
+            events,
         }
     }
-}
 
-#[async_trait]
-impl EventStore for InMemoryEventStore {
-    async fn upsert(&self, event: CanonicalEventRecord) -> CoreResult<()> {
+    pub fn import_snapshot(&self, snap: EventPersistSnapshot) {
+        for e in snap.events {
+            let _ = self.upsert_sync_no_persist(e);
+        }
+    }
+
+    fn upsert_sync_no_persist(&self, event: CanonicalEventRecord) -> CoreResult<()> {
+        let tenant = event.tenant_id.clone();
+        let event_id = event.event_id.clone();
+        let resource_id = event.resource_id.clone();
+        let tenant_events = self
+            .by_id
+            .entry(tenant.clone())
+            .or_insert_with(DashMap::new);
+        tenant_events.insert(event_id.clone(), event.clone());
+        let by_res = self
+            .by_resource
+            .entry(tenant)
+            .or_insert_with(DashMap::new);
+        let list = by_res
+            .entry(resource_id)
+            .or_insert_with(|| RwLock::new(Vec::new()));
+        {
+            let mut v = list.write();
+            if let Some(pos) = v.iter().position(|e| e.event_id == event_id) {
+                v[pos] = event;
+            } else {
+                v.push(event);
+            }
+            v.sort_by_key(|e| e.event_timestamp);
+        }
+        Ok(())
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> CoreResult<()> {
+        let snap = self.export_snapshot();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CoreError::Storage(format!("event persist mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec(&snap)
+            .map_err(|e| CoreError::Storage(format!("event persist encode: {e}")))?;
+        std::fs::write(&tmp, &bytes)
+            .map_err(|e| CoreError::Storage(format!("event persist write: {e}")))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| CoreError::Storage(format!("event persist rename: {e}")))?;
+        self.dirty.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn load_from_path(&self, path: &Path) -> CoreResult<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|e| CoreError::Storage(format!("event persist read: {e}")))?;
+        let snap: EventPersistSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|e| CoreError::Storage(format!("event persist decode: {e}")))?;
+        let n = snap.events.len();
+        self.import_snapshot(snap);
+        tracing::info!(path = %path.display(), events = n, "loaded embedded V1 event journal");
+        Ok(true)
+    }
+
+    fn maybe_persist(&self) {
+        let n = self.dirty.fetch_add(1, Ordering::Relaxed) + 1;
+        // Flush every 5 writes or when path set and n==1 after load
+        if n % 5 != 0 {
+            return;
+        }
+        let path = self.persist_path.read().clone();
+        if let Some(p) = path {
+            if let Err(e) = self.save_to_path(&p) {
+                tracing::warn!(error = %e, "V1 event persist failed");
+            }
+        }
+    }
+
+    async fn upsert_inner(&self, event: CanonicalEventRecord, persist: bool) -> CoreResult<()> {
         let tenant = event.tenant_id.clone();
         let event_id = event.event_id.clone();
         let resource_id = event.resource_id.clone();
 
-        // ReplacingMergeTree semantics: keep highest acl_version, then sequence.
         let tenant_events = self
             .by_id
             .entry(tenant.clone())
@@ -93,18 +198,6 @@ impl EventStore for InMemoryEventStore {
                         && event.event_sequence_number >= existing.event_sequence_number)
                     || event.event_timestamp >= existing.event_timestamp
                         && event.event_sequence_number >= existing.event_sequence_number;
-                // For pure dedup of identical delivery: same event_id replaces only if newer.
-                if event.acl.acl_version > existing.acl.acl_version
-                    || event.event_sequence_number > existing.event_sequence_number
-                    || (event.event_id == existing.event_id
-                        && event.ingested_at >= existing.ingested_at)
-                {
-                    occ.insert(event.clone());
-                } else if replace {
-                    occ.insert(event.clone());
-                }
-                // Always ensure first write wins for exact same content is fine —
-                // for idempotency, same event_id → single record. Force set:
                 let _ = replace;
                 occ.insert(event.clone());
             }
@@ -122,7 +215,6 @@ impl EventStore for InMemoryEventStore {
             .or_insert_with(|| RwLock::new(Vec::new()));
         {
             let mut v = list.write();
-            // Replace existing same event_id if present.
             if let Some(pos) = v.iter().position(|e| e.event_id == event_id) {
                 v[pos] = event;
             } else {
@@ -130,7 +222,28 @@ impl EventStore for InMemoryEventStore {
             }
             v.sort_by_key(|e| e.event_timestamp);
         }
+        if persist {
+            self.maybe_persist();
+        }
         Ok(())
+    }
+}
+
+impl Default for InMemoryEventStore {
+    fn default() -> Self {
+        Self {
+            by_id: DashMap::new(),
+            by_resource: DashMap::new(),
+            persist_path: RwLock::new(None),
+            dirty: AtomicU64::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl EventStore for InMemoryEventStore {
+    async fn upsert(&self, event: CanonicalEventRecord) -> CoreResult<()> {
+        self.upsert_inner(event, true).await
     }
 
     async fn query(

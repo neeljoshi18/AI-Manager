@@ -1341,6 +1341,39 @@ if ($("btn-team-refresh")) {
 if ($("btn-team-compile")) {
   $("btn-team-compile").addEventListener("click", compileTeamDigests);
 }
+async function seedIntentDemo() {
+  const tenant =
+    $("team-tenant")?.value?.trim() ||
+    $("tenant")?.value?.trim() ||
+    "ten_github";
+  const msg = $("seed-intent-msg");
+  const btn = $("btn-seed-intent");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Seeding…";
+  }
+  try {
+    const out = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/seed/intent_demo`,
+      { method: "POST", body: "{}" }
+    );
+    if (msg) {
+      msg.textContent = `Seeded: ${out.conflict_count ?? "?"} conflict(s), ${out.intent_count ?? "?"} intent(s). Refreshing…`;
+    }
+    await refreshPulse();
+    await refreshGraph(true).catch(() => {});
+  } catch (e) {
+    if (msg) msg.textContent = "Seed failed: " + (e.message || e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Load intent demo (SHIP vs FREEZE)";
+    }
+  }
+}
+if ($("btn-seed-intent")) {
+  $("btn-seed-intent").addEventListener("click", seedIntentDemo);
+}
 if ($("btn-team-add")) {
   $("btn-team-add").addEventListener("click", addTeamMember);
 }

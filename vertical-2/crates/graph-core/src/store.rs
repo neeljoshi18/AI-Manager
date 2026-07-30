@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 #[async_trait]
@@ -76,6 +79,17 @@ pub trait GraphStore: Send + Sync {
     ) -> GraphResult<(Vec<GraphNode>, Vec<GraphEdge>)>;
 }
 
+/// Embedded graph durability snapshot (nodes/edges/states/applied event ids).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GraphPersistSnapshot {
+    pub version: u32,
+    pub saved_at: Option<String>,
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub states: Vec<EntityState>,
+    pub applied: Vec<(String, String)>, // (tenant_id, event_id)
+}
+
 pub struct InMemoryGraphStore {
     applied: DashMap<(String, String), ()>,
     nodes: DashMap<(String, String), GraphNode>,
@@ -83,6 +97,8 @@ pub struct InMemoryGraphStore {
     edges: DashMap<String, RwLock<Vec<GraphEdge>>>,
     /// (tenant, node, key) → state
     states: DashMap<(String, String, String), EntityState>,
+    persist_path: RwLock<Option<std::path::PathBuf>>,
+    dirty: AtomicU64,
 }
 
 impl InMemoryGraphStore {
@@ -92,7 +108,110 @@ impl InMemoryGraphStore {
             nodes: DashMap::new(),
             edges: DashMap::new(),
             states: DashMap::new(),
+            persist_path: RwLock::new(None),
+            dirty: AtomicU64::new(0),
         })
+    }
+
+    pub fn set_persist_path(&self, path: Option<std::path::PathBuf>) {
+        *self.persist_path.write() = path;
+    }
+
+    pub fn export_snapshot(&self) -> GraphPersistSnapshot {
+        let nodes: Vec<GraphNode> = self.nodes.iter().map(|e| e.value().clone()).collect();
+        let mut edges = Vec::new();
+        for t in self.edges.iter() {
+            edges.extend(t.value().read().iter().cloned());
+        }
+        let states: Vec<EntityState> = self.states.iter().map(|e| e.value().clone()).collect();
+        let applied: Vec<(String, String)> = self
+            .applied
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        GraphPersistSnapshot {
+            version: 1,
+            saved_at: Some(Utc::now().to_rfc3339()),
+            nodes,
+            edges,
+            states,
+            applied,
+        }
+    }
+
+    pub fn import_snapshot(&self, snap: GraphPersistSnapshot) {
+        for n in snap.nodes {
+            self.nodes
+                .insert((n.tenant_id.clone(), n.node_id.clone()), n);
+        }
+        for e in snap.edges {
+            let tenant = e.tenant_id.clone();
+            let list = self
+                .edges
+                .entry(tenant)
+                .or_insert_with(|| RwLock::new(Vec::new()));
+            list.write().push(e);
+        }
+        for s in snap.states {
+            self.states.insert(
+                (s.tenant_id.clone(), s.node_id.clone(), s.state_key.clone()),
+                s,
+            );
+        }
+        for (t, eid) in snap.applied {
+            self.applied.insert((t, eid), ());
+        }
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> GraphResult<()> {
+        let snap = self.export_snapshot();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                GraphError::Storage(format!("graph persist mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec(&snap)
+            .map_err(|e| GraphError::Storage(format!("graph persist encode: {e}")))?;
+        std::fs::write(&tmp, bytes)
+            .map_err(|e| GraphError::Storage(format!("graph persist write: {e}")))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| GraphError::Storage(format!("graph persist rename: {e}")))?;
+        self.dirty.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn load_from_path(&self, path: &Path) -> GraphResult<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|e| GraphError::Storage(format!("graph persist read: {e}")))?;
+        let snap: GraphPersistSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|e| GraphError::Storage(format!("graph persist decode: {e}")))?;
+        let n = snap.nodes.len();
+        let e = snap.edges.len();
+        self.import_snapshot(snap);
+        tracing::info!(
+            path = %path.display(),
+            nodes = n,
+            edges = e,
+            "loaded embedded V2 graph snapshot"
+        );
+        Ok(true)
+    }
+
+    fn maybe_persist(&self) {
+        let n = self.dirty.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % 3 != 0 {
+            return;
+        }
+        let path = self.persist_path.read().clone();
+        if let Some(p) = path {
+            if let Err(e) = self.save_to_path(&p) {
+                tracing::warn!(error = %e, "V2 graph persist failed");
+            }
+        }
     }
 
     fn visible_node(ctx: &QueryContext, n: &GraphNode) -> bool {
@@ -115,6 +234,8 @@ impl Default for InMemoryGraphStore {
             nodes: DashMap::new(),
             edges: DashMap::new(),
             states: DashMap::new(),
+            persist_path: RwLock::new(None),
+            dirty: AtomicU64::new(0),
         }
     }
 }
@@ -182,6 +303,7 @@ impl GraphStore for InMemoryGraphStore {
                 }
             }
         }
+        self.maybe_persist();
         Ok(())
     }
 

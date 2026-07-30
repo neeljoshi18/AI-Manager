@@ -957,8 +957,15 @@ function renderGraphChrome(data) {
       banner.classList.remove("hidden");
       banner.innerHTML = `<strong>Map is empty.</strong> ${esc(
         data.message ||
-          "Bridge re-projects V1 events into V2 every ~45s when the graph is empty after a restart. Wait or click Refresh."
-      )}`;
+          "After a redeploy, only durable journals refill the map. New GitHub activity re-projects within ~2 min. Pre-durability history cannot be restored."
+      )} <button type="button" class="ghost" id="btn-banner-seed-intent">Load intent demo</button>`;
+      setTimeout(() => {
+        const b = $("btn-banner-seed-intent");
+        if (b && !b._bound) {
+          b._bound = true;
+          b.addEventListener("click", () => seedIntentDemo());
+        }
+      }, 0);
     } else {
       banner.classList.add("hidden");
       banner.innerHTML = "";
@@ -1346,6 +1353,26 @@ if ($("btn-team-refresh")) {
 }
 if ($("btn-team-compile")) {
   $("btn-team-compile").addEventListener("click", compileTeamDigests);
+}
+async function pruneTeamDuplicates() {
+  const tenant = $("team-tenant")?.value?.trim() || "ten_github";
+  const msg = $("team-compile-msg");
+  try {
+    const out = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team/prune`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (msg) {
+      msg.textContent = `Pruned ${out.pruned ?? 0} duplicate twin(s). Enabled people: ${out.enabled_person_twins ?? "—"}.`;
+    }
+    await refreshTeam();
+    await refreshGraph(true).catch(() => {});
+  } catch (e) {
+    if (msg) msg.textContent = "Prune failed (deploy latest if 404): " + (e.message || e);
+  }
+}
+if ($("btn-team-prune")) {
+  $("btn-team-prune").addEventListener("click", pruneTeamDuplicates);
 }
 async function seedIntentDemo() {
   const tenant =

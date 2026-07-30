@@ -111,12 +111,24 @@ impl GraphSource for HttpV2GraphSource {
             urlencoding_lite(person_node_id),
             hops
         );
-        let nb: V2Neighborhood = self
+        // 404 (unknown person / empty ACL) → empty view, not hard compile failure.
+        // Digests stay empty/non-spam; multi-person team compile continues for others.
+        let nb_resp = self
             .http
             .get(&nb_url)
             .send()
             .await
-            .map_err(|e| TwinError::Upstream(format!("v2 neighborhood: {e}")))?
+            .map_err(|e| TwinError::Upstream(format!("v2 neighborhood: {e}")))?;
+        if nb_resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(GraphView {
+                nodes: vec![],
+                edges: vec![],
+                states: vec![],
+                blockers: vec![],
+                graph_as_of: Some(Utc::now()),
+            });
+        }
+        let nb: V2Neighborhood = nb_resp
             .error_for_status()
             .map_err(|e| TwinError::Upstream(format!("v2 neighborhood status: {e}")))?
             .json()

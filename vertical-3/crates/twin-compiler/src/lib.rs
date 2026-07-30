@@ -99,46 +99,59 @@ impl LedgerCompiler {
         let mut items = Vec::new();
         let mut open_blockers = Vec::new();
 
-        // Map PR / Issue nodes with evidence from authored edges and lifecycle state
+        // Map PR / Issue / Commit / Repo activity with evidence from person-linked edges
         for node in &view.nodes {
             if node.node_id == person_node {
                 continue;
             }
             let ntype = node.node_type.as_str();
-            if !matches!(
-                ntype,
-                "PullRequest" | "Issue" | "Ticket" | "pull_request" | "issue" | "ticket"
-            ) && !node.node_id.starts_with("pr:")
-                && !node.node_id.starts_with("issue:")
-                && !node.node_id.starts_with("ticket:")
-            {
-                // Keep PRs/issues even if type casing differs
-                if !(node.node_id.contains("/pr/") || node.node_id.contains("issue")) {
-                    continue;
-                }
+            let is_pr = ntype.eq_ignore_ascii_case("PullRequest")
+                || node.node_id.starts_with("pr:")
+                || node.node_id.contains("/pr/");
+            let is_issue = ntype.eq_ignore_ascii_case("Issue")
+                || ntype.eq_ignore_ascii_case("Ticket")
+                || node.node_id.starts_with("issue:")
+                || node.node_id.starts_with("ticket:");
+            let is_commit = ntype.eq_ignore_ascii_case("Commit")
+                || node.node_id.starts_with("commit:");
+            let is_repo =
+                ntype.eq_ignore_ascii_case("Repo") || node.node_id.starts_with("repo:");
+            if !(is_pr || is_issue || is_commit || is_repo) {
+                continue;
             }
 
-            // Activity window: include if any edge event or state as_of in period, or always if connected
+            // Activity: AUTHORED / ASSIGNED / PUSHED_TO / CHECKED / any person↔node edge
             let authored = view.edges.iter().find(|e| {
                 e.edge_type.eq_ignore_ascii_case("AUTHORED")
                     && (e.to_node_id == node.node_id || e.from_node_id == node.node_id)
+                    && (e.from_node_id == person_node || e.to_node_id == person_node)
             });
             let assigned = view.edges.iter().find(|e| {
                 e.edge_type.eq_ignore_ascii_case("ASSIGNED_TO")
                     && (e.to_node_id == person_node || e.from_node_id == person_node)
                     && (e.to_node_id == node.node_id || e.from_node_id == node.node_id)
             });
-
-            // Only include work items connected to the person
-            if authored.is_none() && assigned.is_none() {
-                // Also include if person is from/to of any edge to this node
-                let linked = view.edges.iter().any(|e| {
-                    (e.from_node_id == person_node && e.to_node_id == node.node_id)
-                        || (e.to_node_id == person_node && e.from_node_id == node.node_id)
-                });
-                if !linked {
-                    continue;
-                }
+            let pushed = view.edges.iter().find(|e| {
+                e.edge_type.eq_ignore_ascii_case("PUSHED_TO")
+                    && e.from_node_id == person_node
+                    && e.to_node_id == node.node_id
+            });
+            let checked = view.edges.iter().find(|e| {
+                e.edge_type.eq_ignore_ascii_case("CHECKED")
+                    && e.from_node_id == person_node
+                    && e.to_node_id == node.node_id
+            });
+            let linked = view.edges.iter().any(|e| {
+                (e.from_node_id == person_node && e.to_node_id == node.node_id)
+                    || (e.to_node_id == person_node && e.from_node_id == node.node_id)
+            });
+            if authored.is_none()
+                && assigned.is_none()
+                && pushed.is_none()
+                && checked.is_none()
+                && !linked
+            {
+                continue;
             }
 
             let state = view
@@ -153,17 +166,16 @@ impl LedgerCompiler {
 
             let lifecycle = state
                 .map(|s| s.state_value.as_str())
-                .unwrap_or("OPEN");
-            let conf = score_item_confidence(lifecycle, true);
+                .unwrap_or(if is_commit || is_repo { "OPEN" } else { "OPEN" });
+            let conf = if is_commit || pushed.is_some() {
+                // Commits/pushes are medium unless we have merge evidence
+                score_item_confidence(lifecycle, true)
+            } else {
+                score_item_confidence(lifecycle, true)
+            };
 
             let mut evidence = Vec::new();
-            if let Some(e) = authored {
-                evidence.push(format!("edge:{}", e.edge_id));
-                if !e.event_id.is_empty() {
-                    evidence.push(format!("event:{}", e.event_id));
-                }
-            }
-            if let Some(e) = assigned {
+            for e in [authored, assigned, pushed, checked].into_iter().flatten() {
                 evidence.push(format!("edge:{}", e.edge_id));
                 if !e.event_id.is_empty() {
                     evidence.push(format!("event:{}", e.event_id));
@@ -178,18 +190,37 @@ impl LedgerCompiler {
                 evidence.push(format!("node:{}", node.node_id));
             }
 
-            let kind = if node.node_id.starts_with("pr:") || ntype.contains("Pull") {
+            let kind = if is_pr {
                 "pr"
-            } else {
+            } else if is_issue {
                 "issue"
+            } else if is_commit {
+                "commit"
+            } else {
+                "repo"
             };
 
             let title = node
                 .properties
                 .get("title")
+                .or_else(|| node.properties.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or(node.display_name.as_str());
-            let summary = if title.is_empty() {
+            let summary = if is_commit {
+                if title.is_empty() {
+                    format!("Commit {}", node.resource_id.chars().take(7).collect::<String>())
+                } else {
+                    format!("Commit: {title}")
+                }
+            } else if is_repo {
+                if pushed.is_some() {
+                    format!("Pushed to {}", if title.is_empty() { &node.resource_id } else { title })
+                } else if checked.is_some() {
+                    format!("CI/activity on {}", if title.is_empty() { &node.resource_id } else { title })
+                } else {
+                    format!("Active on {}", if title.is_empty() { &node.resource_id } else { title })
+                }
+            } else if title.is_empty() {
                 format!("{} {} ({lifecycle})", kind.to_uppercase(), node.resource_id)
             } else if matches!(lifecycle, "MERGED" | "CLOSED" | "DONE") {
                 format!("{lifecycle} {kind}: {title}")
@@ -210,6 +241,16 @@ impl LedgerCompiler {
                 evidence_refs: evidence,
             });
         }
+        // Cap commit noise: keep at most 5 commit items (most recent-ish order from graph)
+        let mut commit_count = 0usize;
+        items.retain(|it| {
+            if it.kind == "commit" {
+                commit_count += 1;
+                commit_count <= 5
+            } else {
+                true
+            }
+        });
 
         // Open blockers from ACL-visible BLOCKS edges
         for edge in view.blockers.iter().chain(

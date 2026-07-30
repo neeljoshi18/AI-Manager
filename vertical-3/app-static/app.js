@@ -376,6 +376,39 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
+async function refreshTeamDigestsToday() {
+  const el = $("today-team-digests");
+  if (!el) return;
+  const tenant =
+    $("team-tenant")?.value?.trim() ||
+    $("tenant")?.value?.trim() ||
+    "ten_github";
+  try {
+    const team = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`);
+    const members = team.members || [];
+    if (!members.length) {
+      el.innerHTML = `<p class="muted">No team members yet — open <strong>Team</strong> and map ≥2 people.</p>`;
+      return;
+    }
+    el.innerHTML =
+      `<div class="meta-row" style="margin-bottom:0.5rem;">` +
+      `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2"}</span>` +
+      `</div><ul class="item-list">` +
+      members
+        .map((m) => {
+          const d = m.last_digest;
+          const dig = d
+            ? `<strong>${esc(d.status_label || d.status)}</strong> · ${d.dm_sent ? "DM sent" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`
+            : `<span class="muted">no digest yet</span>`;
+          return `<li><strong>${esc(m.display_name || m.subject_id)}</strong> — ${dig}</li>`;
+        })
+        .join("") +
+      `</ul>`;
+  } catch (e) {
+    el.innerHTML = `<p class="muted">Team digests unavailable: ${esc(e.message || e)}</p>`;
+  }
+}
+
 async function refreshPulse() {
   const tenant =
     $("team-tenant")?.value?.trim() ||
@@ -383,6 +416,7 @@ async function refreshPulse() {
     "ten_github";
   const el = $("today-conflicts");
   try {
+    await refreshTeamDigestsToday();
     const pulse = await jfetch(
       `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=1`
     );
@@ -432,6 +466,17 @@ async function refreshPulse() {
   }
 }
 
+function digestCell(m) {
+  const d = m.last_digest;
+  if (!d) {
+    return `<span class="muted small">no digest yet</span>`;
+  }
+  const dm = d.dm_sent ? "DM sent" : "no DM";
+  const st = d.status_label || d.status || "?";
+  const when = (d.updated_at || "").toString().replace("T", " ").slice(0, 16);
+  return `<span class="pill mid">${esc(st)}</span> <span class="muted small">${esc(dm)}${when ? " · " + esc(when) : ""}</span>`;
+}
+
 async function refreshTeam() {
   const tenant = $("team-tenant")?.value?.trim() || "ten_github";
   const body = $("team-body");
@@ -439,15 +484,17 @@ async function refreshTeam() {
   try {
     const team = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`);
     if (ready) {
+      const withDigest = (team.members || []).filter((m) => m.last_digest).length;
       ready.innerHTML = [
         `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2 Slack maps"}</span>`,
         `<span class="pill mid">${team.slack_mapped_count ?? 0} mapped / ${team.person_count ?? 0} members</span>`,
+        `<span class="pill mid">${withDigest} with digests</span>`,
       ].join("");
     }
     if (body) {
       const members = team.members || [];
       if (!members.length) {
-        body.innerHTML = `<tr><td colspan="4" class="muted">No members yet — add two humans below.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="5" class="muted">No members yet — add two humans below.</td></tr>`;
       } else {
         body.innerHTML = members
           .map((m) => {
@@ -462,6 +509,7 @@ async function refreshTeam() {
               <td><code class="small">${sub}</code></td>
               <td><code class="small">${esc(m.slack_user_id || "—")}</code></td>
               <td>${m.slack_mapped ? "✓" : "○"}</td>
+              <td>${digestCell(m)}</td>
             </tr>`;
           })
           .join("");
@@ -470,7 +518,40 @@ async function refreshTeam() {
     await refreshPulse();
   } catch (e) {
     if (body) {
-      body.innerHTML = `<tr><td colspan="4" class="muted">Team load failed: ${esc(e.message || e)}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="5" class="muted">Team load failed: ${esc(e.message || e)}</td></tr>`;
+    }
+  }
+}
+
+async function compileTeamDigests() {
+  const tenant = $("team-tenant")?.value?.trim() || "ten_github";
+  const msg = $("team-compile-msg");
+  const btn = $("btn-team-compile");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Compiling…";
+  }
+  try {
+    const out = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team/compile`, {
+      method: "POST",
+      body: JSON.stringify({ force_notify: false, allow_notify: true }),
+    });
+    if (msg) {
+      const lines = (out.results || [])
+        .map(
+          (r) =>
+            `${r.display_name || r.twin_id}: ${r.ok === false ? "ERR " + (r.error || "") : `items=${r.item_count} dm=${r.dm_sent ? "yes" : "no"}${r.suppressed ? " (" + r.suppressed + ")" : ""}${r.empty ? " empty" : ""}`}`
+        )
+        .join(" · ");
+      msg.textContent = `Compiled ${out.compiled ?? 0}, DMs ${out.dms_sent ?? 0}. ${lines}`;
+    }
+    await refreshTeam();
+  } catch (e) {
+    if (msg) msg.textContent = "Compile all failed: " + (e.message || e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Compile all digests";
     }
   }
 }
@@ -1256,6 +1337,9 @@ if ($("btn-gh-app")) {
 }
 if ($("btn-team-refresh")) {
   $("btn-team-refresh").addEventListener("click", refreshTeam);
+}
+if ($("btn-team-compile")) {
+  $("btn-team-compile").addEventListener("click", compileTeamDigests);
 }
 if ($("btn-team-add")) {
   $("btn-team-add").addEventListener("click", addTeamMember);

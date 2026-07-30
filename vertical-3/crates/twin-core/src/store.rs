@@ -3,8 +3,11 @@
 use crate::error::{TwinError, TwinResult};
 use crate::model::*;
 use async_trait::async_trait;
+use chrono::Utc;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 
 #[async_trait]
@@ -46,6 +49,12 @@ pub trait TwinStore: Send + Sync {
         ledger_id: &str,
     ) -> TwinResult<Option<DraftDelivery>>;
     async fn update_draft(&self, draft: DraftDelivery) -> TwinResult<()>;
+    /// All drafts for a twin (newest first). Used by multi-person Team digests board.
+    async fn list_drafts_for_twin(
+        &self,
+        tenant_id: &str,
+        twin_id: &str,
+    ) -> TwinResult<Vec<DraftDelivery>>;
 
     /// Insert publish record. Unique (tenant_id, ledger_id) — returns Ok(false) if already exists.
     async fn put_publish_if_absent(&self, rec: PublishRecord) -> TwinResult<bool>;
@@ -56,6 +65,17 @@ pub trait TwinStore: Send + Sync {
     ) -> TwinResult<Option<PublishRecord>>;
 
     async fn put_compile_run(&self, run: CompileRun) -> TwinResult<()>;
+}
+
+/// On-disk snapshot for embedded staging (twins + slack maps + drafts survive restart).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TwinPersistSnapshot {
+    pub version: u32,
+    pub saved_at: Option<String>,
+    pub twins: Vec<Twin>,
+    pub slack_maps: Vec<SlackUserMap>,
+    pub drafts: Vec<DraftDelivery>,
+    pub ledgers: Vec<LedgerSnapshot>,
 }
 
 pub struct InMemoryTwinStore {
@@ -87,6 +107,105 @@ impl InMemoryTwinStore {
             compile_runs: DashMap::new(),
             lock: RwLock::new(()),
         })
+    }
+
+    /// Export durable pilot state (team map + digests) for embedded restarts.
+    pub fn export_snapshot(&self) -> TwinPersistSnapshot {
+        let twins: Vec<Twin> = self.twins.iter().map(|e| e.value().clone()).collect();
+        let slack_maps: Vec<SlackUserMap> =
+            self.slack_map.iter().map(|e| e.value().clone()).collect();
+        let drafts: Vec<DraftDelivery> = self.drafts.iter().map(|e| e.value().clone()).collect();
+        let ledgers: Vec<LedgerSnapshot> =
+            self.ledgers.iter().map(|e| e.value().clone()).collect();
+        TwinPersistSnapshot {
+            version: 1,
+            saved_at: Some(Utc::now().to_rfc3339()),
+            twins,
+            slack_maps,
+            drafts,
+            ledgers,
+        }
+    }
+
+    /// Restore from disk. Merges (upserts) into current maps — does not wipe unknown keys first.
+    pub fn import_snapshot(&self, snap: TwinPersistSnapshot) {
+        for t in snap.twins {
+            self.twins
+                .insert((t.tenant_id.clone(), t.twin_id.clone()), t);
+        }
+        for m in snap.slack_maps {
+            self.slack_map
+                .insert((m.tenant_id.clone(), m.global_user_id.clone()), m);
+        }
+        for d in snap.drafts {
+            let ledger_key = (d.tenant_id.clone(), d.ledger_id.clone());
+            self.draft_by_ledger
+                .insert(ledger_key, d.draft_id.clone());
+            self.drafts
+                .insert((d.tenant_id.clone(), d.draft_id.clone()), d);
+        }
+        for snap_l in snap.ledgers {
+            let pk = (
+                snap_l.tenant_id.clone(),
+                snap_l.twin_id.clone(),
+                snap_l.period_start.to_rfc3339(),
+                snap_l.period_end.to_rfc3339(),
+            );
+            self.ledger_period
+                .insert(pk, snap_l.ledger_id.clone());
+            self.ledgers.insert(
+                (snap_l.tenant_id.clone(), snap_l.ledger_id.clone()),
+                snap_l,
+            );
+        }
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> TwinResult<()> {
+        let snap = self.export_snapshot();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TwinError::Storage(format!("persist mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec_pretty(&snap)
+            .map_err(|e| TwinError::Storage(format!("persist encode: {e}")))?;
+        std::fs::write(&tmp, bytes)
+            .map_err(|e| TwinError::Storage(format!("persist write {}: {e}", tmp.display())))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| TwinError::Storage(format!("persist rename {}: {e}", path.display())))?;
+        Ok(())
+    }
+
+    pub fn load_from_path(&self, path: &Path) -> TwinResult<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|e| TwinError::Storage(format!("persist read {}: {e}", path.display())))?;
+        let snap: TwinPersistSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|e| TwinError::Storage(format!("persist decode: {e}")))?;
+        let n_twins = snap.twins.len();
+        let n_maps = snap.slack_maps.len();
+        self.import_snapshot(snap);
+        tracing::info!(
+            path = %path.display(),
+            twins = n_twins,
+            slack_maps = n_maps,
+            "loaded embedded twin persist snapshot"
+        );
+        Ok(true)
+    }
+
+    pub fn latest_draft_for_twin(&self, tenant_id: &str, twin_id: &str) -> Option<DraftDelivery> {
+        let mut drafts: Vec<DraftDelivery> = self
+            .drafts
+            .iter()
+            .filter(|e| e.key().0 == tenant_id && e.value().twin_id == twin_id)
+            .map(|e| e.value().clone())
+            .collect();
+        drafts.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        drafts.into_iter().next()
     }
 }
 
@@ -276,6 +395,21 @@ impl TwinStore for InMemoryTwinStore {
         Ok(())
     }
 
+    async fn list_drafts_for_twin(
+        &self,
+        tenant_id: &str,
+        twin_id: &str,
+    ) -> TwinResult<Vec<DraftDelivery>> {
+        let mut drafts: Vec<DraftDelivery> = self
+            .drafts
+            .iter()
+            .filter(|e| e.key().0 == tenant_id && e.value().twin_id == twin_id)
+            .map(|e| e.value().clone())
+            .collect();
+        drafts.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(drafts)
+    }
+
     async fn put_publish_if_absent(&self, rec: PublishRecord) -> TwinResult<bool> {
         let _g = self.lock.write();
         let ledger_key = (rec.tenant_id.clone(), rec.ledger_id.clone());
@@ -310,5 +444,55 @@ impl TwinStore for InMemoryTwinStore {
         self.compile_runs
             .insert((run.tenant_id.clone(), run.run_id.clone()), run);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::*;
+    use crate::ids::person_twin_id;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn snapshot_roundtrip_keeps_team_map() {
+        let store = InMemoryTwinStore::new();
+        let now = Utc::now();
+        let twin = Twin {
+            tenant_id: "ten_github".into(),
+            twin_id: person_twin_id("gu_a"),
+            twin_kind: TwinKind::Person,
+            subject_id: "gu_a".into(),
+            display_name: "A".into(),
+            timezone: "UTC".into(),
+            channel_id: "C1".into(),
+            shadow_until: None,
+            high_auto_publish: false,
+            enabled: true,
+            config_json: serde_json::json!({"provider_aliases": ["alice"]}),
+            created_at: now,
+            updated_at: now,
+        };
+        store.upsert_twin(twin).await.unwrap();
+        store
+            .put_slack_map(SlackUserMap {
+                tenant_id: "ten_github".into(),
+                global_user_id: "gu_a".into(),
+                slack_user_id: "U1".into(),
+                slack_team_id: String::new(),
+            })
+            .await
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("twin_persist_test_{}", now.timestamp_nanos_opt().unwrap_or(0)));
+        let path = dir.join("twin_state.json");
+        store.save_to_path(&path).unwrap();
+
+        let store2 = InMemoryTwinStore::new();
+        assert!(store2.load_from_path(&path).unwrap());
+        let twins = store2.list_twins("ten_github").await.unwrap();
+        assert_eq!(twins.len(), 1);
+        let maps = store2.list_slack_maps("ten_github").await.unwrap();
+        assert_eq!(maps.len(), 1);
+        assert_eq!(maps[0].slack_user_id, "U1");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

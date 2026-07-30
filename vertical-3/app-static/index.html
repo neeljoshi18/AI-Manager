@@ -74,6 +74,11 @@
           <div id="today-conflicts" class="empty-hint">Loading pulse…</div>
         </div>
         <div class="card">
+          <h2>Team digests</h2>
+          <p class="muted small">Latest draft per mapped person (multi-person board). Empty = no DM.</p>
+          <div id="today-team-digests" class="empty-hint">Loading team digests…</div>
+        </div>
+        <div class="card">
           <h2>Latest status snapshot</h2>
           <div id="today-latest" class="empty-hint">No status yet. Open <strong>My status</strong> or send a test under <strong>Connections</strong>.</div>
         </div>
@@ -126,18 +131,20 @@
       <section id="view-team" class="view hidden">
         <div class="card">
           <h2>Multi-person Slack map</h2>
-          <p class="muted small">Map ≥2 humans for multi-member digests. Bridge merges this map with <code>SLACK_USER_MAP</code> (never DMs — ingest only).</p>
+          <p class="muted small">Map ≥2 humans for multi-member digests. Bridge merges this map with <code>SLACK_USER_MAP</code> (never DMs — ingest only). Embedded twin state persists to disk so maps survive restarts.</p>
           <label>Tenant <input id="team-tenant" value="ten_github" /></label>
           <div class="actions" style="margin-top:0.75rem;">
             <button id="btn-team-refresh" class="ghost">Refresh team</button>
+            <button id="btn-team-compile" class="primary" type="button">Compile all digests</button>
           </div>
+          <p class="muted small" id="team-compile-msg">Compile all = recompute status for every mapped person. Slack only if Notify Policy v1 allows (not force).</p>
           <div id="team-ready" class="meta-row" style="margin-top:0.75rem;"></div>
           <table class="kv" id="team-table">
             <thead>
-              <tr><th>Name</th><th>Subject / provider</th><th>Slack</th><th>Mapped</th></tr>
+              <tr><th>Name</th><th>Subject / provider</th><th>Slack</th><th>Mapped</th><th>Last digest</th></tr>
             </thead>
             <tbody id="team-body">
-              <tr><td colspan="4" class="muted">Load team…</td></tr>
+              <tr><td colspan="5" class="muted">Load team…</td></tr>
             </tbody>
           </table>
         </div>

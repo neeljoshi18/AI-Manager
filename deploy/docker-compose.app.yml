@@ -129,6 +129,15 @@ services:
       NOTIFY_ON_COMPILE: ${NOTIFY_ON_COMPILE:-false}
       APP_STATIC_DIR: /app/app-static
       DEMO_STATIC_DIR: /app/demo-static
+      # Survive twin-api restarts (embedded): team map + digests on disk (A2/A3).
+      TWIN_EMBEDDED_STATE_PATH: ${TWIN_EMBEDDED_STATE_PATH:-/var/lib/ai-manager/twin_state.json}
+      TWIN_PERSIST_INTERVAL_SECS: ${TWIN_PERSIST_INTERVAL_SECS:-30}
+      # Same keys as bridge — seed multi-person maps on cold start
+      SLACK_USER_MAP: ${SLACK_USER_MAP:-222674398:U0APK7W1X99,neeljoshi18:U0APK7W1X99,309182469:U0BLN0N7VB5,paneerjeera:U0BLN0N7VB5}
+      SEED_TEAM_TENANT: ${DEFAULT_TENANT_ID:-ten_github}
+      SEED_TEAM_CHANNEL: ${SLACK_TEST_CHANNEL_ID:-C0APN754MQV}
+    volumes:
+      - twin_state:/var/lib/ai-manager
     depends_on:
       - v1
       - v2
@@ -218,3 +227,4 @@ volumes:
   caddy_data:
   caddy_config:
   bridge_state:
+  twin_state:

@@ -30,8 +30,8 @@ Lessons from slop (Graph 0/0, spam DMs, unproven multi-person, jargon “veto”
 | ID | Item | Status |
 |----|------|--------|
 | A1 | Notify Policy v1 (change-only + daily cap) | **Live-verified 2026-07-30** — staging `/metrics`: 168 compiles, 2 DMs sent, **166 suppressed**, `notify_policy: v1_change_only_daily_cap` |
-| A2 | Multi-person digests proven | **Mapped 2026-07-30** — Team multi_person_ready; p2 force-DM sent (`U0BLN0N7VB5` / paneerjeera). Still need real GitHub activity from both logins for full proof |
-| A3 | Graph durability / no mystery empty | **Hardened 2026-07-30** — bridge recovery mode (burst re-project on empty/V2 recover); Connections `graph_status` nodes/edges; autoheal retained |
+| A2 | Multi-person digests proven | **Plumbing airtight 2026-07-30** — map + seed + Team digests board + `POST …/team/compile` + persist; p2 force-DM sent. **Live real-PR digests for both GH logins** still needs activity / post-deploy seed |
+| A3 | Graph durability / no mystery empty | **Hardened 2026-07-30** — bridge recovery + twin-api **embedded state file** (`TWIN_EMBEDDED_STATE_PATH`) so team maps survive restarts |
 | A4 | Approve / Edit / Don’t send UX | **Shipped** + 2026-07-30 evidence/empty-draft polish |
 | A5 | Partner install runbook | **Shipped** — `starting-out-documents/Design Partner_ Install Runbook.md` |
 | A6 | Empty/wrong draft UX | **Improved** — evidence on items; empty banner; no-DM copy |

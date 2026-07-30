@@ -84,8 +84,8 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin
 | ID | Gap | Airtight done means |
 |----|-----|---------------------|
 | **A1** | Notify non-spam | **Live-verified 2026-07-30** (staging: 166 suppressed / 2 sent) |
-| **A2** | Multi-person digests proven | 2 mapped humans, both get correct rare digests; Graph shows both — **blocked on 2nd human IDs** |
-| **A3** | Durable graph on staging | **Hardened 2026-07-30**: recovery mode + Connections graph_status; re-fill target &lt;2 min |
+| **A2** | Multi-person digests proven | Map + digests board + compile-all + persist shipped; 2nd human mapped (`paneerjeera`/`U0BLN0N7VB5`). Full proof = real PRs from both logins after deploy |
+| **A3** | Durable graph on staging | Recovery mode + graph_status + **twin embedded persist** (team/digests survive twin-api restart) |
 | **A4** | Status loop as finished product | Approve / Edit / Don’t send clear; silence rules in UI |
 | **A5** | Partner install runbook | **Shipped** `Design Partner_ Install Runbook.md` |
 | **A6** | Empty / wrong-draft UX | **Improved** evidence on items + empty banner (no DM) |

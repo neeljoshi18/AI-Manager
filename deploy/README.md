@@ -54,6 +54,8 @@ Bridge **never** posts Slack (ADR-014). Env:
 | `SLACK_TEST_CHANNEL_ID` | Optional team channel on twin |
 | `BRIDGE_POLL_SECS` | Default 5 |
 | `BRIDGE_RECOVERY_MAX_PER_TICK` | Burst project rate while graph empty (default 12) |
+| `TWIN_EMBEDDED_STATE_PATH` | twin-api: persist team map + digests across restarts |
+| `SLACK_USER_MAP` (twin-api) | Seeds multi-person Team on cold start (same format as bridge) |
 
 Partner install: `starting-out-documents/Design Partner_ Install Runbook.md`
 

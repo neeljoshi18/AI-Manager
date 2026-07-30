@@ -226,6 +226,35 @@
 
 ---
 
+## 2026-07-30b — Session: A2 plumbing airtight + embedded twin persist
+
+### Context
+
+- Second human fields provided (paneerjeera / U0BLN0N7VB5); mapped live on staging.
+- Founder: keep shipping until manual block.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Persist embedded twin state to disk | Staging team maps wiped on twin-api restart — A2/A3 reliability |
+| 2 | Seed multi-person from SLACK_USER_MAP on boot | Cold start still multi_person_ready |
+| 3 | Team digests board + compile-all endpoint | Prove multi-person without waiting 30m windows |
+| 4 | Onboarding steps include map ≥2 + digests | Product truth for pilot path |
+
+### Artifacts
+
+- `TWIN_EMBEDDED_STATE_PATH` + volume `twin_state`  
+- `POST /v3/tenants/{t}/team/compile`  
+- Team/Today digests UI  
+
+### Open questions
+
+1. Deploy rebuild on droplet (SSH was blocked earlier)  
+2. Real GH activity from both logins for non-force digests  
+
+---
+
 ## Template for future entries
 
 ```markdown

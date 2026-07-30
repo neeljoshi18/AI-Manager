@@ -409,6 +409,32 @@ impl TwinStore for CrdbTwinStore {
         Ok(())
     }
 
+    async fn list_drafts_for_twin(
+        &self,
+        tenant_id: &str,
+        twin_id: &str,
+    ) -> TwinResult<Vec<DraftDelivery>> {
+        let rows = sqlx::query(
+            r#"SELECT tenant_id, draft_id, ledger_id, twin_id, status,
+                      slack_dm_channel, slack_dm_ts, draft_text, edited_text,
+                      veto_deadline, created_at, updated_at
+               FROM draft_delivery
+               WHERE tenant_id = $1 AND twin_id = $2
+               ORDER BY updated_at DESC
+               LIMIT 50"#,
+        )
+        .bind(tenant_id)
+        .bind(twin_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| TwinError::Storage(e.to_string()))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(row_to_draft(r)?);
+        }
+        Ok(out)
+    }
+
     async fn put_publish_if_absent(&self, rec: PublishRecord) -> TwinResult<bool> {
         let res = sqlx::query(
             r#"

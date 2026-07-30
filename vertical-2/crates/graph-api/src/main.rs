@@ -788,9 +788,63 @@ async fn graph_snapshot(
         *edge_by_type.entry(e.edge_type.clone()).or_insert(0) += 1;
     }
 
+    // Collapse Person duplicates that share the same display_name (e.g. multiple gu_*
+    // after embedded identity resets). Prefer person with highest edge degree, then
+    // numeric GitHub resource_id.
+    let mut degree: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for e in &edges {
+        *degree.entry(e.from_node_id.clone()).or_insert(0) += 1;
+        *degree.entry(e.to_node_id.clone()).or_insert(0) += 1;
+    }
+    let mut by_label: std::collections::HashMap<String, Vec<&graph_core::model::GraphNode>> =
+        std::collections::HashMap::new();
+    for n in &nodes {
+        if !n.node_type.eq_ignore_ascii_case("Person") {
+            continue;
+        }
+        let lab = if n.display_name.is_empty() {
+            n.node_id.to_ascii_lowercase()
+        } else {
+            n.display_name.to_ascii_lowercase()
+        };
+        // Keep demo alice/bob distinct
+        if lab == "alice" || lab == "bob" {
+            continue;
+        }
+        by_label.entry(lab).or_default().push(n);
+    }
+    let mut person_alias: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut drop_persons: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (_lab, group) in by_label {
+        if group.len() <= 1 {
+            continue;
+        }
+        let mut ranked = group;
+        ranked.sort_by(|a, b| {
+            let score = |n: &graph_core::model::GraphNode| {
+                let deg = *degree.get(&n.node_id).unwrap_or(&0);
+                let numeric = if n.resource_id.chars().all(|c| c.is_ascii_digit()) {
+                    1usize
+                } else {
+                    0
+                };
+                let not_seed = if n.node_id.contains("gu_seed_") { 0usize } else { 1 };
+                (deg, numeric, not_seed)
+            };
+            score(b).cmp(&score(a))
+        });
+        let canonical = ranked[0].node_id.clone();
+        for n in ranked.into_iter().skip(1) {
+            person_alias.insert(n.node_id.clone(), canonical.clone());
+            drop_persons.insert(n.node_id.clone());
+        }
+    }
+
     // Light view models for UI (trim heavy properties)
     let node_views: Vec<serde_json::Value> = nodes
         .iter()
+        .filter(|n| !drop_persons.contains(&n.node_id))
         .map(|n| {
             let intent_type = n
                 .properties
@@ -817,11 +871,19 @@ async fn graph_snapshot(
     let edge_views: Vec<serde_json::Value> = edges
         .iter()
         .map(|e| {
+            let from = person_alias
+                .get(&e.from_node_id)
+                .cloned()
+                .unwrap_or_else(|| e.from_node_id.clone());
+            let to = person_alias
+                .get(&e.to_node_id)
+                .cloned()
+                .unwrap_or_else(|| e.to_node_id.clone());
             json!({
                 "id": e.edge_id,
                 "type": e.edge_type,
-                "from": e.from_node_id,
-                "to": e.to_node_id,
+                "from": from,
+                "to": to,
                 "event_id": e.event_id,
                 "valid_from": e.valid_from,
             })
@@ -838,6 +900,7 @@ async fn graph_snapshot(
         "edge_by_type": edge_by_type,
         "nodes": node_views,
         "edges": edge_views,
+        "person_aliases_collapsed": person_alias.len(),
         "truncated": total_nodes as usize > node_views.len() || total_edges as usize > edge_views.len(),
         "engine": "acl_snapshot_v0",
     })))

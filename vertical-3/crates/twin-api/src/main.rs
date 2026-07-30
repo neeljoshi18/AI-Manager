@@ -1690,6 +1690,7 @@ async fn upsert_team_member(
                 .await;
         }
     }
+    let _ = prune_duplicate_slack_twins(st.store.as_ref(), &tenant_id).await;
     persist_embedded(&st);
     Ok((
         StatusCode::CREATED,

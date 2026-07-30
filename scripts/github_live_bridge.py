@@ -342,6 +342,11 @@ def slack_for_actor(actor: dict) -> str | None:
 
 
 def ensure_twin(actor: dict) -> None:
+    """Register person twin via Team API so aliases + prune stay coherent.
+
+    Prefer Team /members (not raw /twins) so we attach provider aliases and the
+    twin-api can collapse multiple gu_* for the same Slack user.
+    """
     if not TWIN:
         return
     gu = (actor.get("global_user_id") or "").strip()
@@ -351,16 +356,25 @@ def ensure_twin(actor: dict) -> None:
     if not slack:
         return
     name = (actor.get("display_name") or "").strip() or DEFAULT_NAME
+    pu = str(actor.get("provider_user_id") or "").strip()
+    aliases = [a for a in (name, pu, gu) if a]
     body = {
-        "twin_kind": "person",
         "subject_id": gu,
         "display_name": name,
         "slack_user_id": slack,
+        "provider_aliases": aliases,
+        "skip_shadow": True,
+        "enabled": True,
     }
     if DEFAULT_CHANNEL:
         body["channel_id"] = DEFAULT_CHANNEL
     try:
-        post(f"{TWIN}/v3/tenants/{TENANT}/twins", body, timeout=12)
+        post(f"{TWIN}/v3/tenants/{TENANT}/team/members", body, timeout=12)
+        # Best-effort collapse of historical duplicate twins for this Slack user
+        try:
+            post(f"{TWIN}/v3/tenants/{TENANT}/team/prune", {}, timeout=8)
+        except Exception:
+            pass
         print(f"twin upsert subject={gu} slack={slack} name={name}", flush=True)
     except Exception as e:
         print(f"twin upsert fail subject={gu}: {e}", flush=True)

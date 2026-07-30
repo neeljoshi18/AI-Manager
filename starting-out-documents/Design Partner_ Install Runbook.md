@@ -67,8 +67,9 @@ Bridge merges Team map every ~60s. Unmapped humans do **not** get default-Slack 
 ## 4. First digests (prove the loop)
 
 1. Each mapped human has open, non-empty work (PR/issue) under ACL groups the graph can see.
-2. Wait for compile/notify window **or** use **Send test status DM** once per person (force path; does not disable Notify Policy for live windows).
-3. In Slack DM, product language:
+2. **Team → Compile all digests** (policy-respecting) **or** wait for the scheduler window **or** **Send test status DM** once per person (force path for demo only).
+3. **Today → Team digests** shows last draft status per person (empty = no DM).
+4. In Slack DM, product language:
 
 | Action | Meaning |
 |--------|---------|
@@ -95,10 +96,14 @@ Bridge merges Team map every ~60s. Unmapped humans do **not** get default-Slack 
 GET /healthz                          → twin-api ok
 GET /metrics                          → notify_policy + suppress ≫ sent
 GET /v3/demo/status                   → v1/v2/egress; graph_status ok|empty|v2_down
-GET /v3/tenants/ten_github/team       → multi_person_ready true
+GET /v3/tenants/ten_github/team       → multi_person_ready true + last_digest per member
+POST /v3/tenants/ten_github/team/compile  → compile all (force_notify=false by default)
 GET /v3/tenants/ten_github/graph      → totals.nodes > 0 (or empty with clear message)
 GET /v3/tenants/ten_github/pulse      → intents sample when work exists
 ```
+
+Embedded staging: twin state file (`TWIN_EMBEDDED_STATE_PATH`) + `SLACK_USER_MAP` seed keep multi-person maps across twin-api restarts.
+
 
 If Graph is empty after a V2 restart: wait &lt;2 minutes for bridge **recovery mode** (clears seen, burst re-project). Autoheal restarts wedged V2.
 

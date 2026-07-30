@@ -25,11 +25,12 @@
 ## Open / next (do without asking unless blocked)
 
 1. ~~After deploy: prune + multi-person verify~~ — team is 2 clean humans (2026-07-31)  
-2. Graph UI: collapse same-label people + hide demo alice/bob by default  
-3. Dual-person digests from real GH work (compile path + evidence)  
-4. Partner install runbook: note Wi‑Fi/SSH for founder ops only  
-5. Cockroach durability path when droplet can afford it  
-6. Soft outreach package final check  
+2. ~~Graph UI: collapse same-label people + hide demo alice/bob~~ (on main; needs deploy)  
+3. ~~Digests include commits/pushes~~ (on main; needs deploy) — was empty for pure git activity  
+4. ~~Neighborhood 404 soft-fail~~ so multi-person compile continues  
+5. Dual-person digests with non-empty items after deploy + ensure_users  
+6. Cockroach durability path when droplet can afford it  
+7. Soft outreach package final check  
 
 ## ICP bar (recruitable pilot)
 

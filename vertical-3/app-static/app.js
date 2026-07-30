@@ -1464,6 +1464,9 @@ if ($("btn-graph-fit")) {
     drawGraph();
   });
 }
+if ($("graph-hide-demo")) {
+  $("graph-hide-demo").addEventListener("change", () => refreshGraph(true));
+}
 if ($("graph-live")) {
   $("graph-live").addEventListener("change", () => {
     if ($("view-graph")?.classList.contains("hidden")) return;

@@ -827,11 +827,56 @@ async function refreshGraph(forceLayout) {
 function mergeGraphData(data, forceLayout) {
   const prev = new Map(graphState.nodes.map((n) => [n.id, n]));
   const types = new Set();
-  // Hide duplicate floating Person nodes (same label; prefer non-team-map / non-duplicate)
+  // Hide demo seed people + collapse same-label Person nodes (one human = one node)
+  const edgeDeg = new Map();
+  for (const e of data.edges || []) {
+    edgeDeg.set(e.from, (edgeDeg.get(e.from) || 0) + 1);
+    edgeDeg.set(e.to, (edgeDeg.get(e.to) || 0) + 1);
+  }
+  const hideDemo =
+    $("graph-hide-demo")?.checked !== false; /* default hide alice/bob seed */
+  const bestByLabel = new Map(); // label_lower -> node
+  for (const n of data.nodes || []) {
+    if (normalizeType(n.type) !== "Person") continue;
+    if (n.duplicate_person) continue;
+    const lab = String(n.label || n.id || "").toLowerCase();
+    if (hideDemo && (lab === "alice" || lab === "bob")) continue;
+    const prevN = bestByLabel.get(lab);
+    if (!prevN) {
+      bestByLabel.set(lab, n);
+      continue;
+    }
+    const dNew = edgeDeg.get(n.id) || 0;
+    const dOld = edgeDeg.get(prevN.id) || 0;
+    // Prefer more connected; then prefer non-from_team_map; then numeric resource_id
+    const score = (node, deg) => {
+      let s = deg * 10;
+      if (!node.from_team_map) s += 3;
+      if (/^\d+$/.test(String(node.resource_id || ""))) s += 2;
+      if (!String(node.id || "").includes("gu_seed_")) s += 1;
+      return s;
+    };
+    if (score(n, dNew) > score(prevN, dOld)) bestByLabel.set(lab, n);
+  }
+  const keepPersonIds = new Set([...bestByLabel.values()].map((n) => n.id));
+  // Rewrite edges that pointed at collapsed people
+  const aliasTo = new Map();
+  for (const n of data.nodes || []) {
+    if (normalizeType(n.type) !== "Person") continue;
+    const lab = String(n.label || n.id || "").toLowerCase();
+    const keep = bestByLabel.get(lab);
+    if (keep && keep.id !== n.id) aliasTo.set(n.id, keep.id);
+  }
+  if (data.edges) {
+    data.edges = data.edges.map((e) => ({
+      ...e,
+      from: aliasTo.get(e.from) || e.from,
+      to: aliasTo.get(e.to) || e.to,
+    }));
+  }
   const rawNodes = (data.nodes || []).filter((n) => {
     if (normalizeType(n.type) !== "Person") return true;
-    if (n.duplicate_person) return false;
-    return true;
+    return keepPersonIds.has(n.id);
   });
   const nodes = rawNodes.map((n, i) => {
     const type = normalizeType(n.type);

@@ -6,6 +6,8 @@
 
 **Airtight done means:** both people get correct digests when work changes; Graph shows both; empty windows do **not** DM; same open PR does **not** re-DM every 30 minutes.
 
+**Founder ops note:** Some campus Wi‑Fi networks block **SSH** to the staging droplet. Use a mobile hotspot only when a deploy is required. Day-to-day product checks use HTTPS only.
+
 ---
 
 ## 0. Preconditions

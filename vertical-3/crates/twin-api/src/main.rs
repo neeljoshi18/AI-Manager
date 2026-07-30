@@ -414,6 +414,10 @@ async fn main() -> anyhow::Result<()> {
             "/v3/tenants/{tenant_id}/team/prune",
             post(prune_team_duplicates),
         )
+        .route(
+            "/v3/tenants/{tenant_id}/graph/ensure_users",
+            post(ensure_graph_users),
+        )
         .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
         .route("/v3/tenants/{tenant_id}/graph", get(get_graph_snapshot))
@@ -1734,6 +1738,31 @@ async fn compile_team(
         .map_err(ApiError::from)?;
     let service = DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
     let mut results = Vec::new();
+    // Ensure V2 membership so neighborhood is ACL-visible for each person twin
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    if let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        for t in twins.iter().filter(|t| t.enabled && t.twin_kind == TwinKind::Person) {
+            let _ = client
+                .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+                .json(&json!({
+                    "global_user_id": t.subject_id,
+                    "groups": ["grp_eng", "grp_default"],
+                }))
+                .send()
+                .await;
+        }
+        let _ = client
+            .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+            .json(&json!({
+                "global_user_id": "bridge_reader",
+                "groups": ["grp_eng", "grp_default"],
+            }))
+            .send()
+            .await;
+    }
     for twin in twins
         .into_iter()
         .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
@@ -1823,6 +1852,50 @@ async fn compile_team(
         "notify_policy": "v1_change_only_daily_cap",
         "results": results,
         "note": "force_notify=false respects change-only + daily cap. Empty ledgers never DM.",
+    })))
+}
+
+/// Seed V2 membership for all enabled person twins (fix neighborhood 404 under ACL).
+async fn ensure_graph_users(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
+    let mut seeded = Vec::new();
+    let mut ids: Vec<String> = twins
+        .iter()
+        .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
+        .map(|t| t.subject_id.clone())
+        .collect();
+    ids.push("bridge_reader".into());
+    for uid in ids {
+        let res = client
+            .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+            .json(&json!({
+                "global_user_id": uid,
+                "groups": ["grp_eng", "grp_default"],
+            }))
+            .send()
+            .await;
+        match res {
+            Ok(r) if r.status().is_success() => seeded.push(uid),
+            Ok(r) => tracing::warn!(user = %uid, status = %r.status(), "v2 seed user non-success"),
+            Err(e) => tracing::warn!(user = %uid, error = %e, "v2 seed user failed"),
+        }
+    }
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "seeded_users": seeded,
+        "note": "Ensured grp_eng membership so person neighborhood compiles for digests",
     })))
 }
 

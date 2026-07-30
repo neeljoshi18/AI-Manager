@@ -16,22 +16,28 @@
 - Twin prune one-per-Slack; graph hides duplicate Person labels  
 - Deploy script no longer dies on sudo swap  
 
+## Ops note (SSH / college Wi‑Fi)
+
+- **College Wi‑Fi blocks SSH** to the droplet; **mobile hotspot works**.  
+- Agent must **not SSH casually**. Only when a deploy/restart is required: stop and ask founder to switch to hotspot.  
+- Prefer HTTPS APIs + git push for all other work.
+
 ## Open / next (do without asking unless blocked)
 
-1. After deploy: prune + reseed intent + verify single neeljoshi18 + paneerjeera  
-2. Merge bridge twin upsert onto existing seed twin when login alias matches (avoid second twin on first real gu)  
-3. Team UI: prune button or auto-prune on Team refresh  
-4. Remove demo alice/bob from default graph view filters (or tag seed)  
+1. ~~After deploy: prune + multi-person verify~~ — team is 2 clean humans (2026-07-31)  
+2. Graph UI: collapse same-label people + hide demo alice/bob by default  
+3. Dual-person digests from real GH work (compile path + evidence)  
+4. Partner install runbook: note Wi‑Fi/SSH for founder ops only  
 5. Cockroach durability path when droplet can afford it  
-6. Real dual-account PR digests 3-day dry-run  
-7. Partner outreach package final check  
+6. Soft outreach package final check  
 
 ## ICP bar (recruitable pilot)
 
 - [x] Anti-spam Notify v1  
 - [x] Graph not mystery-empty after restart (persist)  
 - [x] Blockers/intents demo surface  
-- [x] Multi-person map  
-- [ ] One clean person per human on Graph (in progress this deploy)  
+- [x] Multi-person map (2 Slack, pruned)  
+- [x] One clean person per human on Team API  
+- [~] Graph UI collapse residual gu_* ghosts  
 - [ ] Both humans real digests from GH activity  
 - [ ] Partner install without founder SSH babysitting  

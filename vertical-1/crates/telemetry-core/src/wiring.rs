@@ -32,7 +32,26 @@ pub fn build_embedded(config: AppConfig) -> Vertical1Runtime {
         InMemoryRateLimiter::new(config.rate_limit_per_minute);
     let dedup: Arc<dyn DedupStore> = InMemoryDedup::new(config.dedup_ttl_secs);
     let object_store: Arc<dyn ObjectStore> = InMemoryObjectStore::new(&config.s3_bucket);
-    let acl: Arc<dyn AclStore> = InMemoryAclStore::new();
+    let acl_mem = InMemoryAclStore::new();
+    // Stable gu_* across restarts (prevents duplicate "neeljoshi18" Person nodes).
+    let acl_path = std::env::var("V1_EMBEDDED_ACL_PATH").ok().or_else(|| {
+        std::env::var("V1_EMBEDDED_STATE_PATH").ok().map(|p| {
+            let pb = std::path::PathBuf::from(p);
+            pb.parent()
+                .unwrap_or(std::path::Path::new("/var/lib/ai-manager"))
+                .join("v1_acl.json")
+                .to_string_lossy()
+                .to_string()
+        })
+    });
+    if let Some(p) = acl_path {
+        let path = std::path::PathBuf::from(p);
+        if let Err(e) = acl_mem.load_from_path(&path) {
+            tracing::warn!(error = %e, "V1 ACL identity load failed");
+        }
+        acl_mem.set_persist_path(Some(path));
+    }
+    let acl: Arc<dyn AclStore> = acl_mem;
     let bus: Arc<dyn EventBus> = InMemoryBus::new();
     let mem = InMemoryEventStore::new();
     // Survive container restarts on staging (pilot durability).

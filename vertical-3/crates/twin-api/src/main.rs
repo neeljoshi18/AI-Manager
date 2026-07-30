@@ -92,9 +92,8 @@ fn persist_embedded(st: &AppState) {
     }
 }
 
-/// Seed person twins from SLACK_USER_MAP-style env so multi-person survives cold start
-/// even before first Team UI click (A2). Format: `key:U…,key2:U2…`
-/// Optional SEED_TEAM_TENANT (default ten_github), SEED_TEAM_CHANNEL, SEED_TEAM_DISPLAY_PREFIX.
+/// Seed person twins from SLACK_USER_MAP — **one twin per unique Slack user id**.
+/// Format: `githubLogin:U…,numericId:U…,otherLogin:U2…`
 async fn seed_team_from_env(store: &dyn TwinStore) {
     let raw = std::env::var("SEED_SLACK_USER_MAP")
         .or_else(|_| std::env::var("SLACK_USER_MAP"))
@@ -105,101 +104,110 @@ async fn seed_team_from_env(store: &dyn TwinStore) {
     let tenant = std::env::var("SEED_TEAM_TENANT").unwrap_or_else(|_| "ten_github".into());
     let channel = std::env::var("SEED_TEAM_CHANNEL").unwrap_or_default();
     let now = Utc::now();
-    let mut seeded = 0u32;
+
+    // Group keys by slack user id first
+    let mut by_slack: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for part in raw.split(',') {
         let part = part.trim();
         if part.is_empty() || !part.contains(':') {
             continue;
         }
         let (key, slack) = part.split_once(':').unwrap();
-        let key = key.trim();
-        let slack = slack.trim();
+        let key = key.trim().to_string();
+        let slack = slack.trim().to_string();
         if key.is_empty() || slack.is_empty() {
             continue;
         }
-        // Skip pure numeric-only keys as subject if we also have a login — still map as alias later.
-        // Create one twin per unique slack user (collapse keys that share slack).
-        // First key becomes subject if no twin for this slack yet.
-        let existing_maps = store.list_slack_maps(&tenant).await.unwrap_or_default();
-        if existing_maps.iter().any(|m| m.slack_user_id == slack) {
-            // Still ensure alias key maps if different subject
-            if let Some(m) = existing_maps.iter().find(|m| m.slack_user_id == slack) {
-                if m.global_user_id != key {
-                    // Put alias as additional slack map entry pointing same slack under this key
+        by_slack.entry(slack).or_default().push(key);
+    }
+
+    let mut seeded = 0u32;
+    for (slack, mut keys) in by_slack {
+        // Prefer login (non-numeric, not gu_*) for display; keep all as aliases
+        keys.sort_by(|a, b| {
+            let score = |k: &str| {
+                if k.starts_with("gu_") {
+                    2
+                } else if k.chars().all(|c| c.is_ascii_digit()) {
+                    1
+                } else {
+                    0
+                }
+            };
+            score(a).cmp(&score(b)).then_with(|| a.cmp(b))
+        });
+        let login = keys
+            .iter()
+            .find(|k| !k.starts_with("gu_") && !k.chars().all(|c| c.is_ascii_digit()))
+            .cloned()
+            .unwrap_or_else(|| keys[0].clone());
+        let display = login.clone();
+
+        // If any enabled twin already maps this slack, only merge aliases — do not create another
+        let maps = store.list_slack_maps(&tenant).await.unwrap_or_default();
+        let twins = store.list_twins(&tenant).await.unwrap_or_default();
+        if let Some(existing_sub) = maps
+            .iter()
+            .filter(|m| m.slack_user_id == slack)
+            .find_map(|m| {
+                twins
+                    .iter()
+                    .find(|t| {
+                        t.twin_kind == TwinKind::Person
+                            && t.enabled
+                            && t.subject_id == m.global_user_id
+                            && !t.subject_id.starts_with("gu_seed_")
+                    })
+                    .map(|t| t.subject_id.clone())
+            })
+            .or_else(|| {
+                maps.iter()
+                    .find(|m| m.slack_user_id == slack)
+                    .map(|m| m.global_user_id.clone())
+            })
+        {
+            // Merge aliases onto that twin
+            let twin_id = person_twin_id(&existing_sub);
+            if let Ok(Some(mut tw)) = store.get_twin(&tenant, &twin_id).await {
+                let mut aliases: Vec<String> = tw
+                    .config_json
+                    .get("provider_aliases")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for k in &keys {
+                    if !aliases.iter().any(|a| a == k) {
+                        aliases.push(k.clone());
+                    }
                     let _ = store
                         .put_slack_map(SlackUserMap {
                             tenant_id: tenant.clone(),
-                            global_user_id: key.to_string(),
-                            slack_user_id: slack.to_string(),
+                            global_user_id: k.clone(),
+                            slack_user_id: slack.clone(),
                             slack_team_id: String::new(),
                         })
                         .await;
-                    // Attach alias onto person twin config if found
-                    let twin_id = person_twin_id(&m.global_user_id);
-                    if let Ok(Some(mut tw)) = store.get_twin(&tenant, &twin_id).await {
-                        let mut aliases: Vec<String> = tw
-                            .config_json
-                            .get("provider_aliases")
-                            .and_then(|v| v.as_array())
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        if !aliases.iter().any(|a| a == key) {
-                            aliases.push(key.to_string());
-                            if let Some(obj) = tw.config_json.as_object_mut() {
-                                obj.insert("provider_aliases".into(), json!(aliases));
-                            }
-                            tw.updated_at = now;
-                            let _ = store.upsert_twin(tw).await;
-                        }
-                    }
                 }
+                if let Some(obj) = tw.config_json.as_object_mut() {
+                    obj.insert("provider_aliases".into(), json!(aliases));
+                }
+                if tw.display_name.starts_with("user_") || tw.display_name.is_empty() {
+                    tw.display_name = display;
+                }
+                tw.updated_at = now;
+                let _ = store.upsert_twin(tw).await;
             }
             continue;
         }
-        // Prefer login-like subjects over bare gu_ provisional only when key looks like github login
-        let subject = if key.starts_with("gu_") {
-            key.to_string()
-        } else {
-            // Use stable provisional subject from key so restarts are idempotent
-            format!("gu_seed_{key}")
-        };
+
+        // Canonical provisional subject: gu_seed_<login> (stable across boots until real gu merges)
+        let subject = format!("gu_seed_{login}");
         let twin_id = person_twin_id(&subject);
-        if store
-            .get_twin(&tenant, &twin_id)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            let _ = store
-                .put_slack_map(SlackUserMap {
-                    tenant_id: tenant.clone(),
-                    global_user_id: subject.clone(),
-                    slack_user_id: slack.to_string(),
-                    slack_team_id: String::new(),
-                })
-                .await;
-            // Also map raw key
-            let _ = store
-                .put_slack_map(SlackUserMap {
-                    tenant_id: tenant.clone(),
-                    global_user_id: key.to_string(),
-                    slack_user_id: slack.to_string(),
-                    slack_team_id: String::new(),
-                })
-                .await;
-            continue;
-        }
-        let display = if key.chars().all(|c| c.is_ascii_digit()) {
-            format!("user_{key}")
-        } else {
-            key.to_string()
-        };
-        let aliases = vec![key.to_string()];
         let twin = Twin {
             tenant_id: tenant.clone(),
             twin_id: twin_id.clone(),
@@ -211,7 +219,7 @@ async fn seed_team_from_env(store: &dyn TwinStore) {
             shadow_until: None,
             high_auto_publish: false,
             enabled: true,
-            config_json: json!({ "provider_aliases": aliases, "seeded": true }),
+            config_json: json!({ "provider_aliases": keys, "seeded": true }),
             created_at: now,
             updated_at: now,
         };
@@ -220,23 +228,91 @@ async fn seed_team_from_env(store: &dyn TwinStore) {
             .put_slack_map(SlackUserMap {
                 tenant_id: tenant.clone(),
                 global_user_id: subject,
-                slack_user_id: slack.to_string(),
+                slack_user_id: slack.clone(),
                 slack_team_id: String::new(),
             })
             .await;
-        let _ = store
-            .put_slack_map(SlackUserMap {
-                tenant_id: tenant.clone(),
-                global_user_id: key.to_string(),
-                slack_user_id: slack.to_string(),
-                slack_team_id: String::new(),
-            })
-            .await;
+        for k in keys {
+            let _ = store
+                .put_slack_map(SlackUserMap {
+                    tenant_id: tenant.clone(),
+                    global_user_id: k,
+                    slack_user_id: slack.clone(),
+                    slack_team_id: String::new(),
+                })
+                .await;
+        }
         seeded += 1;
     }
-    if seeded > 0 {
-        info!(seeded, tenant = %tenant, "seeded team members from SLACK_USER_MAP / SEED_SLACK_USER_MAP");
+    // Collapse historical junk twins (multiple gu_* for same Slack)
+    let pruned = prune_duplicate_slack_twins(store, &tenant).await;
+    if seeded > 0 || pruned > 0 {
+        info!(
+            seeded,
+            pruned,
+            tenant = %tenant,
+            "team seed from SLACK_USER_MAP (one twin per Slack user)"
+        );
     }
+}
+
+/// Keep one enabled person twin per Slack user id; disable the rest (floating graph ghosts).
+async fn prune_duplicate_slack_twins(store: &dyn TwinStore, tenant: &str) -> u32 {
+    let maps = store.list_slack_maps(tenant).await.unwrap_or_default();
+    let twins = store.list_twins(tenant).await.unwrap_or_default();
+    let mut by_slack: std::collections::HashMap<String, Vec<Twin>> =
+        std::collections::HashMap::new();
+    for t in twins
+        .into_iter()
+        .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
+    {
+        let slack = maps
+            .iter()
+            .find(|m| m.global_user_id == t.subject_id)
+            .map(|m| m.slack_user_id.clone())
+            .unwrap_or_default();
+        if slack.is_empty() {
+            continue;
+        }
+        by_slack.entry(slack).or_default().push(t);
+    }
+    let mut pruned = 0u32;
+    let now = Utc::now();
+    for (_slack, mut group) in by_slack {
+        if group.len() <= 1 {
+            continue;
+        }
+        // Prefer: real gu_* (not gu_seed_), then most recently updated
+        group.sort_by(|a, b| {
+            let score = |t: &Twin| {
+                let seed = if t.subject_id.starts_with("gu_seed_") {
+                    0
+                } else if t.subject_id.starts_with("gu_") {
+                    2
+                } else {
+                    1
+                };
+                (seed, t.updated_at)
+            };
+            score(b).cmp(&score(a))
+        });
+        let keep = group[0].twin_id.clone();
+        for t in group.into_iter().skip(1) {
+            if t.twin_id == keep {
+                continue;
+            }
+            let mut dead = t;
+            dead.enabled = false;
+            dead.updated_at = now;
+            if let Some(obj) = dead.config_json.as_object_mut() {
+                obj.insert("disabled_reason".into(), json!("duplicate_slack_prune"));
+            }
+            if store.upsert_twin(dead).await.is_ok() {
+                pruned += 1;
+            }
+        }
+    }
+    pruned
 }
 
 #[tokio::main]
@@ -333,6 +409,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v3/tenants/{tenant_id}/seed/intent_demo",
             post(seed_intent_demo_proxy),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/team/prune",
+            post(prune_team_duplicates),
         )
         .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
@@ -434,6 +514,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         }
         // Multi-person seed from map env (idempotent; fills gaps after cold start)
         seed_team_from_env(mem.as_ref()).await;
+        let _ = prune_duplicate_slack_twins(mem.as_ref(), "ten_github").await;
         if let Some(ref path) = persist_path {
             if let Err(e) = mem.save_to_path(path) {
                 tracing::warn!(error = %e, "initial twin persist failed");
@@ -1389,7 +1470,10 @@ async fn get_team(
         .map(|m| (m.global_user_id.clone(), m.clone()))
         .collect();
     let mut members = Vec::new();
-    for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+    for t in twins
+        .iter()
+        .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
+    {
         let slack = map_by.get(&t.subject_id);
         let aliases = t
             .config_json
@@ -1437,25 +1521,8 @@ async fn get_team(
             "last_digest": last_digest,
         }));
     }
-    // Slack maps without twins (bridge map keys pending first event)
-    for m in &maps {
-        if !members
-            .iter()
-            .any(|x| x.get("subject_id").and_then(|v| v.as_str()) == Some(m.global_user_id.as_str()))
-        {
-            members.push(json!({
-                "twin_id": null,
-                "subject_id": m.global_user_id,
-                "display_name": "",
-                "enabled": false,
-                "channel_id": "",
-                "slack_user_id": m.slack_user_id,
-                "slack_mapped": true,
-                "provider_aliases": [],
-                "shadow_until": null,
-            }));
-        }
-    }
+    // Do not list alias-only slack map rows (login/numeric keys) as extra members —
+    // they were creating empty "ghost" rows and inflated multi-person noise.
     let mapped = members
         .iter()
         .filter(|m| m.get("slack_mapped").and_then(|v| v.as_bool()) == Some(true))
@@ -1758,6 +1825,26 @@ async fn compile_team(
     })))
 }
 
+/// Collapse multiple person twins that share one Slack user (floating graph ghosts).
+async fn prune_team_duplicates(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let n = prune_duplicate_slack_twins(st.store.as_ref(), &tenant_id).await;
+    persist_embedded(&st);
+    let team = st.store.list_twins(&tenant_id).await.map_err(ApiError::from)?;
+    let enabled = team
+        .iter()
+        .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
+        .count();
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "pruned": n,
+        "enabled_person_twins": enabled,
+        "note": "Disabled duplicate twins for the same Slack user. Graph overlay skips disabled.",
+    })))
+}
+
 /// Proxy V2 intent/conflict seed so product UI can show Team blockers without raw V2 access.
 async fn seed_intent_demo_proxy(
     State(st): State<AppState>,
@@ -1982,9 +2069,12 @@ async fn get_graph_snapshot(
         }
     };
 
-    // Overlay person twins so mapped humans appear even before graph projection
+    // Overlay: only *enabled* person twins (disabled = pruned duplicates)
     let mut team_members = Vec::new();
-    for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+    for t in twins
+        .iter()
+        .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
+    {
         let slack = maps
             .iter()
             .find(|m| m.global_user_id == t.subject_id)
@@ -2008,25 +2098,108 @@ async fn get_graph_snapshot(
             "poll_hint_secs".into(),
             json!(5),
         );
-        // Ensure orphan team people are present as nodes for the canvas
+        // Overlay team people only when no graph Person already represents them
+        // (same label / resource_id / subject) — avoids floating duplicate Neels.
         if let Some(nodes) = obj.get_mut("nodes").and_then(|n| n.as_array_mut()) {
-            let existing: std::collections::HashSet<String> = nodes
+            let mut existing_ids: std::collections::HashSet<String> = nodes
                 .iter()
                 .filter_map(|n| n.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
                 .collect();
-            for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+            let mut existing_labels: std::collections::HashSet<String> = nodes
+                .iter()
+                .filter(|n| n.get("type").and_then(|t| t.as_str()) == Some("Person"))
+                .filter_map(|n| {
+                    n.get("label")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_ascii_lowercase())
+                })
+                .collect();
+            let existing_resources: std::collections::HashSet<String> = nodes
+                .iter()
+                .filter(|n| n.get("type").and_then(|t| t.as_str()) == Some("Person"))
+                .filter_map(|n| {
+                    n.get("resource_id")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            for t in twins
+                .iter()
+                .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
+            {
                 let pid = format!("person:{}", t.subject_id);
-                if !existing.contains(&pid) {
-                    nodes.push(json!({
-                        "id": pid,
-                        "type": "Person",
-                        "label": if t.display_name.is_empty() { t.subject_id.clone() } else { t.display_name.clone() },
-                        "resource_id": t.subject_id,
-                        "intent_type": "",
-                        "title": "",
-                        "is_private": false,
-                        "from_team_map": true,
-                    }));
+                if existing_ids.contains(&pid) {
+                    continue;
+                }
+                let label = if t.display_name.is_empty() {
+                    t.subject_id.clone()
+                } else {
+                    t.display_name.clone()
+                };
+                let label_l = label.to_ascii_lowercase();
+                // Skip if another person already has this login label or provider id
+                if existing_labels.contains(&label_l) {
+                    continue;
+                }
+                let aliases: Vec<String> = t
+                    .config_json
+                    .get("provider_aliases")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if aliases.iter().any(|a| {
+                    existing_resources.contains(a)
+                        || existing_labels.contains(&a.to_ascii_lowercase())
+                }) {
+                    continue;
+                }
+                if existing_resources.contains(&t.subject_id) {
+                    continue;
+                }
+                nodes.push(json!({
+                    "id": pid,
+                    "type": "Person",
+                    "label": label,
+                    "resource_id": t.subject_id,
+                    "intent_type": "",
+                    "title": "",
+                    "is_private": false,
+                    "from_team_map": true,
+                }));
+                existing_ids.insert(format!("person:{}", t.subject_id));
+                existing_labels.insert(label_l);
+            }
+            // Drop disabled team-map ghosts if any leaked earlier (label-only cleanup not possible server-side for V2 store)
+            // Filter out Person nodes that are clearly duplicate labels: keep the one with real edges preference client-side.
+            // Soft: mark secondary same-label people for UI
+            let mut label_first: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for n in nodes.iter_mut() {
+                if n.get("type").and_then(|t| t.as_str()) != Some("Person") {
+                    continue;
+                }
+                let lab = n
+                    .get("label")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if lab.is_empty() {
+                    continue;
+                }
+                let id = n.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if let Some(first) = label_first.get(&lab) {
+                    if first != &id {
+                        if let Some(obj) = n.as_object_mut() {
+                            obj.insert("duplicate_person".into(), json!(true));
+                            obj.insert("duplicate_of".into(), json!(first));
+                        }
+                    }
+                } else {
+                    label_first.insert(lab, id);
                 }
             }
         }

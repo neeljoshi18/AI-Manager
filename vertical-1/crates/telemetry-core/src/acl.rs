@@ -8,9 +8,12 @@
 use crate::error::{CoreError, CoreResult};
 use crate::model::{AclRevocationRecord, QueryContext};
 use async_trait::async_trait;
+use chrono::Utc;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -88,6 +91,7 @@ pub struct AclInvalidation {
     pub acl_version: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserRecord {
     #[allow(dead_code)]
     global_user_id: String,
@@ -96,6 +100,26 @@ struct UserRecord {
     #[allow(dead_code)]
     display_name: String,
     groups: HashSet<String>,
+}
+
+/// Persist provider→global identity so redeploys do not mint new gu_* for same GitHub user.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AclPersistSnapshot {
+    pub version: u32,
+    pub saved_at: Option<String>,
+    /// (tenant_id, provider_user_id, global_user_id)
+    pub identity: Vec<(String, String, String)>,
+    pub users: Vec<AclUserSnap>,
+    pub versions: Vec<(String, u64)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AclUserSnap {
+    pub tenant_id: String,
+    pub global_user_id: String,
+    pub email: String,
+    pub display_name: String,
+    pub groups: Vec<String>,
 }
 
 /// In-memory ACL engine with pub/sub invalidation.
@@ -107,6 +131,8 @@ pub struct InMemoryAclStore {
     /// tenant_id → monotonic acl_version
     versions: DashMap<String, AtomicU64>,
     invalidation_tx: broadcast::Sender<AclInvalidation>,
+    persist_path: RwLock<Option<std::path::PathBuf>>,
+    dirty: AtomicU64,
 }
 
 impl InMemoryAclStore {
@@ -117,7 +143,117 @@ impl InMemoryAclStore {
             users: DashMap::new(),
             versions: DashMap::new(),
             invalidation_tx: tx,
+            persist_path: RwLock::new(None),
+            dirty: AtomicU64::new(0),
         })
+    }
+
+    pub fn set_persist_path(&self, path: Option<std::path::PathBuf>) {
+        *self.persist_path.write() = path;
+    }
+
+    pub fn export_snapshot(&self) -> AclPersistSnapshot {
+        let identity: Vec<_> = self
+            .identity_map
+            .iter()
+            .map(|e| {
+                let (t, p) = e.key();
+                (t.clone(), p.clone(), e.value().clone())
+            })
+            .collect();
+        let users: Vec<_> = self
+            .users
+            .iter()
+            .map(|e| {
+                let (t, gu) = e.key();
+                let u = e.value().read();
+                AclUserSnap {
+                    tenant_id: t.clone(),
+                    global_user_id: gu.clone(),
+                    email: u.email.clone(),
+                    display_name: u.display_name.clone(),
+                    groups: u.groups.iter().cloned().collect(),
+                }
+            })
+            .collect();
+        let versions: Vec<_> = self
+            .versions
+            .iter()
+            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .collect();
+        AclPersistSnapshot {
+            version: 1,
+            saved_at: Some(Utc::now().to_rfc3339()),
+            identity,
+            users,
+            versions,
+        }
+    }
+
+    pub fn import_snapshot(&self, snap: AclPersistSnapshot) {
+        for (t, p, gu) in snap.identity {
+            self.identity_map.insert((t, p), gu);
+        }
+        for u in snap.users {
+            self.users.insert(
+                (u.tenant_id, u.global_user_id.clone()),
+                RwLock::new(UserRecord {
+                    global_user_id: u.global_user_id,
+                    email: u.email,
+                    display_name: u.display_name,
+                    groups: u.groups.into_iter().collect(),
+                }),
+            );
+        }
+        for (t, v) in snap.versions {
+            self.versions
+                .insert(t, AtomicU64::new(v));
+        }
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> CoreResult<()> {
+        let snap = self.export_snapshot();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CoreError::Storage(format!("acl persist mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec(&snap)
+            .map_err(|e| CoreError::Storage(format!("acl persist encode: {e}")))?;
+        std::fs::write(&tmp, bytes)
+            .map_err(|e| CoreError::Storage(format!("acl persist write: {e}")))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| CoreError::Storage(format!("acl persist rename: {e}")))?;
+        self.dirty.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn load_from_path(&self, path: &Path) -> CoreResult<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|e| CoreError::Storage(format!("acl persist read: {e}")))?;
+        let snap: AclPersistSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|e| CoreError::Storage(format!("acl persist decode: {e}")))?;
+        let n = snap.identity.len();
+        self.import_snapshot(snap);
+        tracing::info!(path = %path.display(), identities = n, "loaded embedded V1 ACL identity map");
+        Ok(true)
+    }
+
+    fn maybe_persist(&self) {
+        let n = self.dirty.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % 3 != 0 {
+            return;
+        }
+        let path = self.persist_path.read().clone();
+        if let Some(p) = path {
+            if let Err(e) = self.save_to_path(&p) {
+                tracing::warn!(error = %e, "V1 ACL persist failed");
+            }
+        }
     }
 
     fn bump_version(&self, tenant_id: &str) -> u64 {
@@ -145,6 +281,8 @@ impl Default for InMemoryAclStore {
             users: DashMap::new(),
             versions: DashMap::new(),
             invalidation_tx: tx,
+            persist_path: RwLock::new(None),
+            dirty: AtomicU64::new(0),
         }
     }
 }
@@ -174,6 +312,7 @@ impl AclStore for InMemoryAclStore {
                 groups: HashSet::new(),
             }),
         );
+        self.maybe_persist();
         Ok(global_user_id)
     }
 
@@ -205,6 +344,7 @@ impl AclStore for InMemoryAclStore {
         }
         let version = self.bump_version(tenant_id);
         self.publish(tenant_id, global_user_id, version);
+        self.maybe_persist();
         Ok(version)
     }
 
@@ -222,6 +362,7 @@ impl AclStore for InMemoryAclStore {
         entry.write().groups.insert(group_id.to_string());
         let version = self.bump_version(tenant_id);
         self.publish(tenant_id, global_user_id, version);
+        self.maybe_persist();
         Ok(version)
     }
 
@@ -238,6 +379,7 @@ impl AclStore for InMemoryAclStore {
             .ok_or_else(|| CoreError::NotFound(format!("user {global_user_id}")))?;
         entry.write().groups.remove(group_id);
         let version = self.bump_version(tenant_id);
+        self.maybe_persist();
         self.publish(tenant_id, global_user_id, version);
         Ok(version)
     }

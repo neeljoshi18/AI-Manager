@@ -827,7 +827,13 @@ async function refreshGraph(forceLayout) {
 function mergeGraphData(data, forceLayout) {
   const prev = new Map(graphState.nodes.map((n) => [n.id, n]));
   const types = new Set();
-  const nodes = (data.nodes || []).map((n, i) => {
+  // Hide duplicate floating Person nodes (same label; prefer non-team-map / non-duplicate)
+  const rawNodes = (data.nodes || []).filter((n) => {
+    if (normalizeType(n.type) !== "Person") return true;
+    if (n.duplicate_person) return false;
+    return true;
+  });
+  const nodes = rawNodes.map((n, i) => {
     const type = normalizeType(n.type);
     types.add(type);
     const old = prev.get(n.id);
@@ -842,7 +848,7 @@ function mergeGraphData(data, forceLayout) {
       };
     }
     // seed positions by type rings so multi-person layout is readable
-    const angle = (i / Math.max(1, (data.nodes || []).length)) * Math.PI * 2;
+    const angle = (i / Math.max(1, rawNodes.length)) * Math.PI * 2;
     const ring =
       type === "Person" ? 80 :
       type === "Repo" ? 200 :

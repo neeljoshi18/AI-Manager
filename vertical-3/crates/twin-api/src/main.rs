@@ -1456,6 +1456,23 @@ async fn get_team(
         .iter()
         .filter(|m| m.get("slack_mapped").and_then(|v| v.as_bool()) == Some(true))
         .count();
+    // Unique Slack user IDs among *enabled person twins* (not alias-only map rows).
+    // Same human mapped thrice under one Slack must not count as multi-person.
+    let mut uniq_slack: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enabled_person_twins = 0usize;
+    for m in &members {
+        let enabled = m.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let has_twin = m.get("twin_id").and_then(|v| v.as_str()).is_some();
+        if enabled && has_twin {
+            enabled_person_twins += 1;
+            if let Some(s) = m.get("slack_user_id").and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    uniq_slack.insert(s.to_string());
+                }
+            }
+        }
+    }
+    let multi_person_ready = uniq_slack.len() >= 2 && enabled_person_twins >= 2;
     // Flatten map for bridge: subject + provider aliases → slack
     let mut bridge_map = serde_json::Map::new();
     for m in &members {
@@ -1486,9 +1503,11 @@ async fn get_team(
         "members": members,
         "person_count": members.len(),
         "slack_mapped_count": mapped,
-        "multi_person_ready": mapped >= 2,
+        "unique_slack_users": uniq_slack.len(),
+        "enabled_person_twins": enabled_person_twins,
+        "multi_person_ready": multi_person_ready,
         "bridge_slack_map": bridge_map,
-        "note": "Map ≥2 humans for multi-member digests. Bridge merges this with SLACK_USER_MAP env.",
+        "note": "Map ≥2 humans (distinct Slack user IDs) for multi-member digests. Bridge merges this with SLACK_USER_MAP env.",
     })))
 }
 

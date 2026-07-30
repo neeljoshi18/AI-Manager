@@ -83,13 +83,13 @@ Sources (GitHub…) → V1 ingest (ACL) → V2 graph → V3 status twin
 
 | ID | Gap | Airtight done means |
 |----|-----|---------------------|
-| **A1** | Notify non-spam | **Shipped 2026-07-26** Notify Policy v1 (fingerprint + daily cap); keep verifying live |
-| **A2** | Multi-person digests proven | 2 mapped humans, both get correct rare digests; Graph shows both |
-| **A3** | Durable graph on staging | Survive V2 restart or re-fill &lt;2 min; no mystery 0/0 |
+| **A1** | Notify non-spam | **Live-verified 2026-07-30** (staging: 166 suppressed / 2 sent) |
+| **A2** | Multi-person digests proven | 2 mapped humans, both get correct rare digests; Graph shows both — **blocked on 2nd human IDs** |
+| **A3** | Durable graph on staging | **Hardened 2026-07-30**: recovery mode + Connections graph_status; re-fill target &lt;2 min |
 | **A4** | Status loop as finished product | Approve / Edit / Don’t send clear; silence rules in UI |
-| **A5** | Partner install runbook | One page: GH + Slack vault + map 2 people + first digest |
-| **A6** | Empty / wrong-draft UX | Evidence on draft; empty = no DM; Don’t send counted |
-| **A7** | Pilot packaging | One-pager + 10–14d script + kill criteria + privacy |
+| **A5** | Partner install runbook | **Shipped** `Design Partner_ Install Runbook.md` |
+| **A6** | Empty / wrong-draft UX | **Improved** evidence on items + empty banner (no DM) |
+| **A7** | Pilot packaging | **Aligned** one-pager + playbook to real product language |
 
 ### B — Vision backlog (not first for outreach)
 
@@ -191,16 +191,17 @@ Code: `vertical-3/crates/twin-core/src/notify_policy.rs`, delivery worker, produ
 ### Sprint 1 — Trust & anti-spam  
 - [x] Notify Policy v1  
 - [x] Approve / Edit / Don’t send copy  
-- [ ] Live verification: same open PR does not re-DM every 30m on staging (founder watch 48h)  
+- [x] Live verification via `/metrics` (2026-07-30: suppressed ≫ sent); optional founder 48h feel-check  
 
 ### Sprint 2 — Multi-person airtight  
 - [ ] Map 2nd human (fields: display_name, slack_user_id U…, github_login, github_numeric_id, tenant `ten_github`)  
 - [ ] Both digests correct; Graph shows 2 people; no default-Slack spam for unmapped actors  
 
 ### Sprint 3 — Pilot package  
-- [ ] Install runbook for founder-operated partner install  
-- [ ] Align Design Partner one-pager + playbook to **actual** product behavior  
-- [ ] Soft outreach only after Sprint 1–2 green  
+- [x] Install runbook for founder-operated partner install  
+- [x] Align Design Partner one-pager + playbook to **actual** product behavior  
+- [ ] Soft outreach only after Sprint 2 green (A2)  
+
 
 ### Sprint 4 — Only if partners demand  
 - [ ] Linear **fully** productized (one surface, airtight) **or** Slack channel metadata — not both half-done  
@@ -221,6 +222,8 @@ Code: `vertical-3/crates/twin-core/src/notify_policy.rs`, delivery worker, produ
 
 ## 11. Recent commits (reference)
 
+- (2026-07-30) A3 recovery mode + A5 install runbook + A1 live verify notes + status UX polish  
+- `fc0b662` — 2026-07-27 session handoff + airtight pilot plan  
 - `d1e660b` — Notify Policy v1 + Approve/Don’t send  
 - `7217a0e` / `6ce4c91` — Graph harden + autoheal + V2 concurrency  
 - `866dbd4` — Live Graph panel  
@@ -239,6 +242,7 @@ Code: `vertical-3/crates/twin-core/src/notify_policy.rs`, delivery worker, produ
 5. `starting-out-documents/Interaction Log_ Product Decisions.md`  
 6. `starting-out-documents/Design Partner_ One-Pager.md`  
 7. `starting-out-documents/Design Partner_ Learning Window Playbook.md`  
+7b. `starting-out-documents/Design Partner_ Install Runbook.md`  
 
 **Product / eng:**
 

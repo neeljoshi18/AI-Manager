@@ -6,11 +6,13 @@ Does NOT Slack-DM. Status delivery is owned by twin-api's scheduled notify
 loop (STATUS_WINDOW / NOTIFY_INTERVAL) so high-volume GitHub webhooks never
 spam developers (ADR-014).
 
-Hardening (permanent graph reliability):
+Hardening (permanent graph reliability — A3):
 - Gate on V2 /healthz before projecting (no stampede when V2 is wedged).
 - Exponential backoff when V2 is down / timing out.
 - Poison-skip events that fail repeatedly so one bad payload cannot stall the map.
 - Periodic re-project when embedded V2 restarts empty (clears seen state).
+- Recovery mode after empty/down: higher throughput until nodes > 0 (<2 min target).
+- Immediate empty check when V2 recovers from unhealthy (do not wait 45s).
 """
 from __future__ import annotations
 
@@ -29,11 +31,19 @@ STATE = os.environ.get("STATE_FILE", f"/tmp/ai_manager_bridge_seen_{TENANT}.txt"
 POLL = float(os.environ.get("POLL_SECS", "5"))
 # Cap work per tick so embedded graph-api is not flooded (avoids hangs on small VPS).
 MAX_PER_TICK = int(os.environ.get("BRIDGE_MAX_PER_TICK", "3"))
+# Burst settings used only while recovering an empty graph after V2 wipe/restart.
+RECOVERY_MAX_PER_TICK = int(os.environ.get("BRIDGE_RECOVERY_MAX_PER_TICK", "12"))
+RECOVERY_POLL = float(os.environ.get("BRIDGE_RECOVERY_POLL_SECS", "1.0"))
+RECOVERY_EVENT_LIMIT = int(os.environ.get("BRIDGE_RECOVERY_EVENT_LIMIT", "250"))
+NORMAL_EVENT_LIMIT = int(os.environ.get("BRIDGE_EVENT_LIMIT", "100"))
 PROJECT_PAUSE = float(os.environ.get("BRIDGE_PROJECT_PAUSE_SECS", "0.4"))
+RECOVERY_PROJECT_PAUSE = float(os.environ.get("BRIDGE_RECOVERY_PROJECT_PAUSE_SECS", "0.05"))
 PROJECT_TIMEOUT = float(os.environ.get("BRIDGE_PROJECT_TIMEOUT_SECS", "12"))
 HEALTH_TIMEOUT = float(os.environ.get("BRIDGE_HEALTH_TIMEOUT_SECS", "2.5"))
 MAX_EVENT_FAILURES = int(os.environ.get("BRIDGE_MAX_EVENT_FAILURES", "5"))
 EMPTY_GRAPH_CHECK_SECS = float(os.environ.get("BRIDGE_EMPTY_GRAPH_CHECK_SECS", "45"))
+# How often to log recovery progress while refilling.
+RECOVERY_LOG_SECS = float(os.environ.get("BRIDGE_RECOVERY_LOG_SECS", "10"))
 READER_PROVIDER = os.environ.get("BRIDGE_READER_PROVIDER_ID", "bridge_reader")
 DEFAULT_SLACK = os.environ.get("SLACK_TEST_USER_ID", "").strip()
 DEFAULT_CHANNEL = os.environ.get("SLACK_TEST_CHANNEL_ID", "").strip()
@@ -64,6 +74,10 @@ _LAST_EMPTY_CHECK = 0.0
 _EVENT_FAILS: dict[str, int] = defaultdict(int)
 _V2_BACKOFF = 0.0  # seconds to sleep when V2 unhealthy
 _V2_DOWN_SINCE: float | None = None
+_RECOVERY_MODE = False
+_RECOVERY_STARTED: float | None = None
+_RECOVERY_PROJECTED = 0
+_LAST_RECOVERY_LOG = 0.0
 
 
 def refresh_team_map(force: bool = False) -> None:
@@ -180,6 +194,57 @@ def v2_node_count() -> int | None:
         return None
 
 
+def enter_recovery(reason: str) -> None:
+    """Enter high-throughput re-project until graph has nodes again."""
+    global _RECOVERY_MODE, _RECOVERY_STARTED, _RECOVERY_PROJECTED, _LAST_RECOVERY_LOG
+    if not _RECOVERY_MODE:
+        _RECOVERY_MODE = True
+        _RECOVERY_STARTED = time.time()
+        _RECOVERY_PROJECTED = 0
+        _LAST_RECOVERY_LOG = 0.0
+        print(
+            f"recovery ON ({reason}) max_per_tick={RECOVERY_MAX_PER_TICK} "
+            f"poll={RECOVERY_POLL}s event_limit={RECOVERY_EVENT_LIMIT}",
+            flush=True,
+        )
+
+
+def maybe_exit_recovery() -> None:
+    global _RECOVERY_MODE, _RECOVERY_STARTED, _RECOVERY_PROJECTED
+    if not _RECOVERY_MODE:
+        return
+    n = v2_node_count()
+    if n is None:
+        return
+    if n > 0:
+        dur = time.time() - (_RECOVERY_STARTED or time.time())
+        print(
+            f"recovery OFF nodes={n} projected={_RECOVERY_PROJECTED} "
+            f"in {dur:.1f}s (target <120s)",
+            flush=True,
+        )
+        _RECOVERY_MODE = False
+        _RECOVERY_STARTED = None
+        _RECOVERY_PROJECTED = 0
+
+
+def log_recovery_progress() -> None:
+    global _LAST_RECOVERY_LOG
+    if not _RECOVERY_MODE:
+        return
+    now = time.time()
+    if now - _LAST_RECOVERY_LOG < RECOVERY_LOG_SECS:
+        return
+    _LAST_RECOVERY_LOG = now
+    n = v2_node_count()
+    dur = now - (_RECOVERY_STARTED or now)
+    print(
+        f"recovery progress nodes={n if n is not None else '?'} "
+        f"projected={_RECOVERY_PROJECTED} elapsed={dur:.0f}s",
+        flush=True,
+    )
+
+
 def note_v2_down() -> None:
     global _V2_DOWN_SINCE, _V2_BACKOFF
     now = time.time()
@@ -193,37 +258,53 @@ def note_v2_down() -> None:
         _V2_BACKOFF = min(60.0, _V2_BACKOFF * 1.5)
 
 
-def note_v2_up() -> None:
+def note_v2_up() -> bool:
+    """Return True if this call is a down→up transition (caller should force refill check)."""
     global _V2_DOWN_SINCE, _V2_BACKOFF
+    recovered = False
     if _V2_DOWN_SINCE is not None:
         dur = time.time() - _V2_DOWN_SINCE
         print(f"V2 healthy again (was down ~{dur:.0f}s) — resuming projections", flush=True)
+        recovered = True
     _V2_DOWN_SINCE = None
     _V2_BACKOFF = 0.0
+    return recovered
 
 
-def maybe_reproject_empty_graph(seen: set[str]) -> None:
-    """If embedded V2 restarted empty but we already saw events, clear seen once."""
+def maybe_reproject_empty_graph(seen: set[str], force: bool = False) -> bool:
+    """If embedded V2 restarted empty but we already saw events, clear seen once.
+
+    Returns True if recovery was triggered / already active.
+    """
     global _LAST_EMPTY_CHECK
     now = time.time()
-    if now - _LAST_EMPTY_CHECK < EMPTY_GRAPH_CHECK_SECS:
-        return
+    if not force and now - _LAST_EMPTY_CHECK < EMPTY_GRAPH_CHECK_SECS:
+        return _RECOVERY_MODE
     _LAST_EMPTY_CHECK = now
-    if not seen:
-        return
     if not v2_healthy():
-        return
+        return _RECOVERY_MODE
     n = v2_node_count()
     if n is None:
-        return
+        return _RECOVERY_MODE
     if n == 0:
-        print(
-            f"V2 graph empty (nodes=0) with {len(seen)} seen ids — "
-            "clearing seen to re-project already-ingested signals",
-            flush=True,
-        )
-        clear_seen(seen)
-        _EVENT_FAILS.clear()
+        # Always enter recovery when map is empty so first-fill and wipe refill are fast.
+        enter_recovery("graph empty nodes=0")
+        if seen:
+            print(
+                f"V2 graph empty (nodes=0) with {len(seen)} seen ids — "
+                "clearing seen to re-project already-ingested signals",
+                flush=True,
+            )
+            clear_seen(seen)
+            _EVENT_FAILS.clear()
+        else:
+            print(
+                "V2 graph empty (nodes=0) — recovery mode waiting for V1 events",
+                flush=True,
+            )
+        return True
+    maybe_exit_recovery()
+    return _RECOVERY_MODE
 
 
 def is_bot_actor(actor: dict) -> bool:
@@ -286,6 +367,7 @@ def ensure_twin(actor: dict) -> None:
 
 
 def project_event(ev: dict) -> None:
+    global _RECOVERY_PROJECTED
     actor = ev.get("actor") or {}
     gu = (actor.get("global_user_id") or "").strip() or "unknown"
     if gu and gu != "unknown":
@@ -303,13 +385,28 @@ def project_event(ev: dict) -> None:
         flush=True,
     )
     ensure_twin(actor)
+    if _RECOVERY_MODE:
+        _RECOVERY_PROJECTED += 1
+
+
+def tick_limits() -> tuple[int, float, int, float]:
+    """Return (max_per_tick, poll, event_limit, project_pause) for current mode."""
+    if _RECOVERY_MODE:
+        return (
+            RECOVERY_MAX_PER_TICK,
+            RECOVERY_POLL,
+            RECOVERY_EVENT_LIMIT,
+            RECOVERY_PROJECT_PAUSE,
+        )
+    return MAX_PER_TICK, POLL, NORMAL_EVENT_LIMIT, PROJECT_PAUSE
 
 
 def main() -> None:
     print(
         f"bridge start tenant={TENANT} poll={POLL}s v1={V1} v2={V2} twin={TWIN} "
         f"slack_map={len(SLACK_MAP)} default_slack={'set' if DEFAULT_SLACK else 'none'} "
-        f"max_per_tick={MAX_PER_TICK} project_timeout={PROJECT_TIMEOUT}s",
+        f"max_per_tick={MAX_PER_TICK} recovery_max={RECOVERY_MAX_PER_TICK} "
+        f"project_timeout={PROJECT_TIMEOUT}s",
         flush=True,
     )
     wait_health(V1)
@@ -323,11 +420,10 @@ def main() -> None:
     print(f"bridge reader global_user_id={reader}", flush=True)
     refresh_team_map(force=True)
     seen = load_seen()
-    maybe_reproject_empty_graph(seen)
-    # Force check immediately at boot
+    # Force empty/fill check at boot (embedded V2 may have wiped overnight)
     global _LAST_EMPTY_CHECK
     _LAST_EMPTY_CHECK = 0.0
-    maybe_reproject_empty_graph(seen)
+    maybe_reproject_empty_graph(seen, force=True)
 
     while True:
         try:
@@ -336,10 +432,20 @@ def main() -> None:
                 note_v2_down()
                 time.sleep(max(POLL, _V2_BACKOFF or 2.0))
                 continue
-            note_v2_up()
+            just_recovered = note_v2_up()
 
-            # Embedded V2 wipe recovery
-            maybe_reproject_empty_graph(seen)
+            # Immediate refill after V2 recovers; periodic empty checks otherwise
+            if just_recovered:
+                _LAST_EMPTY_CHECK = 0.0
+                maybe_reproject_empty_graph(seen, force=True)
+                enter_recovery("v2 recovered from down")
+            else:
+                maybe_reproject_empty_graph(seen)
+
+            maybe_exit_recovery()
+            log_recovery_progress()
+
+            max_tick, poll, event_limit, pause = tick_limits()
 
             try:
                 reader = ensure_reader()
@@ -348,7 +454,7 @@ def main() -> None:
             refresh_team_map()
 
             data = get(
-                f"{V1}/v1/tenants/{TENANT}/events?user_id={reader}&limit=100",
+                f"{V1}/v1/tenants/{TENANT}/events?user_id={reader}&limit={event_limit}",
                 timeout=20,
             )
             events = data.get("events") or []
@@ -356,7 +462,7 @@ def main() -> None:
             events = list(reversed(events))
             done = 0
             for ev in events:
-                if done >= MAX_PER_TICK:
+                if done >= max_tick:
                     break
                 eid = ev.get("event_id")
                 if not eid or eid in seen:
@@ -378,8 +484,8 @@ def main() -> None:
                     mark_seen(eid, seen)
                     _EVENT_FAILS.pop(eid, None)
                     done += 1
-                    if PROJECT_PAUSE > 0:
-                        time.sleep(PROJECT_PAUSE)
+                    if pause > 0:
+                        time.sleep(pause)
                 except Exception as e:
                     _EVENT_FAILS[eid] += 1
                     print(
@@ -390,11 +496,16 @@ def main() -> None:
                     note_v2_down()
                     time.sleep(max(POLL, _V2_BACKOFF or 5.0))
                     break
+
+            # After a burst tick, re-check fill so we exit recovery promptly
+            if _RECOVERY_MODE and done > 0:
+                maybe_exit_recovery()
         except Exception as e:
             print(f"loop err: {e}", flush=True)
             time.sleep(max(POLL, 3.0))
             continue
-        time.sleep(POLL)
+        _, poll, _, _ = tick_limits()
+        time.sleep(poll)
 
 
 if __name__ == "__main__":

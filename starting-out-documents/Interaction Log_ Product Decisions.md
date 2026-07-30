@@ -195,6 +195,37 @@
 
 ---
 
+## 2026-07-30 — Session: A1 live verify + A3 recovery + pilot package
+
+### Context
+
+- New chat from 2026-07-27 handoff; mission raise stranger-pilot confidence past 50% via A-list.
+- Staging reachable over HTTPS; SSH from agent host timed out.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Treat A1 as live-verified from `/metrics` (suppress ≫ sent) | Observable anti-spam; optional founder 48h feel-check only |
+| 2 | Do **not** start Linear/training; A2 blocked on 2nd human IDs | Handoff stop rule |
+| 3 | Ship A3 recovery mode (burst re-project) + Connections graph_status | Close mystery 0/0; target refill &lt;2 min |
+| 4 | Ship A5 install runbook + align A7 docs | Soft outreach needs stranger-readable package |
+| 5 | Polish A6 evidence + empty draft banner | Empty = no DM must be visible in product |
+
+### Artifacts
+
+- `scripts/github_live_bridge.py` recovery mode  
+- `vertical-3` demo_status graph fields + app-static polish  
+- `starting-out-documents/Design Partner_ Install Runbook.md`  
+- Updated one-pager, playbook, plan, handoff  
+
+### Open questions
+
+1. Second human map fields for A2 proof?  
+2. Deploy to droplet when SSH available (code pushed; staging may lag until compose rebuild)  
+
+---
+
 ## Template for future entries
 
 ```markdown

@@ -41,8 +41,8 @@ Embedded mode: no Cockroach required. Good for demos and first staging VPS.
 | Process | Role |
 |---------|------|
 | **V1** | Accept GitHub App webhooks continuously |
-| **bridge** | Poll V1 → project V2 + register person twins / Slack map; health-gates V2; re-projects when graph empty |
-| **twin-api scheduler** | Every `COMPILE_INTERVAL_SECS` compile twins; DM at most every `NOTIFY_INTERVAL_SECS` |
+| **bridge** | Poll V1 → project V2 + register person twins / Slack map; health-gates V2; **recovery mode** re-projects when graph empty (target &lt;2 min) |
+| **twin-api scheduler** | Every `COMPILE_INTERVAL_SECS` compile twins; **Notify Policy v1** (change-only + daily cap) |
 | **autoheal** | Restarts containers labeled `autoheal=true` when Docker marks them unhealthy (keeps Graph map alive) |
 
 Bridge **never** posts Slack (ADR-014). Env:
@@ -50,9 +50,12 @@ Bridge **never** posts Slack (ADR-014). Env:
 | Var | Purpose |
 |-----|---------|
 | `SLACK_USER_MAP` | `githubProviderId:SLACK_UID,login:SLACK_UID` |
-| `SLACK_TEST_USER_ID` | Fallback Slack user for unmapped human actors |
+| `SLACK_TEST_USER_ID` | Fallback Slack user for unmapped human actors (only if map empty) |
 | `SLACK_TEST_CHANNEL_ID` | Optional team channel on twin |
 | `BRIDGE_POLL_SECS` | Default 5 |
+| `BRIDGE_RECOVERY_MAX_PER_TICK` | Burst project rate while graph empty (default 12) |
+
+Partner install: `starting-out-documents/Design Partner_ Install Runbook.md`
 
 Webhook URL: `https://$DOMAIN/v1/tenants/ten_github/webhooks/github`
 

@@ -93,7 +93,7 @@ async function refreshHealth() {
       : "Start stack with ./scripts/dev_up.sh or docker compose -f deploy/docker-compose.app.yml up -d";
     $("stat-notify").textContent = fmtSecs(h.notify_interval_secs);
     $("stat-window").textContent = fmtSecs(h.status_window_secs);
-    $("conn-detail").textContent = `Slack: ${h.slack_mode || "—"} · runtime ${h.mode || "—"}`;
+    $("conn-detail").textContent = `Slack: ${h.slack_mode || "—"} · runtime ${h.mode || "—"} · notify ${h.notify_policy || "v1"}`;
     $("nav-mode").textContent = `${h.mode || "?"} · ${h.slack_mode || "slack?"}`;
     $("cfg-window").textContent = String(h.status_window_secs ?? "—");
     $("cfg-notify").textContent = String(h.notify_interval_secs ?? "—");
@@ -131,9 +131,37 @@ async function refreshHealth() {
         }
       }
     }
+    // Graph durability (A3): never leave mystery empty looking "live"
+    const graphEl = $("conn-graph");
+    if (graphEl) {
+      const gs = h.graph_status || (h.v2 ? "unknown" : "v2_down");
+      const nodes = h.graph_nodes;
+      const edges = h.graph_edges;
+      if (gs === "v2_down" || !h.v2) {
+        graphEl.innerHTML = `<span class="pill down">Graph: V2 down — recovering</span>`;
+      } else if (gs === "empty" || nodes === 0) {
+        graphEl.innerHTML = [
+          `<span class="pill mid">Graph: empty (bridge re-projecting)</span>`,
+          `<span class="pill mid">nodes 0</span>`,
+        ].join("");
+      } else if (typeof nodes === "number") {
+        graphEl.innerHTML = [
+          `<span class="pill up">Graph: filled</span>`,
+          `<span class="pill mid">nodes ${nodes}</span>`,
+          edges != null ? `<span class="pill mid">edges ${edges}</span>` : "",
+        ]
+          .filter(Boolean)
+          .join("");
+      } else {
+        graphEl.innerHTML = `<span class="pill mid">Graph: ${esc(gs)}</span>`;
+      }
+    }
+    if ($("conn-graph-detail")) {
+      $("conn-graph-detail").textContent = h.graph_message || "";
+    }
     if ($("conn-slack")) {
       $("conn-slack").textContent = h.egress
-        ? `Egress up · delivery mode: ${h.slack_mode || "—"}. Tokens only in vault.`
+        ? `Egress up · delivery mode: ${h.slack_mode || "—"}. Tokens only in vault. Notify Policy v1 (change-only + daily cap).`
         : "Egress down — real Slack DMs disabled until vault + proxy are up.";
     }
   } catch (e) {
@@ -145,6 +173,23 @@ async function refreshHealth() {
   }
 }
 
+function draftStatusLabel(st) {
+  if (st === "vetoed") return "don't send";
+  if (st === "publish_queued" || st === "PublishQueued") return "queued to share";
+  if (st === "pending" || st === "Pending") return "pending approve";
+  if (st === "edited" || st === "Edited") return "edited";
+  if (st === "published" || st === "Published") return "shared";
+  if (st === "shadow" || st === "Shadow") return "shadow (no DM)";
+  if (st === "force_human" || st === "ForceHuman") return "needs human";
+  return st || "?";
+}
+
+function renderEvidenceLine(refs) {
+  const list = (refs || []).filter(Boolean);
+  if (!list.length) return `<div class="muted small">evidence: (none linked)</div>`;
+  return `<div class="muted small">evidence: ${list.map((r) => esc(r)).join(" · ")}</div>`;
+}
+
 function renderLatest(payload) {
   if (!payload) return;
   state.latest = payload;
@@ -154,10 +199,12 @@ function renderLatest(payload) {
 
   const conf = payload.confidence_rollup || payload.ledger?.confidence_rollup || "?";
   const st = payload.draft?.status || "?";
+  const stLabel = draftStatusLabel(st);
   $("st-conf").textContent = `confidence: ${conf}`;
   $("st-conf").className = "pill " + (conf === "blocker" ? "down" : conf === "high" ? "up" : "mid");
-  $("st-status").textContent = `draft: ${st}`;
-  $("st-status").className = "pill " + (st === "vetoed" ? "down" : st === "published" ? "up" : "mid");
+  $("st-status").textContent = `draft: ${stLabel}`;
+  $("st-status").className =
+    "pill " + (st === "vetoed" ? "down" : st === "published" || st === "Published" ? "up" : "mid");
   $("st-ids").textContent = `ledger=${state.ledgerId || "—"}  draft=${state.draftId || "—"}`;
   $("st-text").textContent = payload.draft?.draft_text || "(no text)";
 
@@ -166,26 +213,40 @@ function renderLatest(payload) {
   $("st-items").innerHTML = "";
   for (const it of items) {
     const li = document.createElement("li");
-    li.innerHTML = `<strong>[${it.confidence}]</strong> ${it.summary}`;
+    li.innerHTML =
+      `<strong>[${esc(it.confidence)}]</strong> ${esc(it.summary)}` +
+      (it.resource_id ? ` <span class="muted small">(${esc(it.resource_id)})</span>` : "") +
+      renderEvidenceLine(it.evidence_refs);
     $("st-items").appendChild(li);
   }
   for (const b of blockers) {
     const li = document.createElement("li");
-    li.innerHTML = `<strong>[blocker]</strong> ${b.summary}`;
+    li.innerHTML =
+      `<strong>[blocker]</strong> ${esc(b.summary)}` + renderEvidenceLine(b.evidence_refs);
     $("st-items").appendChild(li);
   }
+  const emptyBanner = $("st-empty-banner");
   if (!items.length && !blockers.length) {
-    $("st-items").innerHTML = "<li class='muted'>No items in this window</li>";
+    $("st-items").innerHTML =
+      "<li class='muted'>No items in this window — empty ledgers never Slack-DM (Notify Policy v1).</li>";
+    if (emptyBanner) {
+      emptyBanner.classList.remove("hidden");
+      emptyBanner.innerHTML =
+        "<strong>Empty status window.</strong> Nothing to approve. No DM was sent. Wait for real PR/issue activity or send a test from Connections.";
+    }
+  } else if (emptyBanner) {
+    emptyBanner.classList.add("hidden");
+    emptyBanner.innerHTML = "";
   }
 
   $("today-latest").innerHTML = `
     <div class="meta-row">
-      <span class="pill mid">confidence: ${conf}</span>
-      <span class="pill mid">draft: ${st}</span>
+      <span class="pill mid">confidence: ${esc(conf)}</span>
+      <span class="pill mid">draft: ${esc(stLabel)}</span>
     </div>
-    <pre class="box">${(payload.draft?.draft_text || "").replace(/</g, "&lt;")}</pre>
+    <pre class="box">${esc(payload.draft?.draft_text || "(no text)")}</pre>
   `;
-  $("lab-raw").textContent = JSON.stringify(payload, null, 2);
+  if ($("lab-raw")) $("lab-raw").textContent = JSON.stringify(payload, null, 2);
 }
 
 async function loadLatest() {
@@ -456,6 +517,7 @@ async function refreshMetrics() {
   try {
     const m = await jfetch("/metrics");
     if ($("met-dms")) $("met-dms").textContent = String(m.twin_dms_sent_total ?? m.twin_drafts_sent_total ?? "—");
+    if ($("met-policy")) $("met-policy").textContent = String(m.notify_policy ?? "v1_change_only_daily_cap");
     if ($("met-suppress")) $("met-suppress").textContent = String(m.twin_dms_suppressed_total ?? "—");
     if ($("met-veto")) {
       const r = m.twin_veto_rate;

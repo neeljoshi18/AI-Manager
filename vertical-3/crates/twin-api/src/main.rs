@@ -731,6 +731,46 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         .and_then(|v| v.get("accepted").and_then(|x| x.as_u64()));
     let last_event_age_secs = last_accepted_unix.map(|t| now.saturating_sub(t));
 
+    // Graph durability signal (A3): distinguish V2 down vs empty vs filled.
+    // Prefer default pilot tenant; embedded stats are cheap.
+    let tenant = std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into());
+    let (graph_nodes, graph_edges, graph_status, graph_message) = if !v2 {
+        (
+            None,
+            None,
+            "v2_down",
+            "V2 graph-api down — autoheal restarts; bridge pauses then recovery-mode re-projects",
+        )
+    } else {
+        let stats = probe_json(&format!("{v2_base}/v2/tenants/{tenant}/stats")).await;
+        let nodes = stats
+            .as_ref()
+            .and_then(|v| v.get("nodes").and_then(|x| x.as_u64()));
+        let edges = stats
+            .as_ref()
+            .and_then(|v| v.get("edges").and_then(|x| x.as_u64()));
+        match nodes {
+            Some(0) => (
+                Some(0u64),
+                edges,
+                "empty",
+                "Map empty — bridge recovery mode re-projects V1 events (target <2 min)",
+            ),
+            Some(n) => (
+                Some(n),
+                edges,
+                "ok",
+                "Graph has nodes; live map at /app/ → Graph",
+            ),
+            None => (
+                None,
+                None,
+                "stats_unavailable",
+                "V2 up but stats unreachable — check bridge / graph-api logs",
+            ),
+        }
+    };
+
     Json(json!({
         "v3": true,
         "v1": v1,
@@ -750,6 +790,13 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         "v1_accepted": accepted,
         "v1_last_accepted_unix": last_accepted_unix,
         "v1_last_event_age_secs": last_event_age_secs,
+        // Graph durability (A3) — never show "live" mystery 0/0 without status
+        "graph_tenant": tenant,
+        "graph_nodes": graph_nodes,
+        "graph_edges": graph_edges,
+        "graph_status": graph_status,
+        "graph_message": graph_message,
+        "notify_policy": "v1_change_only_daily_cap",
         "slack_oauth_ready": env_present("SLACK_CLIENT_ID") && env_present("SLACK_CLIENT_SECRET"),
         "github_app_ready": env_present("GITHUB_APP_ID"),
     }))

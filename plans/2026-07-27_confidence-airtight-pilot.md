@@ -1,7 +1,7 @@
 # Plan: Confidence first, airtight product, recruitable pilot
 
-**Date:** 2026-07-27  
-**Status:** Direction approved; Notify Policy v1 **shipped** (`d1e660b`); multi-person + pilot package still open  
+**Date:** 2026-07-27 (updated 2026-07-30)  
+**Status:** Direction approved; Notify Policy v1 **shipped + live-verified**; A3 recovery + A5 runbook shipped 2026-07-30; multi-person digests still open  
 **Ground truth handoff:** `starting-out-documents/Session Handoff_ Context Transfer 2026-07-27.md`
 
 ---
@@ -29,13 +29,15 @@ Lessons from slop (Graph 0/0, spam DMs, unproven multi-person, jargon “veto”
 
 | ID | Item | Status |
 |----|------|--------|
-| A1 | Notify Policy v1 (change-only + daily cap) | **Shipped** — verify live 48h |
-| A2 | Multi-person digests proven | Open — needs 2nd human fields |
-| A3 | Graph durability / no mystery empty | Partial (autoheal + re-project) — keep hardening |
-| A4 | Approve / Edit / Don’t send UX | **Shipped** copy — keep polish |
-| A5 | Partner install runbook | Open |
-| A6 | Empty/wrong draft UX | Partial |
-| A7 | Pilot packaging aligned to real product | Open (docs exist, need alignment) |
+| A1 | Notify Policy v1 (change-only + daily cap) | **Live-verified 2026-07-30** — staging `/metrics`: 168 compiles, 2 DMs sent, **166 suppressed**, `notify_policy: v1_change_only_daily_cap` |
+| A2 | Multi-person digests proven | Open — **blocked on 2nd human** Slack/GitHub fields |
+| A3 | Graph durability / no mystery empty | **Hardened 2026-07-30** — bridge recovery mode (burst re-project on empty/V2 recover); Connections `graph_status` nodes/edges; autoheal retained |
+| A4 | Approve / Edit / Don’t send UX | **Shipped** + 2026-07-30 evidence/empty-draft polish |
+| A5 | Partner install runbook | **Shipped** — `starting-out-documents/Design Partner_ Install Runbook.md` |
+| A6 | Empty/wrong draft UX | **Improved** — evidence on items; empty banner; no-DM copy |
+| A7 | Pilot packaging aligned to real product | **Aligned** — one-pager + learning-window playbook (Approve language, Notify v1, install link) |
+
+---
 
 ## B-list (later)
 
@@ -52,9 +54,9 @@ Linear · Slack channels · multi-tenant · learning-window machine · Model Rou
 
 ## Sprint order
 
-1. Verify anti-spam live  
-2. Multi-person airtight  
-3. Pilot package + soft outreach  
+1. ~~Verify anti-spam live~~ **done (metrics 2026-07-30)**  
+2. Multi-person airtight — **needs founder: 2nd human map fields**  
+3. ~~Pilot package docs~~ **done (runbook + align)** — soft outreach only after A2 green  
 4. One full connector only if demanded  
 
 **Not now:** local model training (ADR-016).
@@ -67,6 +69,24 @@ Linear · Slack channels · multi-tenant · learning-window machine · Model Rou
 - Unchanged → no DM  
 - Max 1 status DM / person / UTC day (unless new blocker / force)  
 - Metrics: `twin_dms_suppressed_total`  
+
+---
+
+## Live staging snapshot (2026-07-30 session)
+
+| Probe | Result |
+|-------|--------|
+| `https://status.neel.world/healthz` | twin-api ok |
+| `/metrics` | suppress 166 · sent 2 · compiles 168 |
+| `/v3/tenants/ten_github/graph` | nodes 28 · edges 101 · v2_up |
+| `/v3/tenants/ten_github/team` | person_count 1 · multi_person_ready **false** |
+| SSH deploy from this agent host | timed out — push code; founder deploy when SSH available |
+
+---
+
+## Need from founder for A2
+
+For second human (display_name, slack_user_id `U…`, github_login, github_numeric_id, tenant `ten_github`) — Team map + optional `SLACK_USER_MAP` entry. Then prove both digests + Graph shows 2 people.
 
 ---
 

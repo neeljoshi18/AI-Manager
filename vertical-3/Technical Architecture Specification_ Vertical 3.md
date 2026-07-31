@@ -144,7 +144,7 @@ V1 events ──► V2 graph-api (ACL QueryContext)
 | Concern | Policy |
 |---------|--------|
 | **Ingest** | Continuous — accept all GitHub/Jira webhooks into V1→V2 (high volume OK) |
-| **Ledger period** | Aligned wall-clock window: `STATUS_WINDOW_SECS` (default **3600** = 1h) |
+| **Ledger period** | Aligned wall-clock bucket for ledger_id; rolling activity lookback uses same `STATUS_WINDOW_SECS` (default **86400** = 24h pilot) |
 | **Compile tick** | Tokio scheduler every `COMPILE_INTERVAL_SECS` (default **1800** = 30m); `0` disables |
 | **Slack DM** | At most once per twin per `NOTIFY_INTERVAL_SECS` (default **1800**); **not** on every webhook |
 | **On-demand** | Demo console / `force_notify=true` on compile — separate “check now” tool |
@@ -440,7 +440,7 @@ vertical-3/
 | `REDIS_URL` | locks / timers |
 | `SKIP_AUTH` | local only |
 | `BIND_ADDR` | default `0.0.0.0:18083` |
-| `STATUS_WINDOW_SECS` | ledger period align (default 3600) |
+| `STATUS_WINDOW_SECS` | ledger period align + rolling activity lookback (default 86400) |
 | `NOTIFY_INTERVAL_SECS` | min seconds between Slack DMs per twin (default 1800) |
 | `COMPILE_INTERVAL_SECS` | background compile tick (default 1800; 0=off) |
 | `NOTIFY_ON_COMPILE` | if true, HTTP compile may DM (default false; demo uses force) |

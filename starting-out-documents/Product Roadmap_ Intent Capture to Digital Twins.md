@@ -312,7 +312,7 @@ Do **not** start local model training code until multi-member beta path + shadow
 
 | Env | Default | Role |
 |-----|---------|------|
-| `STATUS_WINDOW_SECS` | 3600 | Ledger window |
+| `STATUS_WINDOW_SECS` | 86400 | Ledger window + rolling activity lookback (pilot default 24h) |
 | `NOTIFY_INTERVAL_SECS` | 1800 | Min between DMs |
 | `COMPILE_INTERVAL_SECS` | 1800 | Scheduler tick |
 | `NOTIFY_ON_COMPILE` | false | Avoid compile-time spam |

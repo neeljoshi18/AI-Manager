@@ -49,18 +49,24 @@ jobs:
           ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
 
       - name: Known hosts
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
         run: |
+          set -euo pipefail
+          HOST="${STAGING_HOST:-206.189.129.31}"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keyscan -H "${{ secrets.STAGING_HOST || '206.189.129.31' }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          # Fallback if keyscan fails (DO sometimes rate-limits)
-          echo "${{ secrets.STAGING_HOST || '206.189.129.31' }} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIplaceholder" >> ~/.ssh/known_hosts || true
+          # accept-new on first connect; keyscan when possible
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          chmod 600 ~/.ssh/known_hosts || true
 
       - name: Rsync monorepo (keep host secrets)
         env:
-          HOST: ${{ secrets.STAGING_USER || 'neel' }}@${{ secrets.STAGING_HOST || '206.189.129.31' }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
         run: |
           set -euo pipefail
+          HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
           # Do NOT ship secrets from CI — droplet already has vault + .env.staging
           rsync -az --delete \
             --exclude '**/target/' \
@@ -75,25 +81,25 @@ jobs:
 
       - name: Compose up on droplet
         env:
-          HOST: ${{ secrets.STAGING_USER || 'neel' }}@${{ secrets.STAGING_HOST || '206.189.129.31' }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
           DOMAIN: status.neel.world
-          SKIP_BUILD: ${{ inputs.skip_build || false }}
+          SKIP_BUILD: ${{ github.event.inputs.skip_build || 'false' }}
         run: |
           set -euo pipefail
+          HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
           BUILD_FLAG="--build"
           if [ "${SKIP_BUILD}" = "true" ]; then
             BUILD_FLAG=""
           fi
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
-            "DOMAIN=$DOMAIN REMOTE_DIR=ai-manager BUILD_FLAG='$BUILD_FLAG' bash -s" <<'REMOTE'
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<REMOTE
           set -euo pipefail
-          cd "$HOME/${REMOTE_DIR:-ai-manager}"
+          cd "\$HOME/ai-manager"
           test -f vertical-security/secrets/dev_secrets.json
           test -f deploy/.env.staging
-          export DOMAIN="${DOMAIN:-status.neel.world}"
+          export DOMAIN="${DOMAIN}"
           export COMPOSE_PARALLEL_LIMIT=1
-          # shellcheck disable=SC2086
-          docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls up -d ${BUILD_FLAG:---build}
+          docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls up -d ${BUILD_FLAG}
           docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls ps
           curl -sf --max-time 8 http://127.0.0.1:18083/healthz || true
           echo

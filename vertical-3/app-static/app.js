@@ -157,7 +157,9 @@ async function refreshHealth() {
       }
     }
     if ($("conn-graph-detail")) {
-      $("conn-graph-detail").textContent = h.graph_message || "";
+      const durability =
+        " Persistence: V1 events + ACL identity, V2 graph snapshot, V3 twins on disk (survive restarts).";
+      $("conn-graph-detail").textContent = (h.graph_message || "") + durability;
     }
     if ($("conn-slack")) {
       $("conn-slack").textContent = h.egress
@@ -232,7 +234,7 @@ function renderLatest(payload) {
     if (emptyBanner) {
       emptyBanner.classList.remove("hidden");
       emptyBanner.innerHTML =
-        "<strong>Empty status window.</strong> Nothing to approve. No DM was sent. Wait for real PR/issue activity or send a test from Connections.";
+        "<strong>Empty status window.</strong> Nothing to approve. No DM was sent. Wait for real PR/commit/push activity, Team → Compile all, or send a test from Connections.";
     }
   } else if (emptyBanner) {
     emptyBanner.classList.add("hidden");
@@ -398,7 +400,7 @@ async function refreshTeamDigestsToday() {
         .map((m) => {
           const d = m.last_digest;
           const dig = d
-            ? `<strong>${esc(d.status_label || d.status)}</strong> · ${d.dm_sent ? "DM sent" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`
+            ? `<strong>${esc(d.status_label || d.status)}</strong> · ${d.dm_sent ? "DM sent" : d.empty_placeholder ? "empty window" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`
             : `<span class="muted">no digest yet</span>`;
           return `<li><strong>${esc(m.display_name || m.subject_id)}</strong> — ${dig}</li>`;
         })

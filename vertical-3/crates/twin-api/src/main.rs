@@ -611,6 +611,34 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
     })
 }
 
+async fn ensure_v2_membership(st: &AppState, tenant: &str, subject_ids: &[String]) {
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    else {
+        return;
+    };
+    for uid in subject_ids {
+        let _ = client
+            .post(format!("{v2}/v2/tenants/{tenant}/users"))
+            .json(&json!({
+                "global_user_id": uid,
+                "groups": ["grp_eng", "grp_default"],
+            }))
+            .send()
+            .await;
+    }
+    let _ = client
+        .post(format!("{v2}/v2/tenants/{tenant}/users"))
+        .json(&json!({
+            "global_user_id": "bridge_reader",
+            "groups": ["grp_eng", "grp_default"],
+        }))
+        .send()
+        .await;
+}
+
 async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
     // Scan tenants we know from last_demo + default demo/github tenants
     let mut tenants: Vec<String> = st.last_demo.lock().keys().cloned().collect();
@@ -623,6 +651,12 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
     let (period_start, period_end) = st.cfg.aligned_period(now);
     for tenant in tenants {
         let twins = st.store.list_twins(&tenant).await.unwrap_or_default();
+        let subjects: Vec<String> = twins
+            .iter()
+            .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
+            .map(|t| t.subject_id.clone())
+            .collect();
+        ensure_v2_membership(st, &tenant, &subjects).await;
         for twin in twins.into_iter().filter(|t| t.enabled) {
             if twin.twin_kind != TwinKind::Person {
                 continue;
@@ -1492,6 +1526,8 @@ async fn get_team(
             .ok()
             .and_then(|v| v.into_iter().next());
         let last_digest = latest.as_ref().map(|d| {
+            let emptyish = d.draft_text.contains("No code or ticket signals")
+                || d.draft_text.contains("nothing invented");
             json!({
                 "draft_id": d.draft_id,
                 "ledger_id": d.ledger_id,
@@ -1510,6 +1546,7 @@ async fn get_team(
                 "slack_dm_ts": d.slack_dm_ts,
                 "updated_at": d.updated_at,
                 "preview": d.draft_text.chars().take(160).collect::<String>(),
+                "empty_placeholder": emptyish,
             })
         });
         members.push(json!({

@@ -80,18 +80,40 @@ impl LedgerCompiler {
 
         let run_id = format!("run_{}", Uuid::new_v4());
         let started = Utc::now();
-        let person_node = format!("person:{}", twin.subject_id);
 
-        let view = self
-            .source
-            .fetch_person_view(
-                &twin.tenant_id,
-                &twin.subject_id,
-                &person_node,
-                opts.hops,
-            )
-            .await?;
+        // Primary subject + any gu_* aliases (historical identity after restarts)
+        let mut subject_ids: Vec<String> = vec![twin.subject_id.clone()];
+        if let Some(arr) = twin
+            .config_json
+            .get("provider_aliases")
+            .and_then(|v| v.as_array())
+        {
+            for a in arr {
+                if let Some(s) = a.as_str() {
+                    let s = s.trim();
+                    if s.starts_with("gu_") && !subject_ids.iter().any(|x| x == s) {
+                        subject_ids.push(s.to_string());
+                    }
+                }
+            }
+        }
 
+        let mut view = GraphView::default();
+        let mut person_nodes: Vec<String> = Vec::new();
+        for sid in &subject_ids {
+            let pn = format!("person:{sid}");
+            person_nodes.push(pn.clone());
+            match self
+                .source
+                .fetch_person_view(&twin.tenant_id, sid, &pn, opts.hops)
+                .await
+            {
+                Ok(part) => merge_graph_view(&mut view, part),
+                Err(e) => {
+                    tracing::debug!(subject = %sid, error = %e, "compile fetch_person_view skip");
+                }
+            }
+        }
         let graph_as_of = view.graph_as_of.unwrap_or_else(Utc::now);
         let compiled_at = Utc::now();
         let acl_empty = view.nodes.is_empty() && view.edges.is_empty() && view.blockers.is_empty();
@@ -99,9 +121,11 @@ impl LedgerCompiler {
         let mut items = Vec::new();
         let mut open_blockers = Vec::new();
 
+        let is_person_endpoint = |id: &str| person_nodes.iter().any(|p| p == id);
+
         // Map PR / Issue / Commit / Repo activity with evidence from person-linked edges
         for node in &view.nodes {
-            if node.node_id == person_node {
+            if is_person_endpoint(&node.node_id) {
                 continue;
             }
             let ntype = node.node_type.as_str();
@@ -121,29 +145,30 @@ impl LedgerCompiler {
             }
 
             // Activity: AUTHORED / ASSIGNED / PUSHED_TO / CHECKED / any person↔node edge
+            // Match any historical gu_* alias for this twin (identity restarts).
             let authored = view.edges.iter().find(|e| {
                 e.edge_type.eq_ignore_ascii_case("AUTHORED")
                     && (e.to_node_id == node.node_id || e.from_node_id == node.node_id)
-                    && (e.from_node_id == person_node || e.to_node_id == person_node)
+                    && (is_person_endpoint(&e.from_node_id) || is_person_endpoint(&e.to_node_id))
             });
             let assigned = view.edges.iter().find(|e| {
                 e.edge_type.eq_ignore_ascii_case("ASSIGNED_TO")
-                    && (e.to_node_id == person_node || e.from_node_id == person_node)
+                    && (is_person_endpoint(&e.from_node_id) || is_person_endpoint(&e.to_node_id))
                     && (e.to_node_id == node.node_id || e.from_node_id == node.node_id)
             });
             let pushed = view.edges.iter().find(|e| {
                 e.edge_type.eq_ignore_ascii_case("PUSHED_TO")
-                    && e.from_node_id == person_node
+                    && is_person_endpoint(&e.from_node_id)
                     && e.to_node_id == node.node_id
             });
             let checked = view.edges.iter().find(|e| {
                 e.edge_type.eq_ignore_ascii_case("CHECKED")
-                    && e.from_node_id == person_node
+                    && is_person_endpoint(&e.from_node_id)
                     && e.to_node_id == node.node_id
             });
             let linked = view.edges.iter().any(|e| {
-                (e.from_node_id == person_node && e.to_node_id == node.node_id)
-                    || (e.to_node_id == person_node && e.from_node_id == node.node_id)
+                (is_person_endpoint(&e.from_node_id) && e.to_node_id == node.node_id)
+                    || (is_person_endpoint(&e.to_node_id) && e.from_node_id == node.node_id)
             });
             if authored.is_none()
                 && assigned.is_none()
@@ -351,6 +376,36 @@ impl LedgerCompiler {
 /// Build a standard synthetic fixture for tests (TC-T01).
 pub fn synthetic_alice_graph(tenant: &str) -> GraphView {
     fixtures::alice_open_pr_fixture(tenant)
+}
+
+fn merge_graph_view(into: &mut GraphView, part: GraphView) {
+    for n in part.nodes {
+        if !into.nodes.iter().any(|x| x.node_id == n.node_id) {
+            into.nodes.push(n);
+        }
+    }
+    for e in part.edges {
+        if !into.edges.iter().any(|x| x.edge_id == e.edge_id) {
+            into.edges.push(e);
+        }
+    }
+    for s in part.states {
+        if !into
+            .states
+            .iter()
+            .any(|x| x.node_id == s.node_id && x.state_key == s.state_key)
+        {
+            into.states.push(s);
+        }
+    }
+    for b in part.blockers {
+        if !into.blockers.iter().any(|x| x.edge_id == b.edge_id) {
+            into.blockers.push(b);
+        }
+    }
+    if into.graph_as_of.is_none() {
+        into.graph_as_of = part.graph_as_of;
+    }
 }
 
 #[cfg(test)]

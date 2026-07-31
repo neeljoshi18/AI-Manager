@@ -4,7 +4,7 @@
 **Staging:** https://status.neel.world/app/  
 **Not:** Glean search · Buzz workspace · Centaur agent OS · silent private 1:1 wiretaps
 
-**Pitch (use this):** Status that writes itself from your PRs — you approve before anyone sees it.  
+**Pitch (use this):** Status that writes itself from your PRs and pushes — you approve before anyone sees it.  
 **Alt:** Kill the standup. Keep the signal.
 
 ---
@@ -13,7 +13,7 @@
 
 | You connect | We do | You control |
 |-------------|--------|-------------|
-| GitHub (App/webhooks) | Continuous ingest → graph | ACL stays on sources |
+| GitHub (App/webhooks) | Continuous ingest → graph (PRs, commits, pushes) | ACL stays on sources |
 | Slack (bot via vault) | **Rare** status digests (change-only + daily cap) | **Approve / Edit / Don't send** |
 | Team map (2+ people) | Person twins + blocker/conflict cards | Who is mapped |
 
@@ -32,7 +32,7 @@
 ## Success criteria (your team)
 
 1. **≥2 humans** mapped GitHub → Slack (`multi_person_ready`)  
-2. Real PRs appear in digests without manual copy-paste  
+2. Real PRs/commits appear in digests without manual copy-paste  
 3. At least one **blocker/conflict** visible in product UI when it exists  
 4. **Approve**, **Edit**, or **Don't send** at least once (loop works)  
 5. Optionally **cancel one standup** if digests are trustworthy enough  

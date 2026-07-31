@@ -180,7 +180,7 @@ Code: `vertical-3/crates/twin-core/src/notify_policy.rs`, delivery worker, produ
 | Autoheal | Restarts containers labeled `autoheal=true` (V2) when unhealthy |
 | Bridge | Health-gates V2; re-projects when graph empty; poison-skip stuck events |
 | Secrets | Only egress vault / host gitignored files (ADR-012) |
-| SSH | `~/.ssh/id_ed25519` → `neel@206.189.129.31` — **campus Wi‑Fi often blocks port 22**; use mobile hotspot for deploys. Agent must not SSH casually; ask founder to switch hotspot first. Deploy helper: `./deploy/scripts/deploy_when_ssh.sh` |
+| SSH | Campus Wi‑Fi often **blocks outbound TCP 22** (timeout). Prefer **GitHub Actions deploy** (`git push` / `gh workflow run deploy-staging.yml`) — see `deploy/scripts/setup_ssh_via_https_port.md`. Hotspot only for one-time secret setup or emergency. Optional sshd port **2222**. Agent: never spam SSH; use Actions when possible. |
 
 **Ports (local/staging internal):** V1 18080 · V2 18082 · V3 18083 · egress 18090  
 

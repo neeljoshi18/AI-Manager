@@ -2,6 +2,23 @@
 
 Goal: run AI Manager on a **single host** a teammate can hit over HTTPS — without laptop sleep killing the demo.
 
+## Campus Wi‑Fi / blocked SSH
+
+Many college networks **block outbound SSH (TCP 22)**. Symptom: `ssh neel@206.189.129.31` **times out** on campus Wi‑Fi, works on mobile hotspot.
+
+**Preferred fix (no hotspot for every deploy):**
+
+1. One-time: add GitHub Actions secrets (`STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_KEY`) — see `deploy/scripts/setup_ssh_via_https_port.md`
+2. From campus: `git push origin main` → workflow **Deploy staging** builds on the droplet via GitHub’s network
+
+**Helpers:**
+
+| Script | Purpose |
+|--------|---------|
+| `./deploy/scripts/deploy_when_ssh.sh` | Laptop SSH deploy (hotspot) |
+| `./deploy/scripts/ssh_staging.sh` | Try ports 22 → 2222 → 443 |
+| `.github/workflows/deploy-staging.yml` | Deploy without campus SSH |
+
 ## What exists
 
 | Piece | Path |

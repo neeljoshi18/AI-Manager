@@ -286,6 +286,35 @@ Long session from confidence pilot → empty graph after redeploy → firewall �
 
 ---
 
+## 2026-07-31 — Session: A2 digest lookback (batch, no deploy)
+
+### Context
+
+- Staging lag: `ensure_users` 404; empty digests; graph had commits/pushes ~20h old; `STATUS_WINDOW_SECS=3600`; paneerjeera zero edges.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Default **STATUS_WINDOW_SECS=86400** (24h rolling lookback) | Pilot standup replacement; 1h windows empty on sparse activity |
+| 2 | Separate **aligned ledger_id bucket** vs **rolling activity filter** | Stable drafts + honest lookback |
+| 3 | Propagate V2 `valid_from` into compiler; open PR/issue always keep | Correct window semantics without dropping WIP |
+| 4 | Team compile returns `with_items`, kinds, summaries, `empty_reason` | A2 multi-person proof surface |
+| 5 | Do not mark A2 live-green until post-deploy dual digests | Airtight bar; paneerjeera needs real GH edges |
+| 6 | No Linear/training until A2 proven | Standing rule |
+
+### Artifacts
+
+- `plans/2026-07-31_a2-digest-lookback.md`  
+- twin-compiler / twin-core / twin-api / app-static / compose defaults  
+
+### Open questions
+
+1. Deploy once (hotspot or Actions)?  
+2. When will paneerjeera push as second identity?  
+
+---
+
 ## Template for future entries
 
 ```markdown

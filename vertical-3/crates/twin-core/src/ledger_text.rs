@@ -7,15 +7,16 @@ use crate::model::{ConfidenceTier, LedgerItem, StatusLedger};
 pub fn render_draft_text(ledger: &StatusLedger) -> String {
     let mut lines = Vec::new();
     let who = human_name(&ledger.person_id);
-    let day = ledger.period.start.date_naive();
+    let day = ledger.period.end.date_naive();
     let conf = match ledger.confidence_rollup {
         ConfidenceTier::High => "shipped / closed work",
         ConfidenceTier::Medium => "work in progress",
         ConfidenceTier::Blocker => "blocked — needs attention",
     };
+    let win = format_window(ledger.period.start, ledger.period.end);
 
     lines.push(format!("Status update for {who} · {day}"));
-    lines.push(format!("Window: {conf}."));
+    lines.push(format!("Lookback: {win} · {conf}."));
     lines.push(String::new());
 
     if ledger.items.is_empty() && ledger.open_blockers.is_empty() {
@@ -80,6 +81,22 @@ pub fn render_draft_text(ledger: &StatusLedger) -> String {
 
 fn clean_summary(s: &str) -> String {
     s.trim().to_string()
+}
+
+fn format_window(start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = (end - start).num_seconds().max(0);
+    let label = if secs >= 86_400 {
+        format!("{}d", (secs + 43_200) / 86_400)
+    } else if secs >= 3600 {
+        format!("{}h", (secs + 1800) / 3600)
+    } else {
+        format!("{}m", (secs + 30) / 60)
+    };
+    format!(
+        "{label} ({} → {} UTC)",
+        start.format("%m-%d %H:%M"),
+        end.format("%m-%d %H:%M")
+    )
 }
 
 fn human_name(person_id: &str) -> String {

@@ -540,12 +540,18 @@ async function compileTeamDigests() {
     });
     if (msg) {
       const lines = (out.results || [])
-        .map(
-          (r) =>
-            `${r.display_name || r.twin_id}: ${r.ok === false ? "ERR " + (r.error || "") : `items=${r.item_count} dm=${r.dm_sent ? "yes" : "no"}${r.suppressed ? " (" + r.suppressed + ")" : ""}${r.empty ? " empty" : ""}`}`
-        )
+        .map((r) => {
+          if (r.ok === false) return `${r.display_name || r.twin_id}: ERR ${r.error || ""}`;
+          const kinds = (r.item_kinds || []).slice(0, 4).join(",") || "—";
+          const why = r.empty ? ` empty(${r.empty_reason || "?"})` : "";
+          const sum = (r.item_summaries || [])[0]
+            ? ` · ${(r.item_summaries[0] || "").slice(0, 48)}`
+            : "";
+          return `${r.display_name || r.twin_id}: items=${r.item_count ?? 0} [${kinds}] dm=${r.dm_sent ? "yes" : "no"}${r.suppressed ? " (" + r.suppressed + ")" : ""}${why}${sum}`;
+        })
         .join(" · ");
-      msg.textContent = `Compiled ${out.compiled ?? 0}, DMs ${out.dms_sent ?? 0}. ${lines}`;
+      const withItems = out.with_items != null ? `, with_items ${out.with_items}` : "";
+      msg.textContent = `Compiled ${out.compiled ?? 0}${withItems}, DMs ${out.dms_sent ?? 0}, window ${out.status_window_secs ?? "?"}s. ${lines}`;
     }
     await refreshTeam();
   } catch (e) {

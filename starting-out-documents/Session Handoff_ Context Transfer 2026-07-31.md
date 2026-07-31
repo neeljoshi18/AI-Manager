@@ -216,11 +216,12 @@ curl -sS -X POST https://status.neel.world/v3/tenants/ten_github/team/compile \
 
 ### Phase C — Product work while batching (no deploy)
 
-1. Dual-person digests: real activity quality (evidence, windows).  
+1. ~~Dual-person digests: activity quality (evidence, windows)~~ **done 2026-07-31** — 24h lookback, `valid_from`, open-PR keep, team compile proof fields, unit tests.  
 2. Bridge: keep Team API upsert + prune (already).  
 3. Optional: hide demo seed from graph server-side flag.  
-4. Partner package final pass (install runbook vs live behavior after deploy).  
-5. Soft-outreach readiness checklist (A1–A7).  
+4. Partner package final pass (install runbook vs live behavior after deploy) — note **STATUS_WINDOW_SECS=86400**.  
+5. Soft-outreach readiness checklist (A1–A7) — see `plans/2026-07-31_a2-digest-lookback.md`.  
+6. **Next incomplete without deploy:** hide demo seed server-side; partner package pass; ensure paneerjeera gets real GH edges when they push (bridge map already).
 
 ### Phase D — When founder has reliable hotspot (once)
 
@@ -243,31 +244,37 @@ curl -sS -X POST https://status.neel.world/v3/tenants/ten_github/team/compile \
 | ID | Item | Status |
 |----|------|--------|
 | A1 | Notify non-spam | **Done** (live metrics + policy v1) |
-| A2 | Multi-person digests proven | **Plumbing done**; full proof needs post-deploy compile with non-empty items for both humans |
+| A2 | Multi-person digests proven | **Lookback + multi-identity + dual-person tests done**; live proof needs post-deploy compile — person1 non-empty if graph activity in 24h; person2 needs real GH edges |
 | A3 | Graph durability | **Done in code** (persist volumes); verify after next full deploy |
 | A4 | Status UX Approve/Edit/Don’t send | **Done** + empty/evidence polish on main |
 | A5 | Partner install runbook | **Done** |
 | A6 | Empty/wrong draft UX | **Improved** on main |
 | A7 | Pilot packaging | **Mostly done** (one-pager/playbook/runbook aligned) |
 
-**Stranger-pilot confidence:** ~45–55% depending on whether latest `main` is on staging. Target >50% after one good deploy + dual digests.
+**Stranger-pilot confidence:** ~48–58% on code path (A2 lookback shipped); still capped until staging runs latest `main` and at least one dual-person compile shows items. Target >50% after one good deploy + dual digests.
 
 ---
 
 ## 8. Recent commits (this arc — reference)
 
 ```
+(this session) A2: 24h activity lookback + dual-person digest proof surface
+6be4ae4 / 89b4500 Session handoff 2026-07-31
 8a7f2c6 Batch: multi-identity digest compile and scheduler ACL seed
 7ceff1c / 5dc1d08 Campus-WiFi GitHub Actions deploy
 3888b8e Partner package + richer deploy_when_ssh
 9f3bfe9 / 11d1f58 Empty-to-items draft re-notify
 94f8f15 Digests commits/pushes + soft-fail neighborhood
-35f3dbb ACL identity persist + twin prune
-edd246f V1/V2 persist + intent seed
 … Notify Policy v1, graph harden, multi-person map earlier
 ```
 
 Confirm tip with `git log -15 --oneline`.
+
+### Mental notes added this session
+
+21. **Empty digests (live):** staging behind main **and** 1h window; activity ~20h old → default 24h rolling lookback + `valid_from`.  
+22. **paneerjeera has zero graph edges** — empty digest correct until that GH user pushes/PRs.  
+23. **ledger_id** stays wall-aligned; human lookback is rolling `activity_start..activity_end`.
 
 ---
 

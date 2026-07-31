@@ -19,7 +19,8 @@ pub struct TwinConfig {
     pub medium_veto_window_secs: i64,
     pub blocker_veto_window_secs: i64,
     pub high_auto_publish_default: bool,
-    /// Length of status ledger period (aligned wall clock). Default 1h.
+    /// Length of status ledger period (aligned wall clock) + rolling activity lookback.
+    /// Default **24h** — pilot-friendly standup replacement (sparse PR/commit days).
     pub status_window_secs: i64,
     /// Min seconds between Slack DMs per twin. Default 30m. Ingest is continuous; notify is batched.
     pub notify_interval_secs: i64,
@@ -47,7 +48,7 @@ impl Default for TwinConfig {
             medium_veto_window_secs: DEFAULT_MEDIUM_VETO_WINDOW_SECS,
             blocker_veto_window_secs: DEFAULT_BLOCKER_VETO_WINDOW_SECS,
             high_auto_publish_default: false,
-            status_window_secs: 3600,
+            status_window_secs: 86_400,
             notify_interval_secs: 1800,
             compile_interval_secs: 1800,
             notify_on_compile_default: false,
@@ -123,7 +124,7 @@ impl TwinConfig {
         c
     }
 
-    /// Floor `now` to status window start (UTC).
+    /// Floor `now` to status window start (UTC). Stable ledger_id within a bucket.
     pub fn aligned_period(
         &self,
         now: chrono::DateTime<chrono::Utc>,
@@ -138,6 +139,17 @@ impl TwinConfig {
             .unwrap_or(now - Duration::seconds(w));
         let end = start + Duration::seconds(w);
         (start, end)
+    }
+
+    /// Rolling activity lookback ending at `now` (inclusive of sparse pilot commits).
+    /// Used to filter graph edges; ledger_id still uses [`aligned_period`] for draft stability.
+    pub fn activity_lookback(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+        use chrono::Duration;
+        let w = self.status_window_secs.max(60);
+        (now - Duration::seconds(w), now)
     }
 
     pub fn is_embedded(&self) -> bool {

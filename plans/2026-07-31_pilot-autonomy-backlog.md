@@ -28,9 +28,10 @@
 2. ~~Graph UI: collapse same-label people + hide demo alice/bob~~ (on main; needs deploy)  
 3. ~~Digests include commits/pushes~~ (on main; needs deploy) — was empty for pure git activity  
 4. ~~Neighborhood 404 soft-fail~~ so multi-person compile continues  
-5. Dual-person digests with non-empty items after deploy + ensure_users  
+5. Dual-person digests with non-empty items after deploy + ensure_users — **code path airtight** (24h lookback, multi-alias, tests); live still needs deploy + paneerjeera GH edges  
 6. Cockroach durability path when droplet can afford it  
 7. Soft outreach package final check  
+8. Optional: hide demo seed server-side on graph
 
 ## ICP bar (recruitable pilot)
 

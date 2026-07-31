@@ -30,7 +30,7 @@ Lessons from slop (Graph 0/0, spam DMs, unproven multi-person, jargon “veto”
 | ID | Item | Status |
 |----|------|--------|
 | A1 | Notify Policy v1 (change-only + daily cap) | **Live-verified 2026-07-30** — staging `/metrics`: 168 compiles, 2 DMs sent, **166 suppressed**, `notify_policy: v1_change_only_daily_cap` |
-| A2 | Multi-person digests proven | **Plumbing airtight 2026-07-30** — map + seed + Team digests board + `POST …/team/compile` + persist; p2 force-DM sent. **Live real-PR digests for both GH logins** still needs activity / post-deploy seed |
+| A2 | Multi-person digests proven | **Plumbing + 24h lookback + dual-person tests 2026-07-31** — multi-identity merge, `valid_from` filter, open-PR keep, team compile `with_items`/`empty_reason`. **Live dual non-empty** still needs one deploy + 2nd human GH activity |
 | A3 | Graph durability / no mystery empty | **Hardened 2026-07-30** — bridge recovery + twin-api **embedded state file** (`TWIN_EMBEDDED_STATE_PATH`) so team maps survive restarts |
 | A4 | Approve / Edit / Don’t send UX | **Shipped** + 2026-07-30 evidence/empty-draft polish |
 | A5 | Partner install runbook | **Shipped** — `starting-out-documents/Design Partner_ Install Runbook.md` |

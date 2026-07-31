@@ -24,8 +24,13 @@ use uuid::Uuid;
 /// Compile options for a single run.
 #[derive(Debug, Clone)]
 pub struct CompileOpts {
+    /// Aligned wall-clock bucket (stable ledger_id within the bucket).
     pub period_start: DateTime<Utc>,
     pub period_end: DateTime<Utc>,
+    /// Rolling activity lookback used to include/exclude graph signals.
+    /// Defaults to the same as period when unset via constructors; twin-api sets rolling lookback.
+    pub activity_start: DateTime<Utc>,
+    pub activity_end: DateTime<Utc>,
     pub hops: usize,
 }
 
@@ -36,7 +41,22 @@ impl Default for CompileOpts {
         Self {
             period_start: start,
             period_end: end,
+            activity_start: start,
+            activity_end: end,
             hops: 3,
+        }
+    }
+}
+
+impl CompileOpts {
+    /// Convenience: one window for both ledger period and activity filter.
+    pub fn window(start: DateTime<Utc>, end: DateTime<Utc>, hops: usize) -> Self {
+        Self {
+            period_start: start,
+            period_end: end,
+            activity_start: start,
+            activity_end: end,
+            hops,
         }
     }
 }
@@ -118,12 +138,16 @@ impl LedgerCompiler {
         let compiled_at = Utc::now();
         let acl_empty = view.nodes.is_empty() && view.edges.is_empty() && view.blockers.is_empty();
 
-        let mut items = Vec::new();
         let mut open_blockers = Vec::new();
 
         let is_person_endpoint = |id: &str| person_nodes.iter().any(|p| p == id);
 
-        // Map PR / Issue / Commit / Repo activity with evidence from person-linked edges
+        // Map PR / Issue / Commit / Repo activity with evidence from person-linked edges.
+        // Activity lookback is rolling (activity_start..activity_end); open PR/issue stay in.
+        let act_start = opts.activity_start;
+        let act_end = opts.activity_end;
+        let mut ranked: Vec<(Option<DateTime<Utc>>, LedgerItem)> = Vec::new();
+
         for node in &view.nodes {
             if is_person_endpoint(&node.node_id) {
                 continue;
@@ -192,18 +216,50 @@ impl LedgerCompiler {
             let lifecycle = state
                 .map(|s| s.state_value.as_str())
                 .unwrap_or(if is_commit || is_repo { "OPEN" } else { "OPEN" });
-            let conf = if is_commit || pushed.is_some() {
-                // Commits/pushes are medium unless we have merge evidence
-                score_item_confidence(lifecycle, true)
-            } else {
-                score_item_confidence(lifecycle, true)
-            };
+            let open_work = (is_pr || is_issue)
+                && !matches!(lifecycle, "MERGED" | "CLOSED" | "DONE" | "RESOLVED");
+
+            // Newest person-linked edge time (or state as_of for closed work)
+            let mut activity_ts: Option<DateTime<Utc>> = None;
+            for e in [authored, assigned, pushed, checked].into_iter().flatten() {
+                if let Some(ts) = e.valid_from {
+                    activity_ts = Some(activity_ts.map_or(ts, |cur| cur.max(ts)));
+                }
+            }
+            if activity_ts.is_none() {
+                for e in view.edges.iter().filter(|e| {
+                    (is_person_endpoint(&e.from_node_id) && e.to_node_id == node.node_id)
+                        || (is_person_endpoint(&e.to_node_id) && e.from_node_id == node.node_id)
+                }) {
+                    if let Some(ts) = e.valid_from {
+                        activity_ts = Some(activity_ts.map_or(ts, |cur| cur.max(ts)));
+                    }
+                }
+            }
+            if let Some(s) = state {
+                activity_ts = Some(activity_ts.map_or(s.as_of, |cur| cur.max(s.as_of)));
+            }
+
+            // Rolling lookback: timestamped signals outside window drop unless open PR/issue.
+            // Missing timestamps (fixtures / pre-valid_from payloads) stay included.
+            if !open_work {
+                if let Some(ts) = activity_ts {
+                    if ts < act_start || ts > act_end {
+                        continue;
+                    }
+                }
+            }
+
+            let conf = score_item_confidence(lifecycle, true);
 
             let mut evidence = Vec::new();
             for e in [authored, assigned, pushed, checked].into_iter().flatten() {
                 evidence.push(format!("edge:{}", e.edge_id));
                 if !e.event_id.is_empty() {
                     evidence.push(format!("event:{}", e.event_id));
+                }
+                if let Some(ts) = e.valid_from {
+                    evidence.push(format!("at:{}", ts.to_rfc3339()));
                 }
             }
             if let Some(s) = state {
@@ -214,6 +270,9 @@ impl LedgerCompiler {
             if evidence.is_empty() {
                 evidence.push(format!("node:{}", node.node_id));
             }
+            // Dedupe evidence while preserving order
+            let mut seen_ev = std::collections::HashSet::new();
+            evidence.retain(|e| seen_ev.insert(e.clone()));
 
             let kind = if is_pr {
                 "pr"
@@ -253,29 +312,35 @@ impl LedgerCompiler {
                 format!("Open {kind}: {title}")
             };
 
-            items.push(LedgerItem {
-                kind: kind.into(),
-                resource_id: if node.resource_id.is_empty() {
-                    node.node_id.clone()
-                } else {
-                    node.resource_id.clone()
+            ranked.push((
+                activity_ts,
+                LedgerItem {
+                    kind: kind.into(),
+                    resource_id: if node.resource_id.is_empty() {
+                        node.node_id.clone()
+                    } else {
+                        node.resource_id.clone()
+                    },
+                    node_id: node.node_id.clone(),
+                    summary,
+                    confidence: conf,
+                    evidence_refs: evidence,
                 },
-                node_id: node.node_id.clone(),
-                summary,
-                confidence: conf,
-                evidence_refs: evidence,
-            });
+            ));
         }
-        // Cap commit noise: keep at most 5 commit items (most recent-ish order from graph)
+        // Newest activity first; cap commit noise at 5
+        ranked.sort_by(|a, b| b.0.cmp(&a.0));
         let mut commit_count = 0usize;
-        items.retain(|it| {
+        let mut items = Vec::new();
+        for (_ts, it) in ranked {
             if it.kind == "commit" {
                 commit_count += 1;
-                commit_count <= 5
-            } else {
-                true
+                if commit_count > 5 {
+                    continue;
+                }
             }
-        });
+            items.push(it);
+        }
 
         // Open blockers from ACL-visible BLOCKS edges
         for edge in view.blockers.iter().chain(
@@ -314,12 +379,13 @@ impl LedgerCompiler {
         open_blockers.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         open_blockers.dedup_by(|a, b| a.node_id == b.node_id);
 
+        // Human-facing period = rolling activity lookback; ledger_id stays on aligned bucket.
         let mut ledger = StatusLedger {
             tenant_id: twin.tenant_id.clone(),
             person_id: twin.subject_id.clone(),
             period: LedgerPeriod {
-                start: opts.period_start,
-                end: opts.period_end,
+                start: opts.activity_start,
+                end: opts.activity_end,
             },
             confidence_rollup: ConfidenceTier::Medium,
             items,
@@ -439,11 +505,7 @@ mod tests {
         let out = compiler
             .compile_person(
                 &twin,
-                &CompileOpts {
-                    period_start: now - chrono::Duration::days(1),
-                    period_end: now,
-                    hops: 2,
-                },
+                &CompileOpts::window(now - chrono::Duration::days(1), now, 2),
             )
             .await
             .unwrap();
@@ -452,5 +514,300 @@ mod tests {
             .evidence_refs
             .iter()
             .any(|e| e.starts_with("event:") || e.starts_with("edge:")));
+    }
+
+    #[tokio::test]
+    async fn multi_alias_merges_activity() {
+        let store = InMemoryTwinStore::new();
+        let source = FixtureGraphSource::empty();
+        // Primary subject has no edges; alias gu_old has commit activity
+        let now = Utc::now();
+        source.set_view(
+            "ten_t",
+            "gu_new",
+            GraphView {
+                nodes: vec![GraphNodeView {
+                    node_id: "person:gu_new".into(),
+                    node_type: "Person".into(),
+                    display_name: "Neel".into(),
+                    resource_id: "gu_new".into(),
+                    properties: serde_json::json!({}),
+                    is_private: false,
+                }],
+                edges: vec![],
+                states: vec![],
+                blockers: vec![],
+                graph_as_of: Some(now),
+            },
+        );
+        source.set_view(
+            "ten_t",
+            "gu_old",
+            GraphView {
+                nodes: vec![
+                    GraphNodeView {
+                        node_id: "person:gu_old".into(),
+                        node_type: "Person".into(),
+                        display_name: "Neel".into(),
+                        resource_id: "gu_old".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                    },
+                    GraphNodeView {
+                        node_id: "commit:org/r:abc".into(),
+                        node_type: "Commit".into(),
+                        display_name: "digest windows".into(),
+                        resource_id: "abc1234".into(),
+                        properties: serde_json::json!({"message": "digest windows"}),
+                        is_private: false,
+                    },
+                    GraphNodeView {
+                        node_id: "repo:org/r".into(),
+                        node_type: "Repo".into(),
+                        display_name: "org/r".into(),
+                        resource_id: "org/r".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                    },
+                ],
+                edges: vec![
+                    GraphEdgeView {
+                        edge_id: "a1".into(),
+                        edge_type: "AUTHORED".into(),
+                        from_node_id: "person:gu_old".into(),
+                        to_node_id: "commit:org/r:abc".into(),
+                        event_id: "evt_c".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                        valid_from: Some(now - chrono::Duration::hours(2)),
+                    },
+                    GraphEdgeView {
+                        edge_id: "p1".into(),
+                        edge_type: "PUSHED_TO".into(),
+                        from_node_id: "person:gu_old".into(),
+                        to_node_id: "repo:org/r".into(),
+                        event_id: "evt_p".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                        valid_from: Some(now - chrono::Duration::hours(2)),
+                    },
+                ],
+                states: vec![],
+                blockers: vec![],
+                graph_as_of: Some(now),
+            },
+        );
+        let compiler = LedgerCompiler::new(store.clone(), source);
+        let twin = Twin {
+            tenant_id: "ten_t".into(),
+            twin_id: person_twin_id("gu_new"),
+            twin_kind: TwinKind::Person,
+            subject_id: "gu_new".into(),
+            display_name: "Neel".into(),
+            timezone: "UTC".into(),
+            channel_id: "C1".into(),
+            shadow_until: None,
+            high_auto_publish: false,
+            enabled: true,
+            config_json: serde_json::json!({"provider_aliases": ["neel", "gu_old"]}),
+            created_at: now,
+            updated_at: now,
+        };
+        store.upsert_twin(twin.clone()).await.unwrap();
+        let out = compiler
+            .compile_person(&twin, &CompileOpts::window(now - chrono::Duration::hours(24), now, 3))
+            .await
+            .unwrap();
+        assert!(
+            out.ledger.ledger.items.iter().any(|i| i.kind == "commit"),
+            "expected commit from gu_old alias: {:?}",
+            out.ledger.ledger.items
+        );
+        assert!(out.ledger.ledger.items.iter().any(|i| i.kind == "repo"));
+        assert!(out.ledger.ledger.items[0]
+            .evidence_refs
+            .iter()
+            .any(|e| e.starts_with("at:")));
+    }
+
+    #[tokio::test]
+    async fn window_excludes_old_commits_keeps_open_pr() {
+        let store = InMemoryTwinStore::new();
+        let source = FixtureGraphSource::empty();
+        let now = Utc::now();
+        let old = now - chrono::Duration::hours(48);
+        source.set_view(
+            "ten_t",
+            "gu_a",
+            GraphView {
+                nodes: vec![
+                    GraphNodeView {
+                        node_id: "person:gu_a".into(),
+                        node_type: "Person".into(),
+                        display_name: "A".into(),
+                        resource_id: "gu_a".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                    },
+                    GraphNodeView {
+                        node_id: "commit:org/r:old".into(),
+                        node_type: "Commit".into(),
+                        display_name: "old work".into(),
+                        resource_id: "oldsha".into(),
+                        properties: serde_json::json!({"message": "old work"}),
+                        is_private: false,
+                    },
+                    GraphNodeView {
+                        node_id: "pr:org/r/pr/1".into(),
+                        node_type: "PullRequest".into(),
+                        display_name: "still open".into(),
+                        resource_id: "org/r/pr/1".into(),
+                        properties: serde_json::json!({"title": "still open"}),
+                        is_private: false,
+                    },
+                ],
+                edges: vec![
+                    GraphEdgeView {
+                        edge_id: "c_old".into(),
+                        edge_type: "AUTHORED".into(),
+                        from_node_id: "person:gu_a".into(),
+                        to_node_id: "commit:org/r:old".into(),
+                        event_id: "e_old".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                        valid_from: Some(old),
+                    },
+                    GraphEdgeView {
+                        edge_id: "pr_old".into(),
+                        edge_type: "AUTHORED".into(),
+                        from_node_id: "person:gu_a".into(),
+                        to_node_id: "pr:org/r/pr/1".into(),
+                        event_id: "e_pr".into(),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                        valid_from: Some(old),
+                    },
+                ],
+                states: vec![EntityStateView {
+                    node_id: "pr:org/r/pr/1".into(),
+                    state_key: "lifecycle".into(),
+                    state_value: "OPEN".into(),
+                    event_id: "e_pr".into(),
+                    as_of: old,
+                }],
+                blockers: vec![],
+                graph_as_of: Some(now),
+            },
+        );
+        let compiler = LedgerCompiler::new(store.clone(), source);
+        let twin = Twin {
+            tenant_id: "ten_t".into(),
+            twin_id: person_twin_id("gu_a"),
+            twin_kind: TwinKind::Person,
+            subject_id: "gu_a".into(),
+            display_name: "A".into(),
+            timezone: "UTC".into(),
+            channel_id: "C1".into(),
+            shadow_until: None,
+            high_auto_publish: false,
+            enabled: true,
+            config_json: serde_json::json!({}),
+            created_at: now,
+            updated_at: now,
+        };
+        store.upsert_twin(twin.clone()).await.unwrap();
+        let out = compiler
+            .compile_person(&twin, &CompileOpts::window(now - chrono::Duration::hours(24), now, 2))
+            .await
+            .unwrap();
+        assert!(
+            !out.ledger.ledger.items.iter().any(|i| i.kind == "commit"),
+            "old commit should be outside 24h lookback"
+        );
+        assert!(
+            out.ledger.ledger.items.iter().any(|i| i.kind == "pr"),
+            "open PR stays in digest: {:?}",
+            out.ledger.ledger.items
+        );
+    }
+
+    #[tokio::test]
+    async fn dual_person_distinct_digests() {
+        let store = InMemoryTwinStore::new();
+        let source = FixtureGraphSource::empty();
+        let now = Utc::now();
+        for (sid, name, pr) in [
+            ("gu_p1", "Alice", "pr:org/r/pr/10"),
+            ("gu_p2", "Bob", "pr:org/r/pr/20"),
+        ] {
+            source.set_view(
+                "ten_t",
+                sid,
+                GraphView {
+                    nodes: vec![
+                        GraphNodeView {
+                            node_id: format!("person:{sid}"),
+                            node_type: "Person".into(),
+                            display_name: name.into(),
+                            resource_id: sid.into(),
+                            properties: serde_json::json!({}),
+                            is_private: false,
+                        },
+                        GraphNodeView {
+                            node_id: pr.into(),
+                            node_type: "PullRequest".into(),
+                            display_name: format!("{name} work"),
+                            resource_id: pr.trim_start_matches("pr:").into(),
+                            properties: serde_json::json!({"title": format!("{name} work")}),
+                            is_private: false,
+                        },
+                    ],
+                    edges: vec![GraphEdgeView {
+                        edge_id: format!("a_{sid}"),
+                        edge_type: "AUTHORED".into(),
+                        from_node_id: format!("person:{sid}"),
+                        to_node_id: pr.into(),
+                        event_id: format!("e_{sid}"),
+                        properties: serde_json::json!({}),
+                        is_private: false,
+                        valid_from: Some(now - chrono::Duration::hours(1)),
+                    }],
+                    states: vec![EntityStateView {
+                        node_id: pr.into(),
+                        state_key: "lifecycle".into(),
+                        state_value: "OPEN".into(),
+                        event_id: format!("e_{sid}"),
+                        as_of: now,
+                    }],
+                    blockers: vec![],
+                    graph_as_of: Some(now),
+                },
+            );
+        }
+        let compiler = LedgerCompiler::new(store.clone(), source);
+        let opts = CompileOpts::window(now - chrono::Duration::hours(24), now, 2);
+        let mut digests = Vec::new();
+        for (sid, name) in [("gu_p1", "Alice"), ("gu_p2", "Bob")] {
+            let twin = Twin {
+                tenant_id: "ten_t".into(),
+                twin_id: person_twin_id(sid),
+                twin_kind: TwinKind::Person,
+                subject_id: sid.into(),
+                display_name: name.into(),
+                timezone: "UTC".into(),
+                channel_id: "C1".into(),
+                shadow_until: None,
+                high_auto_publish: false,
+                enabled: true,
+                config_json: serde_json::json!({}),
+                created_at: now,
+                updated_at: now,
+            };
+            store.upsert_twin(twin.clone()).await.unwrap();
+            let out = compiler.compile_person(&twin, &opts).await.unwrap();
+            assert_eq!(out.ledger.ledger.items.len(), 1);
+            digests.push(out.ledger.ledger.items[0].node_id.clone());
+        }
+        assert_ne!(digests[0], digests[1], "each person keeps their own PR");
     }
 }

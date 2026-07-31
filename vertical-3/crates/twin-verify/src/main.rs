@@ -97,11 +97,7 @@ async fn tc_t01() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -144,11 +140,7 @@ async fn tc_t02() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -197,11 +189,7 @@ async fn tc_t03() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -254,11 +242,7 @@ async fn tc_t04() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -314,11 +298,7 @@ async fn tc_t05() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -363,11 +343,7 @@ async fn tc_t06() -> TestResult {
     let out = compiler
         .compile_person(
             &bob,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -383,11 +359,7 @@ async fn tc_t06() -> TestResult {
     let alice_out = compiler
         .compile_person(
             &alice,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -418,11 +390,7 @@ async fn tc_t07() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -453,11 +421,7 @@ async fn tc_t08() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -505,11 +469,7 @@ async fn tc_t09() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();
@@ -552,11 +512,7 @@ async fn tc_t10() -> TestResult {
     let out = compiler
         .compile_person(
             &twin,
-            &CompileOpts {
-                period_start: now - Duration::days(1),
-                period_end: now,
-                hops: 2,
-            },
+            &CompileOpts::window(now - Duration::days(1), now, 2),
         )
         .await
         .unwrap();

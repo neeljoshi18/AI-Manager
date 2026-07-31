@@ -69,6 +69,8 @@ struct V2Edge {
     properties: serde_json::Value,
     #[serde(default)]
     is_private: bool,
+    #[serde(default)]
+    valid_from: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +173,7 @@ impl GraphSource for HttpV2GraphSource {
                 event_id: e.event_id,
                 properties: e.properties,
                 is_private: e.is_private,
+                valid_from: e.valid_from,
             })
             .collect();
 
@@ -198,6 +201,7 @@ impl GraphSource for HttpV2GraphSource {
                         event_id: e.event_id,
                         properties: e.properties,
                         is_private: e.is_private,
+                        valid_from: e.valid_from,
                     })
                     .collect()
             }

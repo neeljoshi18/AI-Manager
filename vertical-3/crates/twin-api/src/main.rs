@@ -649,6 +649,7 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
     }
     let now = Utc::now();
     let (period_start, period_end) = st.cfg.aligned_period(now);
+    let (activity_start, activity_end) = st.cfg.activity_lookback(now);
     for tenant in tenants {
         let twins = st.store.list_twins(&tenant).await.unwrap_or_default();
         let subjects: Vec<String> = twins
@@ -678,6 +679,8 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
             let opts = CompileOpts {
                 period_start,
                 period_end,
+                activity_start,
+                activity_end,
                 hops: 3,
             };
             let outcome = match st.compiler.compile_person(&twin, &opts).await {
@@ -1310,6 +1313,7 @@ async fn demo_simulate(
                 event_id: event_id.clone(),
                 properties: json!({}),
                 is_private: false,
+                valid_from: Some(Utc::now()),
             }],
             states: vec![EntityStateView {
                 node_id: pr_node,
@@ -1357,9 +1361,12 @@ async fn demo_simulate(
         .map_err(ApiError::from)?;
 
     let (period_start, period_end) = st.cfg.aligned_period(now);
+    let (activity_start, activity_end) = st.cfg.activity_lookback(now);
     let opts = CompileOpts {
         period_start,
         period_end,
+        activity_start,
+        activity_end,
         hops: 2,
     };
     let outcome = st
@@ -1768,6 +1775,7 @@ async fn compile_team(
         .unwrap_or(true);
     let now = Utc::now();
     let (period_start, period_end) = st.cfg.aligned_period(now);
+    let (activity_start, activity_end) = st.cfg.activity_lookback(now);
     let twins = st
         .store
         .list_twins(&tenant_id)
@@ -1776,20 +1784,38 @@ async fn compile_team(
     let service = DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
     let mut results = Vec::new();
     // Ensure V2 membership so neighborhood is ACL-visible for each person twin
+    // Also seed any gu_* provider aliases so multi-identity merge can see ACL neighborhoods.
     let v2 = st.cfg.v2_base_url.trim_end_matches('/');
     if let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
     {
         for t in twins.iter().filter(|t| t.enabled && t.twin_kind == TwinKind::Person) {
-            let _ = client
-                .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
-                .json(&json!({
-                    "global_user_id": t.subject_id,
-                    "groups": ["grp_eng", "grp_default"],
-                }))
-                .send()
-                .await;
+            let mut guids = vec![t.subject_id.clone()];
+            if let Some(arr) = t
+                .config_json
+                .get("provider_aliases")
+                .and_then(|v| v.as_array())
+            {
+                for a in arr {
+                    if let Some(s) = a.as_str() {
+                        let s = s.trim();
+                        if s.starts_with("gu_") && !guids.iter().any(|x| x == s) {
+                            guids.push(s.to_string());
+                        }
+                    }
+                }
+            }
+            for gid in guids {
+                let _ = client
+                    .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+                    .json(&json!({
+                        "global_user_id": gid,
+                        "groups": ["grp_eng", "grp_default"],
+                    }))
+                    .send()
+                    .await;
+            }
         }
         let _ = client
             .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
@@ -1820,6 +1846,8 @@ async fn compile_team(
         let opts = CompileOpts {
             period_start,
             period_end,
+            activity_start,
+            activity_end,
             hops: 3,
         };
         let outcome = match st.compiler.compile_person(&twin, &opts).await {
@@ -1861,6 +1889,41 @@ async fn compile_team(
                 st.metrics.dms_suppressed.fetch_add(1, Ordering::Relaxed);
             }
         }
+        let item_kinds: Vec<String> = outcome
+            .ledger
+            .ledger
+            .items
+            .iter()
+            .map(|i| i.kind.clone())
+            .collect();
+        let item_summaries: Vec<String> = outcome
+            .ledger
+            .ledger
+            .items
+            .iter()
+            .take(5)
+            .map(|i| i.summary.clone())
+            .collect();
+        let empty_reason = if empty {
+            if outcome.acl_empty {
+                Some("no_neighborhood")
+            } else {
+                Some("no_activity_in_lookback")
+            }
+        } else {
+            None
+        };
+        let aliases_merged = twin
+            .config_json
+            .get("provider_aliases")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .filter(|s| s.starts_with("gu_"))
+                    .count()
+            })
+            .unwrap_or(0);
         results.push(json!({
             "twin_id": twin.twin_id,
             "subject_id": twin.subject_id,
@@ -1872,8 +1935,17 @@ async fn compile_team(
             "dm_sent": del.dm_sent,
             "suppressed": del.suppressed,
             "empty": empty,
+            "empty_reason": empty_reason,
             "item_count": outcome.ledger.ledger.items.len(),
+            "blocker_count": outcome.ledger.ledger.open_blockers.len(),
+            "item_kinds": item_kinds,
+            "item_summaries": item_summaries,
+            "preview": outcome.draft_text.chars().take(200).collect::<String>(),
             "confidence": outcome.ledger.ledger.confidence_rollup.as_str(),
+            "activity_start": activity_start,
+            "activity_end": activity_end,
+            "aliases_merged": aliases_merged,
+            "acl_empty": outcome.acl_empty,
         }));
     }
     persist_embedded(&st);
@@ -1881,14 +1953,22 @@ async fn compile_team(
         .iter()
         .filter(|r| r.get("dm_sent").and_then(|v| v.as_bool()) == Some(true))
         .count();
+    let with_items: usize = results
+        .iter()
+        .filter(|r| r.get("item_count").and_then(|v| v.as_u64()).unwrap_or(0) > 0)
+        .count();
     Ok(Json(json!({
         "tenant_id": tenant_id,
         "compiled": results.len(),
+        "with_items": with_items,
         "dms_sent": dms,
         "force_notify": force,
         "notify_policy": "v1_change_only_daily_cap",
+        "status_window_secs": st.cfg.status_window_secs,
+        "activity_start": activity_start,
+        "activity_end": activity_end,
         "results": results,
-        "note": "force_notify=false respects change-only + daily cap. Empty ledgers never DM.",
+        "note": "force_notify=false respects change-only + daily cap. Empty ledgers never DM. Activity uses rolling lookback (STATUS_WINDOW_SECS).",
     })))
 }
 
@@ -2440,11 +2520,21 @@ async fn compile_twin(
 
     let now = Utc::now();
     let (aligned_start, aligned_end) = st.cfg.aligned_period(now);
+    let (lookback_start, lookback_end) = st.cfg.activity_lookback(now);
     let start = body.period_start.unwrap_or(aligned_start);
     let end = body.period_end.unwrap_or(aligned_end);
+    // Custom body period also drives activity filter; otherwise rolling lookback.
+    let (activity_start, activity_end) = if body.period_start.is_some() || body.period_end.is_some()
+    {
+        (start, end)
+    } else {
+        (lookback_start, lookback_end)
+    };
     let opts = CompileOpts {
         period_start: start,
         period_end: end,
+        activity_start,
+        activity_end,
         hops: body.hops.unwrap_or(3),
     };
 

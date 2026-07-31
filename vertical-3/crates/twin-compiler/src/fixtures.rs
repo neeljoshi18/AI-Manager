@@ -92,6 +92,7 @@ pub fn alice_open_pr_fixture(tenant: &str) -> GraphView {
                 event_id: "evt_123".into(),
                 properties: serde_json::json!({}),
                 is_private: false,
+                valid_from: Some(as_of),
             },
             GraphEdgeView {
                 edge_id: "belongs:pr7:repo".into(),
@@ -101,6 +102,7 @@ pub fn alice_open_pr_fixture(tenant: &str) -> GraphView {
                 event_id: "evt_123".into(),
                 properties: serde_json::json!({}),
                 is_private: false,
+                valid_from: Some(as_of),
             },
         ],
         states: vec![EntityStateView {
@@ -144,6 +146,7 @@ pub fn alice_blocker_fixture() -> GraphView {
         event_id: "evt_block".into(),
         properties: serde_json::json!({"summary": "Blocked on API key rotation"}),
         is_private: false,
+        valid_from: Some(Utc::now()),
     });
     v.edges.push(v.blockers[0].clone());
     v
@@ -186,6 +189,7 @@ pub fn alice_with_private_pr_fixture() -> GraphView {
         event_id: "evt_secret".into(),
         properties: serde_json::json!({}),
         is_private: true,
+        valid_from: Some(Utc::now()),
     });
     v.states.push(EntityStateView {
         node_id: "pr:acme/secret/pr/1".into(),

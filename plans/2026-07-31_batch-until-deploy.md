@@ -13,8 +13,10 @@
 - Graph hide-demo + person collapse  
 - Empty-draft upgrade for re-notify  
 - GitHub Actions deploy workflow  
-- Twin alias merge in compile (this batch)  
-- Scheduler ensure V2 membership (this batch)  
+- Twin alias merge in compile  
+- Scheduler ensure V2 membership  
+- **A2 24h activity lookback + valid_from filter + team compile proof fields** (2026-07-31)  
+- Default `STATUS_WINDOW_SECS=86400` (compose/dev_up)
 
 ## Post-deploy smoke (HTTPS only)
 

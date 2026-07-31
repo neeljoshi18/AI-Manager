@@ -286,6 +286,9 @@ pub struct GraphEdgeView {
     pub properties: JsonValue,
     #[serde(default)]
     pub is_private: bool,
+    /// Origin event time from V2 (optional for fixtures / older payloads).
+    #[serde(default)]
+    pub valid_from: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

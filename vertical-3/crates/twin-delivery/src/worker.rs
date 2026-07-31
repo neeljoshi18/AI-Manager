@@ -77,12 +77,18 @@ impl DeliveryService {
         allow_notify: bool,
         force_notify: bool,
     ) -> TwinResult<DeliveryStartResult> {
-        // Idempotent: one draft per ledger — refresh text if still open
+        // Idempotent: one draft per ledger — refresh text if still open.
+        // If content grew from empty→non-empty (e.g. after commit digests ship),
+        // re-run notify policy instead of forever suppressing as existing_draft.
         if let Some(mut existing) = self
             .store
             .get_draft_by_ledger(&twin.tenant_id, &snap.ledger_id)
             .await?
         {
+            let was_emptyish = existing.draft_text.contains("No code or ticket signals")
+                || existing.draft_text.contains("nothing invented")
+                || existing.draft_text.trim().is_empty();
+            let now_has_items = !snap.ledger.items.is_empty() || !snap.ledger.open_blockers.is_empty();
             if matches!(
                 existing.status,
                 DraftStatus::Pending
@@ -95,15 +101,27 @@ impl DeliveryService {
                 self.store.update_draft(existing.clone()).await?;
             }
             let already = !existing.slack_dm_ts.is_empty();
-            return Ok(DeliveryStartResult {
-                draft: existing,
-                dm_sent: already,
-                suppressed: if already {
-                    None
-                } else {
-                    Some("existing_draft")
-                },
-            });
+            if already || !(was_emptyish && now_has_items && force_notify) {
+                // Normal path: keep existing draft; skip re-DM unless force after empty→full
+                if !(was_emptyish && now_has_items && !already) {
+                    return Ok(DeliveryStartResult {
+                        draft: existing,
+                        dm_sent: already,
+                        suppressed: if already {
+                            None
+                        } else {
+                            Some("existing_draft")
+                        },
+                    });
+                }
+                // Fall through to notify policy when draft was empty placeholder and now has items
+            } else {
+                return Ok(DeliveryStartResult {
+                    draft: existing,
+                    dm_sent: true,
+                    suppressed: None,
+                });
+            }
         }
 
         let in_shadow = twin.is_in_shadow(now);

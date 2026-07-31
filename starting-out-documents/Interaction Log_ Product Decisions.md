@@ -255,6 +255,37 @@
 
 ---
 
+## 2026-07-31 — Session: durability, multi-person, campus deploy path, batch mode
+
+### Context
+
+Long session from confidence pilot → empty graph after redeploy → firewall → multi-person map → intent seed → campus SSH blocks → batch builds.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Embedded disk journals (V1 events+ACL, V2 graph, V3 twins) before full CRDB | 4GB droplet; stop mystery empty graph |
+| 2 | Pre-durability history is not recoverable | Honest; re-fill via webhooks |
+| 3 | Campus Wi‑Fi blocks SSH:22; prefer GitHub Actions deploy | Founder cannot always use hotspot |
+| 4 | Batch commits on main; one deploy later | Avoid SSH thrash |
+| 5 | Digests include commits/pushes; compile across gu_* aliases | Real git activity was invisible |
+| 6 | Handoff hygiene: always update 2026-07-31 handoff + Interaction Log on key decisions | Context window loss |
+
+### Artifacts
+
+- `starting-out-documents/Session Handoff_ Context Transfer 2026-07-31.md`  
+- `.github/workflows/deploy-staging.yml`  
+- `deploy/scripts/setup_ssh_via_https_port.md`, `deploy_when_ssh.sh`  
+- Intent seed, prune, ensure_users, graph collapse  
+
+### Open questions
+
+1. Actions secrets set yet?  
+2. Latest main on staging?  
+
+---
+
 ## Template for future entries
 
 ```markdown

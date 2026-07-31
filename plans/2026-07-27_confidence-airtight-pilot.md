@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-27 (updated 2026-07-30)  
 **Status:** Direction approved; Notify Policy v1 **shipped + live-verified**; A3 recovery + A5 runbook shipped 2026-07-30; multi-person digests still open  
-**Ground truth handoff:** `starting-out-documents/Session Handoff_ Context Transfer 2026-07-27.md`
+**Ground truth handoff:** `starting-out-documents/Session Handoff_ Context Transfer 2026-07-31.md` (supersedes 2026-07-27 for next steps)
 
 ---
 

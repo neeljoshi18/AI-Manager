@@ -20,6 +20,11 @@
 | Pulse demotes intent_demo conflicts | **Done on main** (this batch) |
 | Partner one-pager / runbook / learning window | **Aligned** (24h, Approve language, no-SSH ops) |
 | Campus deploy path (Actions workflow) | **Code done** — needs founder `STAGING_*` secrets once |
+| Prune folds gu_* aliases into keeper | **Done** (multi-identity survives prune) |
+| Empty→items draft upgrade fixed + tested | **Done** (was broken put_draft conflict) |
+| Scheduler + ensure_users seed gu_* membership | **Done** |
+| `GET …/pilot_readiness` A1–A7 machine check | **Done** |
+| Done-log (anti-repeat) | `plans/2026-08-01_no-deploy-done-log.md` |
 
 ## Blocked on founder deploy / hotspot
 

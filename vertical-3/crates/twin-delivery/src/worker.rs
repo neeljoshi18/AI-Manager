@@ -78,8 +78,7 @@ impl DeliveryService {
         force_notify: bool,
     ) -> TwinResult<DeliveryStartResult> {
         // Idempotent: one draft per ledger — refresh text if still open.
-        // If draft was an empty placeholder and recompile now has real items, fall
-        // through so Notify Policy can send (instead of forever existing_draft).
+        // Empty placeholder → real items: reuse same draft + run Notify Policy (no second put).
         if let Some(mut existing) = self
             .store
             .get_draft_by_ledger(&twin.tenant_id, &snap.ledger_id)
@@ -90,20 +89,24 @@ impl DeliveryService {
                 || existing.draft_text.trim().is_empty();
             let now_has_items =
                 !snap.ledger.items.is_empty() || !snap.ledger.open_blockers.is_empty();
-            if matches!(
+            let openish = matches!(
                 existing.status,
                 DraftStatus::Pending
                     | DraftStatus::ForceHuman
                     | DraftStatus::Edited
                     | DraftStatus::Shadow
-            ) {
+            );
+            if openish {
                 existing.draft_text = draft_text.to_string();
                 existing.updated_at = now;
-                self.store.update_draft(existing.clone()).await?;
             }
             let already_dm = !existing.slack_dm_ts.is_empty();
-            let upgrade_empty_to_items = was_emptyish && now_has_items && !already_dm;
+            let upgrade_empty_to_items = was_emptyish && now_has_items && !already_dm && openish;
+
             if !upgrade_empty_to_items {
+                if openish {
+                    self.store.update_draft(existing.clone()).await?;
+                }
                 return Ok(DeliveryStartResult {
                     draft: existing,
                     dm_sent: already_dm,
@@ -114,7 +117,107 @@ impl DeliveryService {
                     },
                 });
             }
-            // else: fall through to notify policy with upgraded content
+
+            // --- Upgrade path: same draft_id/ledger, notify if policy allows ---
+            let in_shadow = twin.is_in_shadow(now);
+            let mut notify_state = load_notify_state(twin);
+            let decision = decide_notify(
+                &snap.ledger,
+                &notify_state,
+                now,
+                self.policy.max_dms_per_day,
+                allow_notify,
+                force_notify,
+                in_shadow,
+            );
+            let mut status =
+                initial_draft_status(in_shadow, snap.confidence_rollup, twin.high_auto_publish);
+            if (!allow_notify && !force_notify) && !in_shadow {
+                if status == DraftStatus::PublishQueued {
+                    status = DraftStatus::Pending;
+                }
+            }
+            let mut will_dm = decision.allow_dm
+                && matches!(
+                    status,
+                    DraftStatus::Pending | DraftStatus::ForceHuman | DraftStatus::PublishQueued
+                );
+            if matches!(
+                decision.suppress,
+                Some(SuppressReason::Unchanged)
+                    | Some(SuppressReason::DailyCap)
+                    | Some(SuppressReason::Empty)
+                    | Some(SuppressReason::Quiet)
+                    | Some(SuppressReason::Shadow)
+            ) {
+                will_dm = false;
+            }
+            if in_shadow {
+                will_dm = false;
+                status = DraftStatus::Shadow;
+            }
+            existing.status = status;
+            existing.veto_deadline = match (status, snap.confidence_rollup) {
+                (DraftStatus::Pending | DraftStatus::ForceHuman, ConfidenceTier::Medium) => {
+                    Some(now + Duration::seconds(self.policy.medium_veto_window_secs))
+                }
+                (DraftStatus::Pending | DraftStatus::ForceHuman, ConfidenceTier::Blocker) => {
+                    Some(now + Duration::seconds(self.policy.blocker_veto_window_secs))
+                }
+                (DraftStatus::Pending, ConfidenceTier::High) => {
+                    Some(now + Duration::seconds(self.policy.medium_veto_window_secs))
+                }
+                _ => existing.veto_deadline,
+            };
+
+            let mut dm_sent = false;
+            if will_dm && matches!(status, DraftStatus::Pending | DraftStatus::ForceHuman) {
+                let slack_user = self
+                    .store
+                    .get_slack_map(&twin.tenant_id, &twin.subject_id)
+                    .await?
+                    .map(|m| m.slack_user_id)
+                    .unwrap_or_else(|| format!("U_{}", twin.subject_id));
+                let deadline_s = existing
+                    .veto_deadline
+                    .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .unwrap_or_else(|| "none".into());
+                let dm_text = format!(
+                    "{draft_text}\n\n*Approve* · *Edit* · *Don't send*\n\
+                     We'll only ping again if this status story changes.\n\
+                     Window until {deadline_s}."
+                );
+                match self.slack.post_dm(&slack_user, &dm_text).await {
+                    Ok(dm) => {
+                        existing.slack_dm_channel = dm.channel;
+                        existing.slack_dm_ts = dm.ts;
+                        dm_sent = true;
+                        record_dm_sent(&mut notify_state, &decision.fingerprint, now);
+                        let mut t = twin.clone();
+                        write_notify_state(&mut t, &notify_state);
+                        let _ = self.store.upsert_twin(t).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "upgrade dm failed; draft text still upgraded");
+                    }
+                }
+            } else if decision.suppress == Some(SuppressReason::Unchanged) {
+                notify_state.last_fingerprint = decision.fingerprint.clone();
+                let mut t = twin.clone();
+                write_notify_state(&mut t, &notify_state);
+                let _ = self.store.upsert_twin(t).await;
+            }
+            existing.updated_at = now;
+            self.store.update_draft(existing.clone()).await?;
+            return Ok(DeliveryStartResult {
+                draft: existing,
+                dm_sent,
+                suppressed: if dm_sent {
+                    None
+                } else {
+                    decision.suppress.map(|s| s.as_str()).or(Some("no_dm"))
+                },
+            });
         }
 
         let in_shadow = twin.is_in_shadow(now);
@@ -468,5 +571,127 @@ impl DeliveryService {
         draft.updated_at = Utc::now();
         self.store.update_draft(draft.clone()).await?;
         Ok(Some(rec))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_slack::MockSlackClient;
+    use twin_core::ids::person_twin_id;
+    use twin_core::model::{
+        ConfidenceTier, LedgerItem, LedgerPeriod, LedgerSnapshot, SlackUserMap, StatusLedger,
+        TwinKind,
+    };
+    use twin_core::store::InMemoryTwinStore;
+
+    fn twin_now() -> (Twin, chrono::DateTime<Utc>) {
+        let now = Utc::now();
+        let twin = Twin {
+            tenant_id: "ten_t".into(),
+            twin_id: person_twin_id("gu_a"),
+            twin_kind: TwinKind::Person,
+            subject_id: "gu_a".into(),
+            display_name: "A".into(),
+            timezone: "UTC".into(),
+            channel_id: "C1".into(),
+            shadow_until: None,
+            high_auto_publish: false,
+            enabled: true,
+            config_json: serde_json::json!({}),
+            created_at: now,
+            updated_at: now,
+        };
+        (twin, now)
+    }
+
+    fn snap_with_items(
+        twin: &Twin,
+        now: chrono::DateTime<Utc>,
+        items: Vec<LedgerItem>,
+        ledger_id: &str,
+    ) -> (LedgerSnapshot, String) {
+        let ledger = StatusLedger {
+            tenant_id: twin.tenant_id.clone(),
+            person_id: twin.subject_id.clone(),
+            period: LedgerPeriod {
+                start: now - chrono::Duration::hours(24),
+                end: now,
+            },
+            confidence_rollup: ConfidenceTier::Medium,
+            items,
+            open_blockers: vec![],
+            graph_as_of: now,
+            compiled_at: now,
+        };
+        let draft_text = if ledger.items.is_empty() {
+            "Status update for you · 2026-08-01\nWindow: work in progress.\n\n• No code or ticket signals in this window (nothing invented).".into()
+        } else {
+            format!(
+                "Status update\n\n• {}\n\nApprove · Edit · Don't send",
+                ledger.items[0].summary
+            )
+        };
+        let snap = LedgerSnapshot {
+            tenant_id: twin.tenant_id.clone(),
+            ledger_id: ledger_id.into(),
+            twin_id: twin.twin_id.clone(),
+            period_start: now - chrono::Duration::hours(24),
+            period_end: now,
+            confidence_rollup: ConfidenceTier::Medium,
+            ledger,
+            graph_as_of: now,
+            compiled_at: now,
+        };
+        (snap, draft_text)
+    }
+
+    #[tokio::test]
+    async fn empty_placeholder_upgrades_to_items() {
+        let store = InMemoryTwinStore::new();
+        let slack = MockSlackClient::new();
+        let service = DeliveryService::new(store.clone(), slack.clone(), DeliveryPolicy::default());
+        let (twin, now) = twin_now();
+        store.upsert_twin(twin.clone()).await.unwrap();
+        store
+            .put_slack_map(SlackUserMap {
+                tenant_id: twin.tenant_id.clone(),
+                global_user_id: twin.subject_id.clone(),
+                slack_user_id: "U_TEST".into(),
+                slack_team_id: String::new(),
+            })
+            .await
+            .unwrap();
+
+        let ledger_id = "led_upgrade_test";
+        let (empty_snap, empty_text) = snap_with_items(&twin, now, vec![], ledger_id);
+        store.put_ledger(empty_snap.clone()).await.unwrap();
+        let r1 = service
+            .start_after_compile_opts(&twin, &empty_snap, &empty_text, now, true, false)
+            .await
+            .unwrap();
+        assert!(!r1.dm_sent);
+        assert!(r1.draft.draft_text.contains("nothing invented"));
+
+        let items = vec![LedgerItem {
+            kind: "pr".into(),
+            resource_id: "org/r/pr/1".into(),
+            node_id: "pr:org/r/pr/1".into(),
+            summary: "Open pr: real work".into(),
+            confidence: ConfidenceTier::Medium,
+            evidence_refs: vec!["edge:e1".into()],
+        }];
+        let (full_snap, full_text) = snap_with_items(&twin, now, items, ledger_id);
+        store.put_ledger(full_snap.clone()).await.unwrap();
+        let r2 = service
+            .start_after_compile_opts(&twin, &full_snap, &full_text, now, true, false)
+            .await
+            .unwrap();
+        assert!(
+            r2.dm_sent || r2.draft.draft_text.contains("real work"),
+            "empty→items should upgrade draft and allow notify path: {:?}",
+            r2
+        );
+        assert!(!r2.draft.draft_text.contains("nothing invented"));
     }
 }

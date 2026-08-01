@@ -156,3 +156,36 @@ impl TwinConfig {
         self.runtime_mode.eq_ignore_ascii_case("embedded")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, TimeZone, Utc};
+
+    #[test]
+    fn default_window_is_24h() {
+        assert_eq!(TwinConfig::default().status_window_secs, 86_400);
+    }
+
+    #[test]
+    fn activity_lookback_rolls_from_now() {
+        let c = TwinConfig::default();
+        let now = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap();
+        let (start, end) = c.activity_lookback(now);
+        assert_eq!(end, now);
+        assert_eq!(end - start, Duration::seconds(86_400));
+    }
+
+    #[test]
+    fn aligned_period_stable_within_bucket() {
+        let c = TwinConfig {
+            status_window_secs: 3600,
+            ..TwinConfig::default()
+        };
+        let t1 = Utc.with_ymd_and_hms(2026, 8, 1, 12, 10, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2026, 8, 1, 12, 50, 0).unwrap();
+        let a = c.aligned_period(t1);
+        let b = c.aligned_period(t2);
+        assert_eq!(a, b);
+    }
+}

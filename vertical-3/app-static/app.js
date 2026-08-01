@@ -399,9 +399,20 @@ async function refreshTeamDigestsToday() {
       members
         .map((m) => {
           const d = m.last_digest;
-          const dig = d
-            ? `<strong>${esc(d.status_label || d.status)}</strong> · ${d.dm_sent ? "DM sent" : d.empty_placeholder ? "empty window" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`
-            : `<span class="muted">no digest yet</span>`;
+          let dig;
+          if (!d) {
+            dig = `<span class="muted">no digest yet</span>`;
+          } else {
+            const content =
+              d.has_content === true
+                ? "has items"
+                : d.empty_placeholder
+                  ? "empty window"
+                  : d.approx_item_count > 0
+                    ? `${d.approx_item_count} item(s)`
+                    : "draft";
+            dig = `<strong>${esc(d.status_label || d.status)}</strong> · ${content} · ${d.dm_sent ? "DM sent" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`;
+          }
           return `<li><strong>${esc(m.display_name || m.subject_id)}</strong> — ${dig}</li>`;
         })
         .join("") +
@@ -484,8 +495,14 @@ function digestCell(m) {
   }
   const dm = d.dm_sent ? "DM sent" : "no DM";
   const st = d.status_label || d.status || "?";
+  const content =
+    d.has_content === true
+      ? "items"
+      : d.empty_placeholder
+        ? "empty"
+        : "draft";
   const when = (d.updated_at || "").toString().replace("T", " ").slice(0, 16);
-  return `<span class="pill mid">${esc(st)}</span> <span class="muted small">${esc(dm)}${when ? " · " + esc(when) : ""}</span>`;
+  return `<span class="pill ${d.has_content ? "up" : "mid"}">${esc(st)} · ${content}</span> <span class="muted small">${esc(dm)}${when ? " · " + esc(when) : ""}</span>`;
 }
 
 async function refreshTeam() {

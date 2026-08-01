@@ -345,6 +345,33 @@ Long session from confidence pilot → empty graph after redeploy → firewall �
 
 ---
 
+## 2026-08-01 — Session: deploy-quality polish loop (no hotspot)
+
+### Context
+
+- Founder: keep looping without deploy; track done; don't repeat.
+
+### Decisions / fixes
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Prune folds disabled gu_* + aliases onto keeper | Multi-identity digests survive collapse |
+| 2 | Fix empty→items path: `update_draft` only | Prior fallthrough hit put_draft Conflict — real A6/A2 bug |
+| 3 | Membership seed includes gu_* on scheduler + ensure_users | Parity with team/compile |
+| 4 | `pilot_readiness` endpoint | Post-deploy soft-outreach go/no-go without guessing |
+| 5 | Done-log file | Agents must not rework completed slices |
+
+### Artifacts
+
+- `plans/2026-08-01_no-deploy-done-log.md`  
+- twin-delivery upgrade test; membership/config tests  
+
+### Open
+
+1. Deploy + pilot_readiness live green  
+
+---
+
 ## Template for future entries
 
 ```markdown

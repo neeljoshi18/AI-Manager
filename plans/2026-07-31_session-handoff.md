@@ -221,7 +221,9 @@ curl -sS -X POST https://status.neel.world/v3/tenants/ten_github/team/compile \
 3. ~~Hide demo seed from graph server-side~~ **done 2026-08-01** — V2 `include_demo` default false; twin-api belt filter; pulse demotes demo conflicts.  
 4. ~~Partner package final pass~~ **done 2026-08-01** — runbook/one-pager/playbook: 24h, ensure_users, demo hide.  
 5. ~~Soft-outreach checklist~~ **done** — `plans/2026-08-01_soft-outreach-checklist.md`.  
-6. **Still no-deploy options:** UI polish, local tests, bridge map edge cases, Actions secrets docs only. **Live A2 proof still needs deploy.**
+6. ~~Prune alias fold + empty→items fix + pilot_readiness~~ **done 2026-08-01** — see `plans/2026-08-01_no-deploy-done-log.md`.  
+7. **No-deploy done-log is source of truth** — do not rework listed slices.  
+8. **Live A2 still needs deploy** + 2nd human GH activity.
 
 ### Phase D — When founder has reliable hotspot (once)
 
@@ -276,7 +278,10 @@ Confirm tip with `git log -15 --oneline`.
 22. **paneerjeera has zero graph edges** — empty digest correct until that GH user pushes/PRs.  
 23. **ledger_id** stays wall-aligned; human lookback is rolling `activity_start..activity_end`.  
 24. **Demo seed** (alice/bob / demo-repo) hidden server-side by default; pulse keeps demo_* separate so Today is not theater.  
-25. **No-deploy efficiency:** keep batching on main; optional founder power-off droplet to save cost until hotspot day (agent will not power-off unprompted).
+25. **No-deploy efficiency:** keep batching on main; optional founder power-off droplet to save cost until hotspot day (agent will not power-off unprompted).  
+26. **Prune must fold gu_* into keeper** — otherwise digests lose historical edges.  
+27. **Empty→items upgrade** reuses draft via `update_draft` (never second `put_draft`).  
+28. Post-deploy smoke: `GET /v3/tenants/ten_github/pilot_readiness` → `soft_outreach_ready`.
 
 ---
 

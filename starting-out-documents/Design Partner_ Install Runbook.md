@@ -106,6 +106,7 @@ POST /v3/tenants/ten_github/graph/ensure_users  → 200 (membership for neighbor
 POST /v3/tenants/ten_github/team/compile  → with_items ≥1 when live work in lookback
 GET /v3/tenants/ten_github/graph      → real people; demo_hidden ≥0; no alice/bob by default
 GET /v3/tenants/ten_github/pulse      → live conflicts/intents (demo_* separate)
+GET /v3/tenants/ten_github/pilot_readiness → soft_outreach_ready + A1–A7 checklist
 ```
 
 Embedded staging: twin state file (`TWIN_EMBEDDED_STATE_PATH`) + `SLACK_USER_MAP` seed keep multi-person maps across twin-api restarts.

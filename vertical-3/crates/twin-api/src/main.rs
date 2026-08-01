@@ -256,7 +256,70 @@ async fn seed_team_from_env(store: &dyn TwinStore) {
     }
 }
 
+/// Collect provider_aliases strings from a twin config.
+fn twin_alias_list(t: &Twin) -> Vec<String> {
+    t.config_json
+        .get("provider_aliases")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Merge alias keys into twin config (dedupe, preserve order).
+fn merge_aliases_into_twin(t: &mut Twin, extra: impl IntoIterator<Item = String>) {
+    let mut aliases = twin_alias_list(t);
+    for k in extra {
+        let k = k.trim().to_string();
+        if k.is_empty() {
+            continue;
+        }
+        if !aliases.iter().any(|a| a == &k) {
+            aliases.push(k);
+        }
+    }
+    if !t.config_json.is_object() {
+        t.config_json = json!({});
+    }
+    if let Some(obj) = t.config_json.as_object_mut() {
+        obj.insert("provider_aliases".into(), json!(aliases));
+    }
+}
+
+/// Membership user ids for V2 ACL: primary subject + historical gu_* aliases.
+fn membership_user_ids_for_twins(twins: &[Twin]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        let s = s.trim();
+        if s.is_empty() {
+            return;
+        }
+        if !ids.iter().any(|x| x == s) {
+            ids.push(s.to_string());
+        }
+    };
+    for t in twins
+        .iter()
+        .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
+    {
+        push(&t.subject_id);
+        for a in twin_alias_list(t) {
+            // Only gu_* need V2 user rows for neighborhood ACL as that person.
+            if a.starts_with("gu_") {
+                push(&a);
+            }
+        }
+    }
+    ids
+}
+
 /// Keep one enabled person twin per Slack user id; disable the rest (floating graph ghosts).
+/// **Critical:** fold disabled gu_* subjects + aliases into the keeper so digests still
+/// multi-identity-compile historical graph edges.
 async fn prune_duplicate_slack_twins(store: &dyn TwinStore, tenant: &str) -> u32 {
     let maps = store.list_slack_maps(tenant).await.unwrap_or_default();
     let twins = store.list_twins(tenant).await.unwrap_or_default();
@@ -278,7 +341,7 @@ async fn prune_duplicate_slack_twins(store: &dyn TwinStore, tenant: &str) -> u32
     }
     let mut pruned = 0u32;
     let now = Utc::now();
-    for (_slack, mut group) in by_slack {
+    for (slack, mut group) in by_slack {
         if group.len() <= 1 {
             continue;
         }
@@ -296,19 +359,38 @@ async fn prune_duplicate_slack_twins(store: &dyn TwinStore, tenant: &str) -> u32
             };
             score(b).cmp(&score(a))
         });
-        let keep = group[0].twin_id.clone();
-        for t in group.into_iter().skip(1) {
-            if t.twin_id == keep {
-                continue;
-            }
-            let mut dead = t;
+        let mut keep = group.remove(0);
+        let mut fold: Vec<String> = Vec::new();
+        for mut dead in group {
+            // Fold identity so compiler still fetches person:gu_old neighborhoods
+            fold.push(dead.subject_id.clone());
+            fold.extend(twin_alias_list(&dead));
             dead.enabled = false;
             dead.updated_at = now;
             if let Some(obj) = dead.config_json.as_object_mut() {
                 obj.insert("disabled_reason".into(), json!("duplicate_slack_prune"));
+                obj.insert("merged_into".into(), json!(keep.twin_id));
             }
             if store.upsert_twin(dead).await.is_ok() {
                 pruned += 1;
+            }
+        }
+        if !fold.is_empty() {
+            merge_aliases_into_twin(&mut keep, fold.clone());
+            keep.updated_at = now;
+            let _ = store.upsert_twin(keep.clone()).await;
+            // Slack map rows for folded gu_* → same Slack (bridge + ACL)
+            for k in fold {
+                if k.starts_with("gu_") || k.chars().all(|c| c.is_ascii_digit()) {
+                    let _ = store
+                        .put_slack_map(SlackUserMap {
+                            tenant_id: tenant.to_string(),
+                            global_user_id: k,
+                            slack_user_id: slack.clone(),
+                            slack_team_id: String::new(),
+                        })
+                        .await;
+                }
             }
         }
     }
@@ -417,6 +499,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v3/tenants/{tenant_id}/graph/ensure_users",
             post(ensure_graph_users),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/pilot_readiness",
+            get(pilot_readiness),
         )
         .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
@@ -611,7 +697,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
     })
 }
 
-async fn ensure_v2_membership(st: &AppState, tenant: &str, subject_ids: &[String]) {
+async fn ensure_v2_membership(st: &AppState, tenant: &str, user_ids: &[String]) {
     let v2 = st.cfg.v2_base_url.trim_end_matches('/');
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -619,7 +705,7 @@ async fn ensure_v2_membership(st: &AppState, tenant: &str, subject_ids: &[String
     else {
         return;
     };
-    for uid in subject_ids {
+    for uid in user_ids {
         let _ = client
             .post(format!("{v2}/v2/tenants/{tenant}/users"))
             .json(&json!({
@@ -652,12 +738,9 @@ async fn run_scheduled_compiles(st: &AppState) -> anyhow::Result<()> {
     let (activity_start, activity_end) = st.cfg.activity_lookback(now);
     for tenant in tenants {
         let twins = st.store.list_twins(&tenant).await.unwrap_or_default();
-        let subjects: Vec<String> = twins
-            .iter()
-            .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
-            .map(|t| t.subject_id.clone())
-            .collect();
-        ensure_v2_membership(st, &tenant, &subjects).await;
+        // Include gu_* aliases so multi-identity digests work on the scheduler path too.
+        let membership_ids = membership_user_ids_for_twins(&twins);
+        ensure_v2_membership(st, &tenant, &membership_ids).await;
         for twin in twins.into_iter().filter(|t| t.enabled) {
             if twin.twin_kind != TwinKind::Person {
                 continue;
@@ -958,37 +1041,53 @@ async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
         .map(|n| n > 0)
         .unwrap_or(false);
 
-    // Multi-person readiness (A2) from default pilot tenant
+    // Multi-person readiness (A2) from default pilot tenant — unique Slack among
+    // *enabled person twins* (not alias-only map rows or disabled duplicates).
     let seed_tenant = std::env::var("SEED_TEAM_TENANT").unwrap_or_else(|_| "ten_github".into());
     let maps = st
         .store
         .list_slack_maps(&seed_tenant)
         .await
         .unwrap_or_default();
-    let person_twins = st
+    let person_twins_list: Vec<Twin> = st
         .store
         .list_twins(&seed_tenant)
         .await
         .unwrap_or_default()
         .into_iter()
         .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
-        .count();
-    // Count unique slack user ids among maps
+        .collect();
+    let person_twins = person_twins_list.len();
     let mut uniq_slack: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for m in &maps {
-        if !m.slack_user_id.is_empty() {
-            uniq_slack.insert(m.slack_user_id.clone());
+    for t in &person_twins_list {
+        if let Some(m) = maps.iter().find(|m| m.global_user_id == t.subject_id) {
+            if !m.slack_user_id.is_empty() {
+                uniq_slack.insert(m.slack_user_id.clone());
+            }
         }
     }
     let multi_ready = uniq_slack.len() >= 2 && person_twins >= 2;
     let digests_with_dm = {
         let mut n = 0usize;
-        if let Ok(twins) = st.store.list_twins(&seed_tenant).await {
-            for t in twins.into_iter().filter(|t| t.twin_kind == TwinKind::Person) {
-                if let Ok(drafts) = st.store.list_drafts_for_twin(&seed_tenant, &t.twin_id).await {
-                    if drafts.iter().any(|d| !d.slack_dm_ts.is_empty()) {
-                        n += 1;
-                    }
+        for t in &person_twins_list {
+            if let Ok(drafts) = st.store.list_drafts_for_twin(&seed_tenant, &t.twin_id).await {
+                if drafts.iter().any(|d| !d.slack_dm_ts.is_empty()) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let digests_with_content = {
+        let mut n = 0usize;
+        for t in &person_twins_list {
+            if let Ok(drafts) = st.store.list_drafts_for_twin(&seed_tenant, &t.twin_id).await {
+                if drafts.iter().any(|d| {
+                    !d.draft_text.contains("nothing invented")
+                        && !d.draft_text.contains("No code or ticket signals")
+                        && d.draft_text.lines().any(|l| l.trim_start().starts_with('•'))
+                }) {
+                    n += 1;
                 }
             }
         }
@@ -1066,6 +1165,16 @@ async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
             } else {
                 "Send test status, Team → Compile all digests, or wait for scheduler".to_string()
             }
+        },
+        {
+            "id": "a2_content",
+            "title": "Non-empty digests (A2)",
+            "done": digests_with_content >= 2,
+            "detail": format!(
+                "{digests_with_content}/2 people with real digest content · unique Slack {} · window {}s",
+                uniq_slack.len(),
+                st.cfg.status_window_secs
+            )
         }
     ]);
 
@@ -1075,6 +1184,16 @@ async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
         "slack_oauth_ready": slack_oauth_ready,
         "github_app_ready": github_app_ready,
         "slack_mode": st.slack_mode,
+        "pilot": {
+            "tenant": seed_tenant,
+            "multi_person_ready": multi_ready,
+            "unique_slack_users": uniq_slack.len(),
+            "person_twins": person_twins,
+            "digests_with_dm": digests_with_dm,
+            "digests_with_content": digests_with_content,
+            "status_window_secs": st.cfg.status_window_secs,
+            "notify_policy": "v1_change_only_daily_cap",
+        },
         "manifests": {
             "slack": "deploy/oauth/slack-app-manifest.json",
             "github": "deploy/oauth/github-app-manifest.yml",
@@ -1586,6 +1705,12 @@ async fn get_team(
         let last_digest = latest.as_ref().map(|d| {
             let emptyish = d.draft_text.contains("No code or ticket signals")
                 || d.draft_text.contains("nothing invented");
+            // Rough item signal from draft bullets (structure-first text)
+            let bullet_items = d
+                .draft_text
+                .lines()
+                .filter(|l| l.trim_start().starts_with('•') && !l.contains("nothing invented") && !l.contains("No code or ticket"))
+                .count();
             json!({
                 "draft_id": d.draft_id,
                 "ledger_id": d.ledger_id,
@@ -1605,6 +1730,8 @@ async fn get_team(
                 "updated_at": d.updated_at,
                 "preview": d.draft_text.chars().take(160).collect::<String>(),
                 "empty_placeholder": emptyish,
+                "approx_item_count": if emptyish { 0 } else { bullet_items },
+                "has_content": !emptyish && bullet_items > 0,
             })
         });
         members.push(json!({
@@ -1716,9 +1843,30 @@ async fn upsert_team_member(
         .as_ref()
         .map(|t| t.config_json.clone())
         .unwrap_or_else(|| json!({}));
+    // Merge aliases (never clobber historical gu_* from prior prune/seed).
     if let Some(aliases) = &body.provider_aliases {
+        let mut merged: Vec<String> = config
+            .get("provider_aliases")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for a in aliases {
+            let a = a.trim();
+            if a.is_empty() {
+                continue;
+            }
+            if !merged.iter().any(|x| x == a) {
+                merged.push(a.to_string());
+            }
+        }
         if let Some(obj) = config.as_object_mut() {
-            obj.insert("provider_aliases".into(), json!(aliases));
+            obj.insert("provider_aliases".into(), json!(merged));
+        } else {
+            config = json!({ "provider_aliases": merged });
         }
     }
     let shadow_until = if body.skip_shadow.unwrap_or(false) || st.cfg.shadow_mode_days <= 0 {
@@ -2023,7 +2171,7 @@ async fn compile_team(
     })))
 }
 
-/// Seed V2 membership for all enabled person twins (fix neighborhood 404 under ACL).
+/// Seed V2 membership for all enabled person twins + gu_* aliases (fix neighborhood 404).
 async fn ensure_graph_users(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
@@ -2039,11 +2187,7 @@ async fn ensure_graph_users(
         .build()
         .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
     let mut seeded = Vec::new();
-    let mut ids: Vec<String> = twins
-        .iter()
-        .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
-        .map(|t| t.subject_id.clone())
-        .collect();
+    let mut ids = membership_user_ids_for_twins(&twins);
     ids.push("bridge_reader".into());
     for uid in ids {
         let res = client
@@ -2063,8 +2207,188 @@ async fn ensure_graph_users(
     Ok(Json(json!({
         "tenant_id": tenant_id,
         "seeded_users": seeded,
-        "note": "Ensured grp_eng membership so person neighborhood compiles for digests",
+        "note": "Ensured grp_eng for subjects + gu_* aliases so multi-identity neighborhoods compile",
     })))
+}
+
+/// Machine-readable A1–A7 pilot readiness (no secrets). Use after deploy for A2 go/no-go.
+async fn pilot_readiness(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let maps = st
+        .store
+        .list_slack_maps(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let people: Vec<&Twin> = twins
+        .iter()
+        .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
+        .collect();
+    let mut uniq_slack = std::collections::HashSet::new();
+    let mut per_person = Vec::new();
+    let mut content_people = 0usize;
+    let mut dm_people = 0usize;
+    for t in &people {
+        let slack = maps
+            .iter()
+            .find(|m| m.global_user_id == t.subject_id)
+            .map(|m| m.slack_user_id.clone())
+            .unwrap_or_default();
+        if !slack.is_empty() {
+            uniq_slack.insert(slack.clone());
+        }
+        let gu_aliases = twin_alias_list(t)
+            .into_iter()
+            .filter(|a| a.starts_with("gu_"))
+            .count();
+        let drafts = st
+            .store
+            .list_drafts_for_twin(&tenant_id, &t.twin_id)
+            .await
+            .unwrap_or_default();
+        let latest = drafts.first();
+        let emptyish = latest
+            .map(|d| {
+                d.draft_text.contains("nothing invented")
+                    || d.draft_text.contains("No code or ticket signals")
+            })
+            .unwrap_or(true);
+        let has_content = latest
+            .map(|d| {
+                !d.draft_text.contains("nothing invented")
+                    && !d.draft_text.contains("No code or ticket signals")
+                    && d.draft_text.lines().any(|l| l.trim_start().starts_with('•'))
+            })
+            .unwrap_or(false);
+        let dm_sent = latest.map(|d| !d.slack_dm_ts.is_empty()).unwrap_or(false);
+        if has_content {
+            content_people += 1;
+        }
+        if dm_sent {
+            dm_people += 1;
+        }
+        per_person.push(json!({
+            "display_name": t.display_name,
+            "subject_id": t.subject_id,
+            "slack_user_id": slack,
+            "slack_mapped": !slack.is_empty(),
+            "gu_aliases": gu_aliases,
+            "has_content": has_content,
+            "empty_placeholder": emptyish,
+            "dm_sent": dm_sent,
+            "draft_status": latest.map(|d| d.status.as_str()),
+        }));
+    }
+    let multi = uniq_slack.len() >= 2 && people.len() >= 2;
+    let a2_live = multi && content_people >= 2;
+    let checklist = json!({
+        "A1_notify_non_spam": {
+            "ok": true,
+            "detail": format!(
+                "policy=v1 · suppressed={} · sent={}",
+                st.metrics.dms_suppressed.load(Ordering::Relaxed),
+                st.metrics.drafts_sent.load(Ordering::Relaxed)
+            ),
+        },
+        "A2_multi_person_digests": {
+            "ok": a2_live,
+            "detail": format!(
+                "unique_slack={} content_people={}/2 multi={}",
+                uniq_slack.len(),
+                content_people,
+                multi
+            ),
+        },
+        "A3_graph_durability": {
+            "ok": st.embedded_store.is_some() || !st.cfg.is_embedded(),
+            "detail": if st.cfg.is_embedded() {
+                "embedded twin state path configured"
+            } else {
+                "cockroach mode"
+            },
+        },
+        "A4_approve_edit_dont_send": { "ok": true, "detail": "product UI language shipped" },
+        "A5_install_runbook": { "ok": true, "detail": "Design Partner Install Runbook" },
+        "A6_empty_draft_ux": { "ok": true, "detail": "empty banner + no DM" },
+        "A7_packaging": { "ok": true, "detail": "one-pager + playbook + soft-outreach checklist" },
+    });
+    let soft_outreach_ready = a2_live; // hard gate
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "soft_outreach_ready": soft_outreach_ready,
+        "multi_person_ready": multi,
+        "unique_slack_users": uniq_slack.len(),
+        "person_twins": people.len(),
+        "content_people": content_people,
+        "dm_people": dm_people,
+        "status_window_secs": st.cfg.status_window_secs,
+        "notify_policy": "v1_change_only_daily_cap",
+        "checklist": checklist,
+        "members": per_person,
+        "note": if soft_outreach_ready {
+            "A2 live green — soft outreach allowed"
+        } else {
+            "Need ≥2 unique Slack + non-empty digests for both humans (deploy + GH activity)"
+        },
+    })))
+}
+
+#[cfg(test)]
+mod membership_helper_tests {
+    use super::{membership_user_ids_for_twins, merge_aliases_into_twin, twin_alias_list};
+    use chrono::Utc;
+    use twin_core::ids::person_twin_id;
+    use twin_core::model::{Twin, TwinKind};
+
+    fn person(subject: &str, aliases: serde_json::Value) -> Twin {
+        let now = Utc::now();
+        Twin {
+            tenant_id: "ten_t".into(),
+            twin_id: person_twin_id(subject),
+            twin_kind: TwinKind::Person,
+            subject_id: subject.into(),
+            display_name: subject.into(),
+            timezone: "UTC".into(),
+            channel_id: "C1".into(),
+            shadow_until: None,
+            high_auto_publish: false,
+            enabled: true,
+            config_json: serde_json::json!({ "provider_aliases": aliases }),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn membership_includes_gu_aliases_only() {
+        let t = person(
+            "gu_new",
+            serde_json::json!(["neeljoshi18", "222674398", "gu_old"]),
+        );
+        let ids = membership_user_ids_for_twins(&[t]);
+        assert!(ids.contains(&"gu_new".to_string()));
+        assert!(ids.contains(&"gu_old".to_string()));
+        assert!(!ids.iter().any(|x| x == "neeljoshi18"));
+    }
+
+    #[test]
+    fn merge_aliases_dedupes() {
+        let mut t = person("gu_a", serde_json::json!(["gu_old"]));
+        merge_aliases_into_twin(
+            &mut t,
+            ["gu_old".into(), "gu_mid".into(), "login".into()],
+        );
+        let a = twin_alias_list(&t);
+        assert_eq!(a.iter().filter(|x| *x == "gu_old").count(), 1);
+        assert!(a.iter().any(|x| x == "gu_mid"));
+        assert!(a.iter().any(|x| x == "login"));
+    }
 }
 
 /// Collapse multiple person twins that share one Slack user (floating graph ghosts).

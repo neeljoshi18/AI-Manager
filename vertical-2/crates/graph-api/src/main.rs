@@ -759,6 +759,38 @@ struct SnapshotQ {
     user_id: String,
     node_limit: Option<usize>,
     edge_limit: Option<usize>,
+    /// When true, include `intent_demo` alice/bob seed graph. Default **false** for pilot Graph UI.
+    include_demo: Option<bool>,
+}
+
+/// Intent-demo seed nodes (alice/bob, demo-repo PR, seed intents) — not real humans.
+fn is_demo_seed_node(n: &graph_core::model::GraphNode) -> bool {
+    let id = n.node_id.to_ascii_lowercase();
+    let lab = n.display_name.to_ascii_lowercase();
+    let resource = n.resource_id.to_ascii_lowercase();
+    if n.properties
+        .get("seed")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "intent_demo")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if id.contains("gu_demo_")
+        || id.contains("demo-repo")
+        || id.contains("/demo-repo/")
+        || resource.contains("demo-repo")
+    {
+        return true;
+    }
+    // Seed people only (not real humans named Alice)
+    if n.node_type.eq_ignore_ascii_case("Person")
+        && (lab == "alice" || lab == "bob")
+        && (id.contains("demo") || resource == "alice" || resource == "bob")
+    {
+        return true;
+    }
+    false
 }
 
 /// ACL-safe full-ish graph for product Graph UI (live map of ingested signals).
@@ -770,13 +802,36 @@ async fn graph_snapshot(
     let ctx = ctx_for(&st, &tenant_id, &q.user_id).await?;
     let node_limit = q.node_limit.unwrap_or(400);
     let edge_limit = q.edge_limit.unwrap_or(800);
-    let (nodes, edges) = st
+    let include_demo = q.include_demo.unwrap_or(false);
+    let (nodes_raw, edges_raw) = st
         .store
         .snapshot(&ctx, node_limit, edge_limit)
         .await
         .map_err(ApiError::from)?;
     let total_nodes = st.store.count_nodes(&tenant_id).await.map_err(ApiError::from)?;
     let total_edges = st.store.count_edges(&tenant_id).await.map_err(ApiError::from)?;
+
+    // Server-side hide demo seed by default (product Graph is pilot-real, not theater).
+    let demo_ids: std::collections::HashSet<String> = if include_demo {
+        std::collections::HashSet::new()
+    } else {
+        nodes_raw
+            .iter()
+            .filter(|n| is_demo_seed_node(n))
+            .map(|n| n.node_id.clone())
+            .collect()
+    };
+    let nodes: Vec<_> = nodes_raw
+        .into_iter()
+        .filter(|n| !demo_ids.contains(&n.node_id))
+        .collect();
+    let edges: Vec<_> = edges_raw
+        .into_iter()
+        .filter(|e| {
+            !demo_ids.contains(&e.from_node_id) && !demo_ids.contains(&e.to_node_id)
+        })
+        .collect();
+    let demo_hidden = demo_ids.len();
 
     let mut by_type: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for n in &nodes {
@@ -807,10 +862,6 @@ async fn graph_snapshot(
         } else {
             n.display_name.to_ascii_lowercase()
         };
-        // Keep demo alice/bob distinct
-        if lab == "alice" || lab == "bob" {
-            continue;
-        }
         by_label.entry(lab).or_default().push(n);
     }
     let mut person_alias: std::collections::HashMap<String, String> =
@@ -901,9 +952,62 @@ async fn graph_snapshot(
         "nodes": node_views,
         "edges": edge_views,
         "person_aliases_collapsed": person_alias.len(),
-        "truncated": total_nodes as usize > node_views.len() || total_edges as usize > edge_views.len(),
+        "demo_hidden": demo_hidden,
+        "include_demo": include_demo,
+        "truncated": total_nodes as usize > node_views.len() + demo_hidden
+            || total_edges as usize > edge_views.len(),
         "engine": "acl_snapshot_v0",
     })))
+}
+
+#[cfg(test)]
+mod demo_filter_tests {
+    use super::is_demo_seed_node;
+    use graph_core::model::GraphNode;
+    use serde_json::json;
+
+    fn node(id: &str, ntype: &str, name: &str, resource: &str, seed: bool) -> GraphNode {
+        GraphNode {
+            tenant_id: "ten_t".into(),
+            node_id: id.into(),
+            node_type: ntype.into(),
+            display_name: name.into(),
+            resource_id: resource.into(),
+            properties: if seed {
+                json!({ "seed": "intent_demo" })
+            } else {
+                json!({})
+            },
+            is_private: false,
+            allowed_group_ids: vec![],
+            acl_version: 1,
+        }
+    }
+
+    #[test]
+    fn flags_seed_alice_and_demo_pr() {
+        assert!(is_demo_seed_node(&node(
+            "person:gu_demo_alice",
+            "Person",
+            "alice",
+            "alice",
+            true
+        )));
+        assert!(is_demo_seed_node(&node(
+            "pr:ten_github/demo-repo/pr/42",
+            "PullRequest",
+            "Ship",
+            "ten_github/demo-repo/pr/42",
+            true
+        )));
+        assert!(!is_demo_seed_node(&node(
+            "person:gu_real",
+            "Person",
+            "neeljoshi18",
+            "222674398",
+            false
+        )));
+    }
 }
 
 async fn ctx_for(

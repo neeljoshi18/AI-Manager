@@ -315,6 +315,36 @@ Long session from confidence pilot → empty graph after redeploy → firewall �
 
 ---
 
+## 2026-08-01 — Session: no-deploy batch (demo hide + package)
+
+### Context
+
+- Founder delayed on reliable hotspot; VPS cost pressure; keep building on `main` without deploy.
+
+### Decisions
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | Server-side hide intent_demo seed on Graph snapshot (default) | Client-only hide was fragile; pilot Graph must look real |
+| 2 | Pulse primary conflicts/intents exclude demo; keep `demo_*` fields | Today blockers not theater; Load intent demo still available |
+| 3 | Pulse multi_person uses unique Slack (match Team API) | Avoid false multi-person readiness |
+| 4 | Partner package + soft-outreach checklist without waiting for deploy | A7 + recruitable packaging while A2 live waits |
+| 5 | Agent does not power-off droplet unprompted | Cost note only; founder chooses downtime |
+
+### Artifacts
+
+- V2 snapshot `include_demo` + tests  
+- twin-api graph filter + pulse split  
+- `plans/2026-08-01_soft-outreach-checklist.md`  
+- Install runbook / one-pager / playbook updates  
+
+### Open questions
+
+1. Actions secrets set?  
+2. Power-off droplet until hotspot? (founder only)
+
+---
+
 ## Template for future entries
 
 ```markdown

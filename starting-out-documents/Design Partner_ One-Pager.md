@@ -14,7 +14,7 @@
 | You connect | We do | You control |
 |-------------|--------|-------------|
 | GitHub (App/webhooks) | Continuous ingest → graph (PRs, commits, pushes) | ACL stays on sources |
-| Slack (bot via vault) | **Rare** status digests (change-only + daily cap) | **Approve / Edit / Don't send** |
+| Slack (bot via vault) | **Rare** status digests (~24h lookback; change-only + daily cap) | **Approve / Edit / Don't send** |
 | Team map (2+ people) | Person twins + blocker/conflict cards | Who is mapped |
 
 ---

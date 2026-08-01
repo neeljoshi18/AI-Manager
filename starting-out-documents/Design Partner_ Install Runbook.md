@@ -6,7 +6,9 @@
 
 **Airtight done means:** both people get correct digests when work changes; Graph shows both; empty windows do **not** DM; same open PR does **not** re-DM every 30 minutes.
 
-**Founder ops note:** Some campus Wi‑Fi networks block **SSH** to the staging droplet. Use a mobile hotspot only when a deploy is required. Day-to-day product checks use HTTPS only.
+**Founder ops note:** Some campus Wi‑Fi networks block **SSH** to the staging droplet. Use a mobile hotspot only when a deploy is required. Day-to-day product checks use HTTPS only. Prefer **GitHub Actions** `Deploy staging` after one-time `STAGING_*` secrets (see `deploy/scripts/setup_ssh_via_https_port.md`).
+
+**Cadence defaults (product):** status lookback **24h** (`STATUS_WINDOW_SECS=86400`); notify interval **30m** but **Notify Policy v1** (change-only + max 1 DM/person/UTC day) keeps Slack rare.
 
 ---
 
@@ -68,10 +70,11 @@ Bridge merges Team map every ~60s. Unmapped humans do **not** get default-Slack 
 
 ## 4. First digests (prove the loop)
 
-1. Each mapped human has open, non-empty work (PR/issue) under ACL groups the graph can see.
-2. **Team → Compile all digests** (policy-respecting) **or** wait for the scheduler window **or** **Send test status DM** once per person (force path for demo only).
-3. **Today → Team digests** shows last draft status per person (empty = no DM).
-4. In Slack DM, product language:
+1. Each mapped human has open, non-empty work (PR/issue/**commit/push** in last **24h**, or an open PR) under ACL groups the graph can see. Unmapped or zero-edge people correctly show empty digests.
+2. Optional ops (staging): `POST …/graph/ensure_users` then `POST …/team/prune` so multi-identity ACL neighborhoods compile.
+3. **Team → Compile all digests** (policy-respecting) **or** wait for the scheduler window **or** **Send test status DM** once per person (force path for demo only). Compile response includes `with_items`, `item_kinds`, `empty_reason` per person.
+4. **Today → Team digests** shows last draft status per person (empty = no DM).
+5. In Slack DM, product language:
 
 | Action | Meaning |
 |--------|---------|
@@ -79,8 +82,8 @@ Bridge merges Team map every ~60s. Unmapped humans do **not** get default-Slack 
 | **Edit** | Fix the words |
 | **Don't send** | Kill this draft (no channel post) |
 
-4. In **My status**: items list shows summaries + **evidence** refs; empty window shows banner and **no** DM.
-5. Open **Graph**: both people appear; PR/issue/intent nodes present when work exists.
+6. In **My status**: items list shows summaries + **evidence** refs; empty window shows banner and **no** DM.
+7. Open **Graph**: both **real** people appear; demo alice/bob seed is **hidden by default** (uncheck “Hide demo” or `include_demo=true` only for intent-demo UI proof). PR/issue/intent nodes present when work exists.
 
 ### Anti-spam check (must pass)
 
@@ -99,9 +102,10 @@ GET /healthz                          → twin-api ok
 GET /metrics                          → notify_policy + suppress ≫ sent
 GET /v3/demo/status                   → v1/v2/egress; graph_status ok|empty|v2_down
 GET /v3/tenants/ten_github/team       → multi_person_ready true + last_digest per member
-POST /v3/tenants/ten_github/team/compile  → compile all (force_notify=false by default)
-GET /v3/tenants/ten_github/graph      → totals.nodes > 0 (or empty with clear message)
-GET /v3/tenants/ten_github/pulse      → intents sample when work exists
+POST /v3/tenants/ten_github/graph/ensure_users  → 200 (membership for neighborhoods)
+POST /v3/tenants/ten_github/team/compile  → with_items ≥1 when live work in lookback
+GET /v3/tenants/ten_github/graph      → real people; demo_hidden ≥0; no alice/bob by default
+GET /v3/tenants/ten_github/pulse      → live conflicts/intents (demo_* separate)
 ```
 
 Embedded staging: twin state file (`TWIN_EMBEDDED_STATE_PATH`) + `SLACK_USER_MAP` seed keep multi-person maps across twin-api restarts.

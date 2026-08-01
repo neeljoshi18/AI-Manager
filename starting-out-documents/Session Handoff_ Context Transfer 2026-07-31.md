@@ -218,10 +218,10 @@ curl -sS -X POST https://status.neel.world/v3/tenants/ten_github/team/compile \
 
 1. ~~Dual-person digests: activity quality (evidence, windows)~~ **done 2026-07-31** — 24h lookback, `valid_from`, open-PR keep, team compile proof fields, unit tests.  
 2. Bridge: keep Team API upsert + prune (already).  
-3. Optional: hide demo seed from graph server-side flag.  
-4. Partner package final pass (install runbook vs live behavior after deploy) — note **STATUS_WINDOW_SECS=86400**.  
-5. Soft-outreach readiness checklist (A1–A7) — see `plans/2026-07-31_a2-digest-lookback.md`.  
-6. **Next incomplete without deploy:** hide demo seed server-side; partner package pass; ensure paneerjeera gets real GH edges when they push (bridge map already).
+3. ~~Hide demo seed from graph server-side~~ **done 2026-08-01** — V2 `include_demo` default false; twin-api belt filter; pulse demotes demo conflicts.  
+4. ~~Partner package final pass~~ **done 2026-08-01** — runbook/one-pager/playbook: 24h, ensure_users, demo hide.  
+5. ~~Soft-outreach checklist~~ **done** — `plans/2026-08-01_soft-outreach-checklist.md`.  
+6. **Still no-deploy options:** UI polish, local tests, bridge map edge cases, Actions secrets docs only. **Live A2 proof still needs deploy.**
 
 ### Phase D — When founder has reliable hotspot (once)
 
@@ -249,9 +249,9 @@ curl -sS -X POST https://status.neel.world/v3/tenants/ten_github/team/compile \
 | A4 | Status UX Approve/Edit/Don’t send | **Done** + empty/evidence polish on main |
 | A5 | Partner install runbook | **Done** |
 | A6 | Empty/wrong draft UX | **Improved** on main |
-| A7 | Pilot packaging | **Mostly done** (one-pager/playbook/runbook aligned) |
+| A7 | Pilot packaging | **Done** (package + soft-outreach checklist 2026-08-01) |
 
-**Stranger-pilot confidence:** ~48–58% on code path (A2 lookback shipped); still capped until staging runs latest `main` and at least one dual-person compile shows items. Target >50% after one good deploy + dual digests.
+**Stranger-pilot confidence:** ~50–58% on **code path** (A2 lookback + demo hide + package); still capped until staging runs latest `main` and dual digests prove live. Target **>50% soft outreach** only after one deploy + A2 live green.
 
 ---
 
@@ -274,7 +274,9 @@ Confirm tip with `git log -15 --oneline`.
 
 21. **Empty digests (live):** staging behind main **and** 1h window; activity ~20h old → default 24h rolling lookback + `valid_from`.  
 22. **paneerjeera has zero graph edges** — empty digest correct until that GH user pushes/PRs.  
-23. **ledger_id** stays wall-aligned; human lookback is rolling `activity_start..activity_end`.
+23. **ledger_id** stays wall-aligned; human lookback is rolling `activity_start..activity_end`.  
+24. **Demo seed** (alice/bob / demo-repo) hidden server-side by default; pulse keeps demo_* separate so Today is not theater.  
+25. **No-deploy efficiency:** keep batching on main; optional founder power-off droplet to save cost until hotspot day (agent will not power-off unprompted).
 
 ---
 

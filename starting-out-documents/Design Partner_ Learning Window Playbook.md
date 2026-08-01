@@ -22,7 +22,7 @@
 
 1. **Connectors:** GitHub App + Slack bot (vault).  
 2. **Map team:** For each human: subject / GitHub login aliases → Slack user ID.  
-3. **Explain:** Ingest is continuous; Slack is rare (change-only + max 1 status DM / person / UTC day).  
+3. **Explain:** Ingest is continuous; digests look back **~24h** of work; Slack is rare (change-only + max 1 status DM / person / UTC day).  
 4. **Show:** Today conflicts card + My status **Approve / Edit / Don't send**.  
 5. **Baseline metrics:** Record `/metrics` DMs sent, suppressed, Don't-send rate, empty windows.  
 

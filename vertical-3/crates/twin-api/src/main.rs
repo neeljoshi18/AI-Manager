@@ -766,7 +766,16 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
             .iter()
             .filter(|tw| tw.twin_kind == TwinKind::Person && tw.enabled)
             .collect();
-        let mapped = maps.len();
+        // Unique Slack among enabled person twins (same as Team API — not map-row count).
+        let mut uniq_slack: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for tw in &person_twins {
+            if let Some(m) = maps.iter().find(|m| m.global_user_id == tw.subject_id) {
+                if !m.slack_user_id.is_empty() {
+                    uniq_slack.insert(m.slack_user_id.clone());
+                }
+            }
+        }
+        let mapped = uniq_slack.len();
         // Prefer a real mapped human as ACL reader for V2 conflicts
         let reader = maps
             .first()
@@ -785,17 +794,44 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
         );
         let conflicts = probe_json(&conflicts_url).await;
         let intents = probe_json(&intents_url).await;
-        let conflict_count = conflicts
+        let all_conflict_cards = conflicts
             .as_ref()
-            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
-            .unwrap_or(0);
+            .and_then(|v| v.get("conflicts"))
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let all_intent_sample = intents
+            .as_ref()
+            .and_then(|v| v.get("intents"))
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // Default product pulse excludes intent_demo seed (alice/bob theater).
+        let live_conflicts: Vec<serde_json::Value> = all_conflict_cards
+            .iter()
+            .filter(|c| !json_looks_like_demo_seed(c))
+            .cloned()
+            .collect();
+        let demo_conflicts: Vec<serde_json::Value> = all_conflict_cards
+            .iter()
+            .filter(|c| json_looks_like_demo_seed(c))
+            .cloned()
+            .collect();
+        let live_intents: Vec<serde_json::Value> = all_intent_sample
+            .iter()
+            .filter(|i| !json_looks_like_demo_seed(i))
+            .cloned()
+            .collect();
+        let demo_intents: Vec<serde_json::Value> = all_intent_sample
+            .iter()
+            .filter(|i| json_looks_like_demo_seed(i))
+            .cloned()
+            .collect();
+        let conflict_count = live_conflicts.len() as u64;
         if conflict_count > 0 {
             st.metrics.conflict_hits.fetch_add(1, Ordering::Relaxed);
         }
-        let intent_count = intents
-            .as_ref()
-            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
-            .unwrap_or(0);
+        let intent_count = live_intents.len() as u64;
         let v1_base = st.cfg.v1_base_url.trim_end_matches('/');
         let v1_health = probe_json(&format!("{v1_base}/healthz")).await;
         let pulse = json!({
@@ -804,16 +840,21 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
             "team": {
                 "person_twins": person_twins.len(),
                 "slack_mapped": mapped,
+                "unique_slack_users": mapped,
                 "multi_person_ready": mapped >= 2 && person_twins.len() >= 2,
             },
             "intents": {
                 "count": intent_count,
-                "sample": intents.as_ref().and_then(|v| v.get("intents")).cloned().unwrap_or(json!([])),
+                "sample": live_intents,
+                "demo_count": demo_intents.len(),
             },
             "conflicts": {
                 "count": conflict_count,
-                "cards": conflicts.as_ref().and_then(|v| v.get("conflicts")).cloned().unwrap_or(json!([])),
+                "cards": live_conflicts,
+                "demo_count": demo_conflicts.len(),
+                "demo_cards": demo_conflicts,
                 "engine": "rules_v0",
+                "note": "Primary cards exclude intent_demo seed; demo_* fields keep Load intent demo visible",
             },
             "ingest": {
                 "v1_up": v1_health.is_some(),
@@ -825,6 +866,16 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
         st.last_pulse.lock().insert(t, pulse);
     }
     Ok(())
+}
+
+/// True if a conflict/intent JSON blob is from the SHIP-vs-FREEZE intent_demo seed.
+fn json_looks_like_demo_seed(v: &serde_json::Value) -> bool {
+    let blob = v.to_string().to_ascii_lowercase();
+    blob.contains("gu_demo_")
+        || blob.contains("demo-repo")
+        || blob.contains("intent_demo")
+        || blob.contains("seed:intent_demo")
+        || blob.contains("\"seed\":\"intent_demo\"")
 }
 
 fn urlencoding_simple(s: &str) -> String {
@@ -2155,6 +2206,8 @@ struct GraphSnapshotQ {
     user_id: Option<String>,
     node_limit: Option<usize>,
     edge_limit: Option<usize>,
+    /// Pass-through to V2; default hide intent_demo seed (alice/bob).
+    include_demo: Option<bool>,
 }
 
 /// Product Graph map: ACL-safe V2 snapshot + team members for multi-person view.
@@ -2187,6 +2240,7 @@ async fn get_graph_snapshot(
         .unwrap_or_else(|| "bridge_reader".into());
     let node_limit = q.node_limit.unwrap_or(400);
     let edge_limit = q.edge_limit.unwrap_or(800);
+    let include_demo = q.include_demo.unwrap_or(false);
     let v2 = st.cfg.v2_base_url.trim_end_matches('/');
     let v2_up = probe(&format!("{v2}/healthz")).await;
 
@@ -2213,8 +2267,9 @@ async fn get_graph_snapshot(
     } else {
         reader.clone()
     };
+    let demo_q = if include_demo { "true" } else { "false" };
     let url = format!(
-        "{v2}/v2/tenants/{tenant_id}/snapshot?user_id={}&node_limit={node_limit}&edge_limit={edge_limit}",
+        "{v2}/v2/tenants/{tenant_id}/snapshot?user_id={}&node_limit={node_limit}&edge_limit={edge_limit}&include_demo={demo_q}",
         urlencoding_simple(&snap_reader)
     );
     // Snapshot can be larger than health probes — longer timeout than probe_json (2s).
@@ -2255,10 +2310,16 @@ async fn get_graph_snapshot(
                 "error": if v2_up { "snapshot_failed" } else { "v2_unreachable" },
                 "as_of": Utc::now().to_rfc3339(),
                 "live": true,
+                "include_demo": include_demo,
                 "poll_hint_secs": 5,
             })));
         }
     };
+
+    // Belt-and-suspenders: hide demo seed even if V2 predates include_demo.
+    if !include_demo {
+        filter_demo_from_snapshot_json(&mut snap);
+    }
 
     // Overlay: only *enabled* person twins (disabled = pruned duplicates)
     let mut team_members = Vec::new();
@@ -2285,6 +2346,7 @@ async fn get_graph_snapshot(
         obj.insert("v2_up".into(), json!(v2_up));
         obj.insert("status".into(), json!("ok"));
         obj.insert("reader".into(), json!(snap_reader));
+        obj.insert("include_demo".into(), json!(include_demo));
         obj.insert(
             "poll_hint_secs".into(),
             json!(5),
@@ -2396,6 +2458,73 @@ async fn get_graph_snapshot(
         }
     }
     Ok(Json(snap))
+}
+
+/// Remove intent_demo seed nodes/edges from a V2 snapshot JSON body (product Graph default).
+fn filter_demo_from_snapshot_json(snap: &mut serde_json::Value) {
+    let Some(obj) = snap.as_object_mut() else {
+        return;
+    };
+    let Some(nodes) = obj.get("nodes").and_then(|n| n.as_array()) else {
+        return;
+    };
+    let mut drop_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for n in nodes {
+        let id = n.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let label = n
+            .get("label")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let resource = n
+            .get("resource_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let ntype = n.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let id_l = id.to_ascii_lowercase();
+        let is_demo = id_l.contains("gu_demo_")
+            || id_l.contains("demo-repo")
+            || resource.contains("demo-repo")
+            || (ntype.eq_ignore_ascii_case("Person")
+                && (label == "alice" || label == "bob")
+                && (id_l.contains("demo") || resource == "alice" || resource == "bob"));
+        if is_demo {
+            drop_ids.insert(id.to_string());
+        }
+    }
+    if drop_ids.is_empty() {
+        obj.insert("demo_hidden".into(), json!(0));
+        return;
+    }
+    if let Some(nodes) = obj.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+        nodes.retain(|n| {
+            n.get("id")
+                .and_then(|x| x.as_str())
+                .map(|id| !drop_ids.contains(id))
+                .unwrap_or(true)
+        });
+    }
+    if let Some(edges) = obj.get_mut("edges").and_then(|e| e.as_array_mut()) {
+        edges.retain(|e| {
+            let from = e.get("from").and_then(|x| x.as_str()).unwrap_or("");
+            let to = e.get("to").and_then(|x| x.as_str()).unwrap_or("");
+            !drop_ids.contains(from) && !drop_ids.contains(to)
+        });
+    }
+    // Refresh returned counts if present
+    let n_count = obj
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let e_count = obj
+        .get("edges")
+        .and_then(|n| n.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    obj.insert("returned".into(), json!({ "nodes": n_count, "edges": e_count }));
+    obj.insert("demo_hidden".into(), json!(drop_ids.len()));
 }
 
 async fn upsert_twin(

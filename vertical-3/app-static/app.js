@@ -424,13 +424,21 @@ async function refreshPulse() {
     );
     const cards = pulse.conflicts?.cards || [];
     const count = pulse.conflicts?.count ?? cards.length;
+    const demoCount = pulse.conflicts?.demo_count ?? 0;
     const multi = pulse.team?.multi_person_ready;
     if (el) {
       if (!count) {
-        el.innerHTML = `<p class="muted">No open conflicts for <code>${esc(tenant)}</code>. Multi-person ready: <strong>${multi ? "yes" : "no"}</strong> (${pulse.team?.slack_mapped ?? 0} mapped).</p>`;
+        const demoNote =
+          demoCount > 0
+            ? ` <span class="muted small">(${demoCount} intent-demo seed card(s) hidden — use <strong>Load intent demo</strong> then uncheck Graph “Hide demo” if you need them)</span>`
+            : "";
+        el.innerHTML = `<p class="muted">No open <em>live</em> conflicts for <code>${esc(tenant)}</code>. Multi-person ready: <strong>${multi ? "yes" : "no"}</strong> (${pulse.team?.unique_slack_users ?? pulse.team?.slack_mapped ?? 0} unique Slack).${demoNote}</p>`;
       } else {
         el.innerHTML =
-          `<div class="meta-row"><span class="pill ${count ? "down" : "mid"}">${count} conflict(s)</span>` +
+          `<div class="meta-row"><span class="pill ${count ? "down" : "mid"}">${count} live conflict(s)</span>` +
+          (demoCount
+            ? `<span class="pill mid">${demoCount} demo seed</span>`
+            : "") +
           `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "ready" : "need ≥2 maps"}</span></div>` +
           `<ul class="item-list">` +
           cards
@@ -446,8 +454,9 @@ async function refreshPulse() {
     const intentUl = $("team-intents");
     if (intentUl) {
       const sample = pulse.intents?.sample || [];
+      const demoIntents = pulse.intents?.demo_count ?? 0;
       if (!sample.length) {
-        intentUl.innerHTML = `<li class="muted">No intent nodes yet (project PRs/issues with titles/labels).</li>`;
+        intentUl.innerHTML = `<li class="muted">No live intent nodes yet${demoIntents ? ` (${demoIntents} demo seed hidden)` : ""} — project PRs/issues with titles/labels, or Load intent demo for UI proof.</li>`;
       } else {
         intentUl.innerHTML = sample
           .slice(0, 20)
@@ -817,8 +826,9 @@ async function refreshGraph(forceLayout) {
     if (statsEl && forceLayout) {
       statsEl.innerHTML = `<span class="pill mid">loading map…</span>`;
     }
+    const includeDemo = $("graph-hide-demo")?.checked === false;
     const data = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=500&edge_limit=1000`
+      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=500&edge_limit=1000&include_demo=${includeDemo ? "true" : "false"}`
     );
     graphState.raw = data;
     graphState.lastFetch = Date.now();

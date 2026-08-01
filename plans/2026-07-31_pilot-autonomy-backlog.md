@@ -30,8 +30,9 @@
 4. ~~Neighborhood 404 soft-fail~~ so multi-person compile continues  
 5. Dual-person digests with non-empty items after deploy + ensure_users — **code path airtight** (24h lookback, multi-alias, tests); live still needs deploy + paneerjeera GH edges  
 6. Cockroach durability path when droplet can afford it  
-7. Soft outreach package final check  
-8. Optional: hide demo seed server-side on graph
+7. ~~Soft outreach package final check~~ — `plans/2026-08-01_soft-outreach-checklist.md`  
+8. ~~Hide demo seed server-side on graph~~ (2026-08-01)  
+9. Live A2 after one deploy (blocked on hotspot/Actions)
 
 ## ICP bar (recruitable pilot)
 

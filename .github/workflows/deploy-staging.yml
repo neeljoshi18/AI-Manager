@@ -105,9 +105,26 @@ jobs:
           echo
           REMOTE
 
-      - name: Public health probe
+      - name: Public health + pilot smoke
         run: |
-          sleep 10
-          curl -sS --max-time 45 -o /dev/null -w "healthz http=%{http_code}\n" https://status.neel.world/healthz
-          curl -sS --max-time 45 https://status.neel.world/healthz || true
+          set -euo pipefail
+          sleep 12
+          BASE=https://status.neel.world
+          curl -sS --max-time 45 -o /dev/null -w "healthz http=%{http_code}\n" "$BASE/healthz"
+          curl -sS --max-time 45 "$BASE/healthz" || true
+          echo
+          # Product post-deploy (idempotent; empty digests ok if no GH activity)
+          for path in \
+            /v3/tenants/ten_github/team/prune \
+            /v3/tenants/ten_github/graph/ensure_users \
+            /v3/tenants/ten_github/seed/intent_demo
+          do
+            code=$(curl -sS --max-time 45 -o /tmp/smoke.json -w "%{http_code}" -X POST "$BASE$path" || echo fail)
+            echo "POST $path → $code"
+          done
+          curl -sS --max-time 90 -X POST "$BASE/v3/tenants/ten_github/team/compile" \
+            -H 'content-type: application/json' \
+            -d '{"force_notify":false,"allow_notify":true}' | head -c 1200 || true
+          echo
+          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/pilot_readiness" | head -c 1500 || true
           echo

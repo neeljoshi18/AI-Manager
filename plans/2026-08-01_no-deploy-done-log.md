@@ -55,3 +55,17 @@
 - [ ] **One deploy + smoke** (founder)  
 
 When founder says **deployed**: run handoff smoke + `GET /v3/tenants/ten_github/pilot_readiness` and mark A2 live.
+
+---
+
+## 2026-08-03 — Deploy + campus path
+
+| Item | Status |
+|------|--------|
+| Hotspot SSH deploy of main `25d1981` + twin/v2 rebuild | Done |
+| `STAGING_HOST` / `STAGING_USER` / `STAGING_SSH_KEY` via `gh secret set` | Done |
+| Actions workflow post-deploy smoke | Done (this commit) |
+| `deploy/scripts/deploy_from_ci_or_hotspot.sh` | Done |
+| sshd :2222 | Not set (sudo password on droplet) — Actions is the campus path |
+
+Campus forever: `git push origin main` → GitHub Actions Deploy staging.

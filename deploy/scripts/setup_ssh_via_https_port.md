@@ -8,32 +8,37 @@ Many campus networks **block outbound TCP 22**. Your laptop can open HTTPS (443)
 
 You only **`git push` over HTTPS** (allowed on campus). GitHub’s runners SSH to the droplet for you.
 
-### One-time setup (use hotspot once, ~10 minutes)
+### One-time setup (use hotspot once, ~5 minutes)
 
-1. **Confirm the droplet accepts your key** (on hotspot):
-   ```bash
-   ssh -i ~/.ssh/id_ed25519 neel@206.189.129.31 'echo ok'
-   ```
+**Preferred (agent / `gh` CLI — no GitHub UI):**
 
-2. **GitHub → repo `neeljoshi18/AI-Manager` → Settings → Secrets and variables → Actions → New repository secret**
+```bash
+# On hotspot: confirm SSH works
+ssh -i ~/.ssh/id_ed25519 neel@206.189.129.31 'echo ok'
 
-   | Name | Value |
-   |------|--------|
-   | `STAGING_HOST` | `206.189.129.31` |
-   | `STAGING_USER` | `neel` |
-   | `STAGING_SSH_KEY` | Entire contents of `~/.ssh/id_ed25519` (private key, including `BEGIN`/`END` lines) |
+# Set Actions secrets from your laptop key (once)
+gh secret set STAGING_HOST -R neeljoshi18/AI-Manager --body "206.189.129.31"
+gh secret set STAGING_USER -R neeljoshi18/AI-Manager --body "neel"
+gh secret set STAGING_SSH_KEY -R neeljoshi18/AI-Manager < ~/.ssh/id_ed25519
 
-   Prefer a **dedicated deploy key** later (generate `ssh-keygen -t ed25519 -f ~/.ssh/ai_manager_deploy`, put public key in droplet `authorized_keys`, private key only in GitHub secret).
+# Smoke the workflow
+gh workflow run deploy-staging.yml -R neeljoshi18/AI-Manager
+gh run watch -R neeljoshi18/AI-Manager
+```
 
-3. **DigitalOcean firewall**: inbound **TCP 22** allowed from the public internet (or at least not locked to campus only). GitHub Actions IPs change often; allow 22 broadly for this VPS.
+**Status (2026-08-03):** `STAGING_HOST` / `STAGING_USER` / `STAGING_SSH_KEY` were set via `gh secret set`. Campus path is: **`git push origin main` → Actions deploys** (no laptop SSH).
 
-4. **Test**: GitHub → **Actions → Deploy staging → Run workflow**
+Manual UI alternative: GitHub → repo → Settings → Secrets → Actions with the same three names.
 
-5. After green: from campus, just push code:
-   ```bash
-   git push origin main
-   ```
-   Deploy starts automatically (skips pure markdown path changes).
+Prefer a **dedicated deploy key** later (generate `ssh-keygen -t ed25519 -f ~/.ssh/ai_manager_deploy`, put public key in droplet `authorized_keys`, private key only in GitHub secret).
+
+**DigitalOcean firewall**: inbound **TCP 22** allowed from the public internet (GitHub Actions IPs change; allow 22 broadly for this VPS).
+
+After green: from campus, just:
+```bash
+git push origin main
+```
+Deploy starts automatically (skips pure markdown path changes).
 
 ### Manual trigger (no code change)
 

@@ -227,6 +227,14 @@ curl -sS -X POST https://status.neel.world/v3/tenants/ten_github/team/compile \
 
 ### Phase D — When founder has reliable hotspot (once)
 
+1. ~~Add GitHub Actions secrets (`STAGING_*`)~~ **done 2026-08-03 via `gh secret set`**  
+2. Deploy via Actions from campus: `git push` or `gh workflow run deploy-staging.yml`  
+3. sshd port 2222: **blocked** (droplet sudo needs password) — use Actions instead  
+
+(Original checklist:)
+
+
+
 1. Add GitHub Actions secrets (`STAGING_*`).  
 2. Run workflow once; confirm campus `git push` deploys.  
 3. Optionally configure sshd **2222** for interactive shell.  

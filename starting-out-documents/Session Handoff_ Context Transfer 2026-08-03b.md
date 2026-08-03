@@ -98,15 +98,31 @@ then ship the next airtight gap without waiting.
 
 ---
 
-## 5. What this arc shipped / ships
+## 5. What this arc shipped (LIVE on staging — `d9c98ec`)
 
 | Piece | Role |
 |-------|------|
 | `scripts/github_live_bridge.py` | `poll_github_commits`, seen file, synthetic push, seed `gu_*` |
 | `GET /v3/tenants/{id}/insights/dev` | Peak hour/DoW UTC, by_author, by_day, commit nodes, digest content ratio |
-| app-static **Dev insights** | Nav + heat bars + authors + recent commits |
-| compose | `COMMIT_POLL_*`, `GITHUB_TOKEN`, V1 `autoheal: true` |
-| workflow | Post-up restart V1 + bridge; inject bridge token if secret set |
+| app-static **Dev insights** | Nav + heat bars + authors + recent commits — https://status.neel.world/app/ |
+| compose | `COMMIT_POLL_*` + `GITHUB_TOKEN` on **bridge**; V1 `autoheal: true` |
+| workflow | Post-up restart V1 + bridge; inject `BRIDGE_GITHUB_TOKEN` → droplet `GITHUB_TOKEN` |
+| Secret | `BRIDGE_GITHUB_TOKEN` set on repo (from `gh auth token` — rotate to long-lived PAT when convenient) |
+
+### Post-deploy smoke (2026-08-03, after Actions green)
+
+| Signal | Value |
+|--------|--------|
+| Doctrine | `data_is_currency` |
+| Graph | ~28–29 nodes · 56 edges · **26 Commit** · Person + Repo |
+| Edges | AUTHORED 27 · PUSHED_TO 27 · CHECKED 2 |
+| Author | `neeljoshi18`: 27 |
+| Peak | **05:00 UTC** (14) · **Mon** (32) |
+| By day | 07-30:6 · 07-31:14 · 08-01:4 · **08-03:32** |
+| Digests | 1/2 person twins with content |
+| UI | `/app/` shows **Dev insights**; `refreshDevInsights` in app.js |
+
+**Follow-ups still open:** store commit **message** on graph title (recent list shows sha7 only); deeper backfill pages; paneerjeera dual digest edges; long-lived PAT for poller.
 
 ---
 

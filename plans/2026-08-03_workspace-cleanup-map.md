@@ -27,7 +27,7 @@ docker builder prune -af   # if not already done
 | 0 | Docker Build Cache (system) | **Done 2026-08-03** — freed ~21.7 GB |
 | 1 | `vertical-1/` | **Done 2026-08-03** — removed `target/` (580 MB in work clone) |
 | 2 | `vertical-2/` | **Done 2026-08-03** — removed `target/` (~228 MB work clone) |
-| 3 | `vertical-3/` | Pending |
+| 3 | `vertical-3/` | **Done 2026-08-03** — already clean (~624 KB source; no `target/`) |
 | 4 | `vertical-security/` | Pending |
 | 5 | `deploy/` | Pending — scripts/docs only; no big caches |
 | 6 | `scripts/` + `plans/` + `starting-out-documents/` | Pending — docs only |
@@ -73,3 +73,11 @@ Full next-session handoff: `starting-out-documents/Session Handoff_ Context Tran
 - Remaining source under vertical-2: source only (crates, Cargo, docs)
 - Status: **Done 2026-08-03**
 - Next folder: `vertical-3/`
+
+
+## Tranche 3 results (vertical-3)
+
+- **No `target/` present** in work clone (already clean)
+- Folder size: **~624 KB** source only
+- Freed this tranche: **~0 MB**
+- Next: `vertical-security/`

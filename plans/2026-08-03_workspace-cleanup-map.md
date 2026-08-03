@@ -62,3 +62,7 @@ docker builder prune -af   # if not already done
 ## Next session
 
 Say **“next folder”** → clean **`vertical-2/`** (`target/` + any stale artifacts) and stop.
+
+## Handoff
+
+Full next-session handoff: `starting-out-documents/Session Handoff_ Context Transfer 2026-08-03.md` (also `SESSION_HANDOFF_2026-08-03.md`).

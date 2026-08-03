@@ -30,7 +30,7 @@ docker builder prune -af   # if not already done
 | 3 | `vertical-3/` | **Done 2026-08-03** — already clean (~624 KB source; no `target/`) |
 | 4 | `vertical-security/` | **Done 2026-08-03** — no target / already lean; secrets kept |
 | 5 | `deploy/` | **Done 2026-08-03** — already lean (~88 KB); .env.staging/secrets kept |
-| 6 | `scripts/` + `plans/` + `starting-out-documents/` | Pending — docs only |
+| 6 | `scripts/` + `plans/` + `starting-out-documents/` | **Done 2026-08-03** — already lean; docs/plans kept |
 | 7 | Local `vertical-1` docker stack volumes (optional) | Pending — only if you abandon local CRDB/CH demos |
 
 ## What we never clear
@@ -98,3 +98,22 @@ Full next-session handoff: `starting-out-documents/Session Handoff_ Context Tran
 - **Kept** `.env.staging` if present (gitignored), never delete host secrets
 - Freed this tranche: **~0 MB**
 - Next folder: `scripts/` + `plans/` + `starting-out-documents/` (docs batch) or treat as three small folders
+
+
+## Tranche 6 results (scripts + plans + starting-out-documents)
+
+- Combined size already small (~docs + python bridge)
+- No `__pycache__`, no large caches found in work clone
+- **Kept all** plans, handoffs, partner docs, scripts (source of truth)
+- Freed this tranche: **~0 MB**
+- Next optional: root hygiene, unused local docker images, Desktop monorepo `target/` if present
+
+
+## Source-tree cleanup complete (work clone)
+
+All monorepo folders reviewed. Remaining disk on machine is mostly:
+- Docker **images** (~2.7 GB local platform stack) — keep if you use local CRDB/CH/minio
+- Docker **volumes** (~2.3 GB) — **do not prune** if you need local data
+- Staging droplet volumes — never prune
+
+Optional tranche 7 (ask explicitly): `docker image prune` unused; Desktop `rm -rf */target`

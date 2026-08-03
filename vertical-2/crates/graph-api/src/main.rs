@@ -89,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v2/tenants/{tenant_id}/snapshot", get(graph_snapshot))
         .route("/v2/tenants/{tenant_id}/stats", get(stats))
+        .route("/v2/durability", get(durability_status))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -134,7 +135,28 @@ async fn build_state(cfg: GraphConfig) -> anyhow::Result<AppState> {
             mem.set_persist_path(Some(path));
         }
         let store: Arc<dyn GraphStore> = mem;
-        let membership: Arc<dyn MembershipStore> = InMemoryMembership::new();
+        let membership_mem = InMemoryMembership::new();
+        // Membership must survive restarts or neighborhoods 404 after every deploy.
+        let memb_path = std::env::var("GRAPH_MEMBERSHIP_STATE_PATH").ok().or_else(|| {
+            std::env::var("GRAPH_EMBEDDED_STATE_PATH").ok().map(|p| {
+                let pb = std::path::PathBuf::from(p);
+                pb.parent()
+                    .unwrap_or(std::path::Path::new("/var/lib/ai-manager"))
+                    .join("v2_membership.json")
+                    .to_string_lossy()
+                    .to_string()
+            })
+        });
+        if let Some(p) = memb_path {
+            let path = std::path::PathBuf::from(p);
+            match membership_mem.load_from_path(&path) {
+                Ok(true) => info!(path = %path.display(), "restored embedded membership"),
+                Ok(false) => info!(path = %path.display(), "no membership state file yet"),
+                Err(e) => tracing::warn!(error = %e, "membership load failed"),
+            }
+            membership_mem.set_persist_path(Some(path));
+        }
+        let membership: Arc<dyn MembershipStore> = membership_mem;
         let engine = Arc::new(ProjectEngine::new(store.clone(), membership.clone()));
         return Ok(AppState {
             engine,
@@ -192,6 +214,33 @@ fn record_project_outcome(m: &Metrics, out: &ProjectOutcome) {
             m.projects_skipped.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+async fn durability_status(State(st): State<AppState>) -> impl IntoResponse {
+    let graph_path = std::env::var("GRAPH_EMBEDDED_STATE_PATH").ok();
+    let memb_path = std::env::var("GRAPH_MEMBERSHIP_STATE_PATH").ok().or_else(|| {
+        graph_path.as_ref().map(|p| {
+            std::path::Path::new(p)
+                .parent()
+                .unwrap_or(std::path::Path::new("/var/lib/ai-manager"))
+                .join("v2_membership.json")
+                .to_string_lossy()
+                .to_string()
+        })
+    });
+    let meta = |path: Option<&str>| match path {
+        Some(p) => match std::fs::metadata(p) {
+            Ok(m) => json!({ "path": p, "exists": true, "bytes": m.len() }),
+            Err(_) => json!({ "path": p, "exists": false, "bytes": 0 }),
+        },
+        None => json!({ "configured": false }),
+    };
+    Json(json!({
+        "mode": st.mode,
+        "graph_file": meta(graph_path.as_deref()),
+        "membership_file": meta(memb_path.as_deref()),
+        "note": "Docker volumes v2_state hold these files across deploys",
+    }))
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -529,7 +578,39 @@ async fn stats(
 ) -> Result<impl IntoResponse, ApiError> {
     let nodes = st.store.count_nodes(&tenant_id).await.map_err(ApiError::from)?;
     let edges = st.store.count_edges(&tenant_id).await.map_err(ApiError::from)?;
-    Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+    let graph_path = std::env::var("GRAPH_EMBEDDED_STATE_PATH").ok();
+    let memb_path = std::env::var("GRAPH_MEMBERSHIP_STATE_PATH").ok().or_else(|| {
+        graph_path.as_ref().map(|p| {
+            std::path::Path::new(p)
+                .parent()
+                .unwrap_or(std::path::Path::new("/var/lib/ai-manager"))
+                .join("v2_membership.json")
+                .to_string_lossy()
+                .to_string()
+        })
+    });
+    let file_meta = |p: &Option<String>| {
+        p.as_ref().and_then(|path| {
+            std::fs::metadata(path).ok().map(|m| {
+                json!({
+                    "path": path,
+                    "bytes": m.len(),
+                    "exists": true,
+                })
+            })
+        })
+        .unwrap_or_else(|| json!({ "exists": false, "path": p }))
+    };
+    Ok(Json(json!({
+        "nodes": nodes,
+        "edges": edges,
+        "mode": st.mode,
+        "durability": {
+            "graph_file": file_meta(&graph_path),
+            "membership_file": file_meta(&memb_path),
+            "note": "embedded disk journal — not wiped by container recreate (docker volume)",
+        }
+    })))
 }
 
 /// Seed multi-person intent + conflict cards for pilot UI (rules_v0 proof).

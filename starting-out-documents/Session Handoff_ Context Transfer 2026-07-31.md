@@ -8,6 +8,10 @@
 
 ---
 
+## 0. Standing rules
+
+**2026-08-03 durability:** Graph = docker volumes (not wiped by deploy). Fast deploy: `./deploy/scripts/deploy_fast.sh`. V1 events + V2 membership flush every write. See `plans/2026-08-03_durability-and-fast-deploy.md`.
+
 ## 0. Standing rules (forever — update this file when they change)
 
 | Rule | Detail |

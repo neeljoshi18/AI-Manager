@@ -1356,6 +1356,11 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         "graph_edges": graph_edges,
         "graph_status": graph_status,
         "graph_message": graph_message,
+        "durability": {
+            "v2": probe_json(&format!("{v2_base}/v2/durability")).await,
+            "twin_state_path": std::env::var("TWIN_EMBEDDED_STATE_PATH").ok(),
+            "note": "Graph/twin survive container restarts via docker volumes; V1 events flush every write",
+        },
         "notify_policy": "v1_change_only_daily_cap",
         "slack_oauth_ready": env_present("SLACK_CLIENT_ID") && env_present("SLACK_CLIENT_SECRET"),
         "github_app_ready": env_present("GITHUB_APP_ID"),

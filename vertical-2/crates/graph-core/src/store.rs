@@ -201,17 +201,19 @@ impl InMemoryGraphStore {
         Ok(true)
     }
 
-    fn maybe_persist(&self) {
-        let n = self.dirty.fetch_add(1, Ordering::Relaxed) + 1;
-        if n % 3 != 0 {
-            return;
-        }
+    /// Flush graph snapshot immediately (survive container restarts between deploys).
+    pub fn force_persist(&self) {
         let path = self.persist_path.read().clone();
         if let Some(p) = path {
             if let Err(e) = self.save_to_path(&p) {
                 tracing::warn!(error = %e, "V2 graph persist failed");
             }
         }
+    }
+
+    fn maybe_persist(&self) {
+        let _ = self.dirty.fetch_add(1, Ordering::Relaxed);
+        self.force_persist();
     }
 
     fn visible_node(ctx: &QueryContext, n: &GraphNode) -> bool {

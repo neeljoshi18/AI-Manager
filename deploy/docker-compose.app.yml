@@ -86,8 +86,9 @@ services:
       # Keep /healthz responsive under bridge load (small VPS).
       GRAPH_PROJECT_CONCURRENCY: ${GRAPH_PROJECT_CONCURRENCY:-2}
       GRAPH_PROJECT_TIMEOUT_SECS: ${GRAPH_PROJECT_TIMEOUT_SECS:-10}
-      # Survive restarts: graph nodes/edges on disk (no mystery empty map)
+      # Survive restarts: graph nodes/edges + membership on disk (no mystery empty map)
       GRAPH_EMBEDDED_STATE_PATH: ${GRAPH_EMBEDDED_STATE_PATH:-/var/lib/ai-manager/v2_graph.json}
+      GRAPH_MEMBERSHIP_STATE_PATH: ${GRAPH_MEMBERSHIP_STATE_PATH:-/var/lib/ai-manager/v2_membership.json}
     volumes:
       - v2_state:/var/lib/ai-manager
     labels:

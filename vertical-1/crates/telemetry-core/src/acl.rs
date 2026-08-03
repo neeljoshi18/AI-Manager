@@ -243,17 +243,18 @@ impl InMemoryAclStore {
         Ok(true)
     }
 
-    fn maybe_persist(&self) {
-        let n = self.dirty.fetch_add(1, Ordering::Relaxed) + 1;
-        if n % 3 != 0 {
-            return;
-        }
+    pub fn force_persist(&self) {
         let path = self.persist_path.read().clone();
         if let Some(p) = path {
             if let Err(e) = self.save_to_path(&p) {
                 tracing::warn!(error = %e, "V1 ACL persist failed");
             }
         }
+    }
+
+    fn maybe_persist(&self) {
+        let _ = self.dirty.fetch_add(1, Ordering::Relaxed);
+        self.force_persist();
     }
 
     fn bump_version(&self, tenant_id: &str) -> u64 {

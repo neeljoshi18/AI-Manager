@@ -167,18 +167,20 @@ impl InMemoryEventStore {
         Ok(true)
     }
 
-    fn maybe_persist(&self) {
-        let n = self.dirty.fetch_add(1, Ordering::Relaxed) + 1;
-        // Flush every 5 writes or when path set and n==1 after load
-        if n % 5 != 0 {
-            return;
-        }
+    /// Flush event journal to disk immediately (every write in pilot; cheap at mid-market volume).
+    pub fn force_persist(&self) {
         let path = self.persist_path.read().clone();
         if let Some(p) = path {
             if let Err(e) = self.save_to_path(&p) {
                 tracing::warn!(error = %e, "V1 event persist failed");
             }
         }
+    }
+
+    fn maybe_persist(&self) {
+        let _ = self.dirty.fetch_add(1, Ordering::Relaxed);
+        // Always flush when path is set — restarts must not wipe the journal.
+        self.force_persist();
     }
 
     async fn upsert_inner(&self, event: CanonicalEventRecord, persist: bool) -> CoreResult<()> {

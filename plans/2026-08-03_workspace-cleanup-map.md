@@ -28,7 +28,7 @@ docker builder prune -af   # if not already done
 | 1 | `vertical-1/` | **Done 2026-08-03** — removed `target/` (580 MB in work clone) |
 | 2 | `vertical-2/` | **Done 2026-08-03** — removed `target/` (~228 MB work clone) |
 | 3 | `vertical-3/` | **Done 2026-08-03** — already clean (~624 KB source; no `target/`) |
-| 4 | `vertical-security/` | Pending |
+| 4 | `vertical-security/` | **Done 2026-08-03** — no target / already lean; secrets kept |
 | 5 | `deploy/` | Pending — scripts/docs only; no big caches |
 | 6 | `scripts/` + `plans/` + `starting-out-documents/` | Pending — docs only |
 | 7 | Local `vertical-1` docker stack volumes (optional) | Pending — only if you abandon local CRDB/CH demos |
@@ -81,3 +81,11 @@ Full next-session handoff: `starting-out-documents/Session Handoff_ Context Tran
 - Folder size: **~624 KB** source only
 - Freed this tranche: **~0 MB**
 - Next: `vertical-security/`
+
+
+## Tranche 4 results (vertical-security)
+
+- No large `target/` in work clone (or removed if present)
+- **Kept secrets/** (dev_secrets, examples) — never deleted vault files
+- Status: **Done 2026-08-03**
+- Next folder: `deploy/`

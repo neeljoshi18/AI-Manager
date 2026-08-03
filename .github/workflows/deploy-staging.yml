@@ -85,12 +85,21 @@ jobs:
           STAGING_USER: ${{ secrets.STAGING_USER }}
           DOMAIN: status.neel.world
           SKIP_BUILD: ${{ github.event.inputs.skip_build || 'false' }}
+          # Optional long-lived PAT for private-repo commit poller (data currency)
+          BRIDGE_GITHUB_TOKEN: ${{ secrets.BRIDGE_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
           BUILD_FLAG="--build"
           if [ "${SKIP_BUILD}" = "true" ]; then
             BUILD_FLAG=""
+          fi
+          # Pass token into remote only if set (never echo value)
+          if [ -n "${BRIDGE_GITHUB_TOKEN:-}" ]; then
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
+              "grep -q '^GITHUB_TOKEN=' \$HOME/ai-manager/deploy/.env.staging 2>/dev/null \
+                && sed -i.bak 's|^GITHUB_TOKEN=.*|GITHUB_TOKEN=${BRIDGE_GITHUB_TOKEN}|' \$HOME/ai-manager/deploy/.env.staging \
+                || echo 'GITHUB_TOKEN=${BRIDGE_GITHUB_TOKEN}' >> \$HOME/ai-manager/deploy/.env.staging"
           fi
           ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<REMOTE
           set -euo pipefail
@@ -113,6 +122,13 @@ jobs:
           fi
           docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls ps
           curl -sf --max-time 8 http://127.0.0.1:18083/healthz || true
+          echo
+          # V1 sometimes hangs after recreate — force restart + health
+          docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging restart v1 || true
+          sleep 4
+          curl -sf --max-time 5 http://127.0.0.1:18080/healthz || true
+          echo
+          docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging restart bridge || true
           echo
           # Prove volumes still hold graph state after recreate
           docker run --rm -v ai-manager_v2_state:/d alpine ls -la /d || true
@@ -141,4 +157,9 @@ jobs:
             -d '{"force_notify":false,"allow_notify":true}' | head -c 1200 || true
           echo
           curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/pilot_readiness" | head -c 1500 || true
+          echo
+          # Data currency: Dev insights must be live after twin-api rebuild
+          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/insights/dev" | head -c 1500 || true
+          echo
+          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/graph?node_limit=30" | head -c 800 || true
           echo

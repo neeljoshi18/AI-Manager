@@ -22,6 +22,7 @@
         <button class="nav-item" data-view="team">Team</button>
         <button class="nav-item" data-view="graph">Graph</button>
         <button class="nav-item" data-view="connections">Connections</button>
+        <button class="nav-item" data-view="insights">Dev insights</button>
         <button class="nav-item" data-view="settings">Settings</button>
         <button class="nav-item lab" data-view="lab">Lab</button>
       </nav>
@@ -207,6 +208,50 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
             <button id="btn-veto" class="danger">Don't send</button>
             <button id="btn-silence" class="ghost">Silence → auto-share (medium only)</button>
           </div>
+        </div>
+      </section>
+
+      
+      <!-- DEV INSIGHTS -->
+      <section id="view-insights" class="view hidden">
+        <div class="card">
+          <h2>Dev insights</h2>
+          <p class="muted small">Your engineering activity as currency — from the live graph (webhooks + commit poller). UTC clocks.</p>
+          <div class="actions">
+            <button type="button" id="btn-insights-refresh" class="primary">Refresh insights</button>
+          </div>
+          <p id="insights-msg" class="muted small"></p>
+        </div>
+        <div class="grid3">
+          <div class="stat card">
+            <div class="stat-label">Commit nodes</div>
+            <div class="stat-value" id="ins-commits">—</div>
+          </div>
+          <div class="stat card">
+            <div class="stat-label">Authored edges</div>
+            <div class="stat-value" id="ins-authored">—</div>
+          </div>
+          <div class="stat card">
+            <div class="stat-label">Peak hour (UTC)</div>
+            <div class="stat-value" id="ins-peak">—</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>When you are most active</h2>
+          <p id="ins-insight" class="muted"></p>
+          <pre id="ins-hours" class="box" style="white-space:pre-wrap;font-size:12px;"></pre>
+        </div>
+        <div class="card">
+          <h2>By author</h2>
+          <ul id="ins-authors" class="item-list"></ul>
+        </div>
+        <div class="card">
+          <h2>By day</h2>
+          <pre id="ins-days" class="box" style="white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto;"></pre>
+        </div>
+        <div class="card">
+          <h2>Recent commits on graph</h2>
+          <ul id="ins-recent" class="item-list"></ul>
         </div>
       </section>
 

@@ -53,6 +53,25 @@ RAW_MAP = os.environ.get("SLACK_USER_MAP", "")
 # How often to refresh multi-person map from twin-api team admin (M6).
 TEAM_MAP_REFRESH = float(os.environ.get("TEAM_MAP_REFRESH_SECS", "60"))
 
+# Commit currency: poll GitHub API so CLI/Actions/UI pushes map even if webhooks drop.
+GITHUB_TOKEN = (
+    os.environ.get("GITHUB_TOKEN")
+    or os.environ.get("GH_TOKEN")
+    or os.environ.get("GITHUB_PAT")
+    or ""
+).strip()
+GITHUB_REPOS = [
+    r.strip()
+    for r in os.environ.get("GITHUB_REPOS", os.environ.get("GITHUB_REPO", "neeljoshi18/AI-Manager")).split(",")
+    if r.strip()
+]
+COMMIT_POLL_SECS = float(os.environ.get("COMMIT_POLL_SECS", "120"))
+COMMIT_POLL_PAGES = int(os.environ.get("COMMIT_POLL_PAGES", "3"))  # 3*100 = 300 commits
+COMMIT_SEEN_FILE = os.environ.get(
+    "COMMIT_SEEN_FILE", f"/var/lib/ai-manager/bridge_commits_seen_{TENANT}.txt"
+)
+_LAST_COMMIT_POLL = 0.0
+
 
 def parse_slack_map(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -415,7 +434,184 @@ def tick_limits() -> tuple[int, float, int, float]:
     return MAX_PER_TICK, POLL, NORMAL_EVENT_LIMIT, PROJECT_PAUSE
 
 
+
+def gh_get(url: str, timeout: float = 30):
+    """GitHub REST GET with optional token (private repos need token)."""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "ai-manager-bridge",
+    }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def load_commit_seen() -> set[str]:
+    if not os.path.exists(COMMIT_SEEN_FILE):
+        os.makedirs(os.path.dirname(COMMIT_SEEN_FILE) or ".", exist_ok=True)
+        open(COMMIT_SEEN_FILE, "a").close()
+        return set()
+    return {ln.strip() for ln in open(COMMIT_SEEN_FILE) if ln.strip()}
+
+
+def mark_commit_seen(sha: str, seen: set[str]) -> None:
+    with open(COMMIT_SEEN_FILE, "a") as f:
+        f.write(sha + "\n")
+    seen.add(sha)
+
+
+def seed_actor_gu(login: str, gh_id: str) -> tuple[str, str, str]:
+    """Return (global_user_id, provider_user_id, display_name) preferring stable V1 gu_*."""
+    login = (login or "").strip()
+    gh_id = str(gh_id or "").strip()
+    provider = gh_id or login or "unknown"
+    display = login or provider
+    gu = ""
+    if not login and not gh_id:
+        return ("", provider, display)
+    try:
+        body = {
+            "provider_user_id": provider,
+            "display_name": display,
+            "groups": ["grp_eng", "grp_default"],
+        }
+        # Prefer numeric id as provider key when available (stable)
+        if gh_id:
+            body["provider_user_id"] = gh_id
+        out = post(f"{V1}/v1/tenants/{TENANT}/users", body, timeout=8)
+        gu = str(out.get("global_user_id") or "")
+    except Exception as e:
+        print(f"seed actor warn login={login}: {e}", flush=True)
+    return (gu, provider, display)
+
+
+def synthetic_push_event(
+    repo: str,
+    sha: str,
+    message: str,
+    login: str,
+    gh_id: str,
+    ts_iso: str,
+    gu: str,
+) -> dict:
+    """V1-shaped push event for V2 map_push (commits array)."""
+    eid = f"poll:commit:{repo}:{sha}"
+    return {
+        "event_id": eid,
+        "tenant_id": TENANT,
+        "provider": "github",
+        "category": "code",
+        "event_type": "push",
+        "event_timestamp": ts_iso,
+        "ingested_at": ts_iso,
+        "actor": {
+            "global_user_id": gu,
+            "provider_user_id": gh_id or login,
+            "email": "",
+            "display_name": login or gh_id,
+        },
+        "acl": {
+            "tenant_id": TENANT,
+            "allowed_group_ids": ["grp_eng", "grp_default"],
+            "is_private": True,
+            "acl_version": 1,
+        },
+        "resource_id": f"{repo}/ref/refs/heads/main",
+        "parent_resource_id": repo,
+        "attributes": {
+            "ref": "refs/heads/main",
+            "commit_count": 1,
+            "commits": [{"id": sha, "message": message[:500], "author": {"username": login}}],
+            "source": "commit_poller",
+        },
+        "raw_payload_s3_uri": "",
+        "event_sequence_number": 0,
+    }
+
+
+def poll_github_commits(seen_events: set[str]) -> int:
+    """Map recent repo commits into V2 even when webhooks/V1 miss CLI/Actions pushes."""
+    global _LAST_COMMIT_POLL
+    now = time.time()
+    if (now - _LAST_COMMIT_POLL) < COMMIT_POLL_SECS:
+        return 0
+    _LAST_COMMIT_POLL = now
+    if not v2_healthy():
+        return 0
+    commit_seen = load_commit_seen()
+    projected = 0
+    for repo in GITHUB_REPOS:
+        for page in range(1, COMMIT_POLL_PAGES + 1):
+            url = (
+                f"https://api.github.com/repos/{repo}/commits"
+                f"?per_page=100&page={page}"
+            )
+            try:
+                commits = gh_get(url, timeout=45)
+            except Exception as e:
+                print(f"commit poll fail {repo} p{page}: {e}", flush=True)
+                break
+            if not isinstance(commits, list) or not commits:
+                break
+            for c in commits:
+                sha = str(c.get("sha") or "")
+                if not sha or sha in commit_seen:
+                    continue
+                commit = c.get("commit") or {}
+                message = str((commit.get("message") or "")).split("\n")[0]
+                author = c.get("author") or {}
+                # author can be null for some bots
+                login = str(author.get("login") or "")
+                gh_id = str(author.get("id") or "")
+                if not login:
+                    # fallback to git author name
+                    login = str((commit.get("author") or {}).get("name") or "unknown")
+                ts = str(
+                    (commit.get("author") or {}).get("date")
+                    or (commit.get("committer") or {}).get("date")
+                    or ""
+                )
+                if not ts:
+                    continue
+                gu, provider, display = seed_actor_gu(login, gh_id)
+                if not gu:
+                    # still project with provider id so graph is not empty
+                    gu = ""
+                ev = synthetic_push_event(repo, sha, message, login or display, provider, ts, gu)
+                try:
+                    if not v2_healthy():
+                        break
+                    # avoid double-project if same event already in seen from webhook path
+                    if ev["event_id"] in seen_events:
+                        mark_commit_seen(sha, commit_seen)
+                        continue
+                    project_event(ev)
+                    mark_seen(ev["event_id"], seen_events)
+                    mark_commit_seen(sha, commit_seen)
+                    projected += 1
+                    if projected >= max(MAX_PER_TICK * 4, 12):
+                        print(f"commit poll projected {projected} (cap this tick)", flush=True)
+                        return projected
+                except Exception as e:
+                    print(f"commit project fail {sha[:7]}: {e}", flush=True)
+                    note_v2_down()
+                    return projected
+            if len(commits) < 100:
+                break
+    if projected:
+        print(f"commit poll projected {projected} commits from GitHub API", flush=True)
+    else:
+        print("commit poll: no new commits", flush=True)
+    return projected
+
+
 def main() -> None:
+    print(
+        f"commit poller repos={GITHUB_REPOS} token_set={bool(GITHUB_TOKEN)} interval={COMMIT_POLL_SECS}s",
+        flush=True,
+    )
     print(
         f"bridge start tenant={TENANT} poll={POLL}s v1={V1} v2={V2} twin={TWIN} "
         f"slack_map={len(SLACK_MAP)} default_slack={'set' if DEFAULT_SLACK else 'none'} "
@@ -466,6 +662,12 @@ def main() -> None:
             except Exception as e:
                 print(f"reader seed warn: {e}", flush=True)
             refresh_team_map()
+
+            # Data currency: always try GitHub commit poller (webhook may drop)
+            try:
+                poll_github_commits(seen)
+            except Exception as e:
+                print(f"commit poll loop warn: {e}", flush=True)
 
             data = get(
                 f"{V1}/v1/tenants/{TENANT}/events?user_id={reader}&limit={event_limit}",

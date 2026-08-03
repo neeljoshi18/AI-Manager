@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, Timelike, Utc};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
@@ -507,6 +507,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v3/tenants/{tenant_id}/pulse", get(get_pulse))
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
         .route("/v3/tenants/{tenant_id}/graph", get(get_graph_snapshot))
+        .route(
+            "/v3/tenants/{tenant_id}/insights/dev",
+            get(dev_insights),
+        )
         .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}/compile",
             post(compile_twin),
@@ -2538,6 +2542,192 @@ struct GraphSnapshotQ {
     /// Pass-through to V2; default hide intent_demo seed (alice/bob).
     include_demo: Option<bool>,
 }
+
+
+/// Dev insights: activity heat from the live graph (data is currency).
+async fn dev_insights(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
+    // Ensure membership then snapshot as bridge_reader
+    let _ = client
+        .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+        .json(&json!({
+            "global_user_id": "bridge_reader",
+            "groups": ["grp_eng", "grp_default"],
+        }))
+        .send()
+        .await;
+    let url = format!(
+        "{v2}/v2/tenants/{tenant_id}/snapshot?user_id=bridge_reader&node_limit=800&edge_limit=2000&include_demo=false"
+    );
+    let snap: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?
+        .error_for_status()
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?
+        .json()
+        .await
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
+
+    let nodes = snap.get("nodes").and_then(|n| n.as_array()).cloned().unwrap_or_default();
+    let edges = snap.get("edges").and_then(|n| n.as_array()).cloned().unwrap_or_default();
+
+    let mut by_type: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut commits: Vec<serde_json::Value> = Vec::new();
+    let mut people: Vec<String> = Vec::new();
+    for n in &nodes {
+        let ty = n.get("type").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+        *by_type.entry(ty.clone()).or_insert(0) += 1;
+        if ty == "Commit" {
+            commits.push(n.clone());
+        }
+        if ty == "Person" {
+            if let Some(lab) = n.get("label").and_then(|x| x.as_str()) {
+                people.push(lab.to_string());
+            }
+        }
+    }
+
+    // Hour-of-day / day-of-week from edge valid_from (activity currency)
+    let mut hour_hist = vec![0u64; 24];
+    let mut dow_hist = vec![0u64; 7]; // Mon=0
+    let mut by_day: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut authored_by: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut push_count = 0u64;
+    let mut authored_count = 0u64;
+
+    // Map person id -> label
+    let mut person_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for n in &nodes {
+        if n.get("type").and_then(|x| x.as_str()) == Some("Person") {
+            if let (Some(id), Some(lab)) = (
+                n.get("id").and_then(|x| x.as_str()),
+                n.get("label").and_then(|x| x.as_str()),
+            ) {
+                person_label.insert(id.to_string(), lab.to_string());
+            }
+        }
+    }
+
+    for e in &edges {
+        let et = e.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if et == "AUTHORED" {
+            authored_count += 1;
+            let from = e.get("from").and_then(|x| x.as_str()).unwrap_or("");
+            let who = person_label.get(from).cloned().unwrap_or_else(|| from.to_string());
+            *authored_by.entry(who).or_insert(0) += 1;
+        }
+        if et == "PUSHED_TO" {
+            push_count += 1;
+        }
+        if let Some(vf) = e.get("valid_from").and_then(|x| x.as_str()) {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(vf) {
+                let utc = dt.with_timezone(&chrono::Utc);
+                hour_hist[utc.hour() as usize] += 1;
+                // chrono weekday Mon=0..Sun=6 matches our array
+                dow_hist[utc.weekday().num_days_from_monday() as usize] += 1;
+                let day = utc.format("%Y-%m-%d").to_string();
+                *by_day.entry(day).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Peak hour
+    let (peak_hour, peak_hour_n) = hour_hist
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, n)| *n)
+        .map(|(h, n)| (h, *n))
+        .unwrap_or((0, 0));
+    let dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let (peak_dow_i, peak_dow_n) = dow_hist
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, n)| *n)
+        .map(|(i, n)| (i, *n))
+        .unwrap_or((0, 0));
+
+    // Recent commits sample (from node labels + messages if present)
+    let recent_commits: Vec<serde_json::Value> = commits
+        .iter()
+        .take(40)
+        .map(|n| {
+            json!({
+                "id": n.get("id"),
+                "sha7": n.get("label"),
+                "message": n.get("title").or_else(|| n.get("label")),
+                "resource_id": n.get("resource_id"),
+            })
+        })
+        .collect();
+
+    // Team digest content signals
+    let twins = st.store.list_twins(&tenant_id).await.unwrap_or_default();
+    let mut content_people = 0usize;
+    let mut person_twins = 0usize;
+    for tw in twins.iter().filter(|t| t.enabled && t.twin_kind == TwinKind::Person) {
+        person_twins += 1;
+        if let Ok(drafts) = st.store.list_drafts_for_twin(&tenant_id, &tw.twin_id).await {
+            if drafts.iter().any(|d| {
+                !d.draft_text.contains("nothing invented")
+                    && d.draft_text.lines().any(|l| l.trim_start().starts_with('•'))
+            }) {
+                content_people += 1;
+            }
+        }
+    }
+
+    let hour_labels: Vec<String> = (0..24).map(|h| format!("{h:02}:00")).collect();
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "as_of": Utc::now().to_rfc3339(),
+        "doctrine": "data_is_currency",
+        "graph": {
+            "nodes": nodes.len(),
+            "edges": edges.len(),
+            "by_type": by_type,
+            "people": people,
+            "commit_nodes": commits.len(),
+        },
+        "activity": {
+            "authored_edges": authored_count,
+            "push_edges": push_count,
+            "by_author": authored_by,
+            "by_day": by_day,
+            "hour_of_day_utc": {
+                "labels": hour_labels,
+                "counts": hour_hist,
+                "peak_hour_utc": peak_hour,
+                "peak_count": peak_hour_n,
+            },
+            "day_of_week_utc": {
+                "labels": dow_names,
+                "counts": dow_hist,
+                "peak_day": dow_names[peak_dow_i],
+                "peak_count": peak_dow_n,
+            },
+            "insight": format!(
+                "Most active hour (UTC): {:02}:00 ({} events). Peak day: {} ({}).",
+                peak_hour, peak_hour_n, dow_names[peak_dow_i], peak_dow_n
+            ),
+        },
+        "digests": {
+            "person_twins": person_twins,
+            "people_with_content": content_people,
+        },
+        "recent_commits": recent_commits,
+        "note": "Stats derived from ACL-filtered graph edges (valid_from). Commit poller + webhooks fill the graph.",
+    })))
+}
+
 
 /// Product Graph map: ACL-safe V2 snapshot + team members for multi-person view.
 async fn get_graph_snapshot(

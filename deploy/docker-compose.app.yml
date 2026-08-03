@@ -51,6 +51,8 @@ services:
     image: ai-manager-v1:local
     ports:
       - "18080:18080"
+    labels:
+      autoheal: "true"
     environment:
       HTTP_BIND: "0.0.0.0:18080"
       RUNTIME_MODE: embedded
@@ -190,6 +192,12 @@ services:
       # GitHub provider user id / login → Slack user id (comma-separated)
       # Person 1: neeljoshi18 · Person 2: paneerjeera (A2 multi-person). Team UI overlays too.
       SLACK_USER_MAP: ${SLACK_USER_MAP:-222674398:U0APK7W1X99,neeljoshi18:U0APK7W1X99,309182469:U0BLN0N7VB5,paneerjeera:U0BLN0N7VB5}
+      # Data currency: poll GitHub so CLI/Actions/UI commits map even if webhooks drop
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-${GH_TOKEN:-}}
+      GITHUB_REPOS: ${GITHUB_REPOS:-neeljoshi18/AI-Manager}
+      COMMIT_POLL_SECS: ${COMMIT_POLL_SECS:-90}
+      COMMIT_POLL_PAGES: ${COMMIT_POLL_PAGES:-5}
+      COMMIT_SEEN_FILE: /var/lib/ai-manager/bridge_commits_seen.txt
     volumes:
       - bridge_state:/var/lib/ai-manager
     depends_on:

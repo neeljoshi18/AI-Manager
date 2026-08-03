@@ -61,10 +61,14 @@ function showView(name) {
     graph: ["Graph", "Live context map — people, work, intents, edges"],
     connections: ["Connections", "Services and on-demand test status"],
     settings: ["Settings", "Cadence, metrics, product boundaries"],
+    insights: ["Dev insights", "Activity heat · commits · when you ship — data is currency"],
     lab: ["Lab", "Engineer console and raw JSON"],
   };
   if (name === "team") {
     refreshTeam();
+  }
+  if (name === "insights") {
+    refreshDevInsights();
   }
   if (name === "graph") {
     startGraphView();
@@ -1431,6 +1435,9 @@ if ($("btn-gh-app")) {
 if ($("btn-team-refresh")) {
   $("btn-team-refresh").addEventListener("click", refreshTeam);
 }
+if ($("btn-insights-refresh")) {
+  $("btn-insights-refresh").addEventListener("click", () => refreshDevInsights());
+}
 if ($("btn-team-compile")) {
   $("btn-team-compile").addEventListener("click", compileTeamDigests);
 }
@@ -1521,3 +1528,79 @@ setInterval(refreshHealth, 10000);
 setInterval(refreshOnboarding, 15000);
 setInterval(refreshPulse, 30000);
 setInterval(refreshMetrics, 20000);
+
+
+async function refreshDevInsights() {
+  const tenant =
+    $("team-tenant")?.value?.trim() ||
+    $("tenant")?.value?.trim() ||
+    "ten_github";
+  const msg = $("insights-msg");
+  if (msg) msg.textContent = "Loading…";
+  try {
+    const d = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/insights/dev`
+    );
+    const act = d.activity || {};
+    const g = d.graph || {};
+    if ($("ins-commits")) $("ins-commits").textContent = String(g.commit_nodes ?? "—");
+    if ($("ins-authored")) $("ins-authored").textContent = String(act.authored_edges ?? "—");
+    const hod = act.hour_of_day_utc || {};
+    if ($("ins-peak")) {
+      const h = hod.peak_hour_utc;
+      $("ins-peak").textContent =
+        h == null ? "—" : `${String(h).padStart(2, "0")}:00`;
+    }
+    if ($("ins-insight")) $("ins-insight").textContent = act.insight || "";
+    if ($("ins-hours")) {
+      const counts = hod.counts || [];
+      const labels = hod.labels || [];
+      let lines = [];
+      for (let i = 0; i < counts.length; i++) {
+        const n = counts[i] || 0;
+        const bar = "█".repeat(Math.min(40, n)) + (n ? ` ${n}` : "");
+        lines.push(`${labels[i] || i}: ${bar || "·"}`);
+      }
+      $("ins-hours").textContent = lines.join("\n");
+    }
+    if ($("ins-authors")) {
+      const by = act.by_author || {};
+      const entries = Object.entries(by).sort((a, b) => b[1] - a[1]);
+      $("ins-authors").innerHTML = entries.length
+        ? entries
+            .map(
+              ([k, v]) =>
+                `<li><strong>${esc(k)}</strong> — ${v} authored</li>`
+            )
+            .join("")
+        : `<li class="muted">No AUTHORED edges yet — wait for commit poller / webhooks.</li>`;
+    }
+    if ($("ins-days")) {
+      const by = act.by_day || {};
+      const lines = Object.entries(by)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([d, n]) => `${d}: ${"█".repeat(Math.min(30, n))} ${n}`);
+      $("ins-days").textContent = lines.join("\n") || "No day activity yet.";
+    }
+    if ($("ins-recent")) {
+      const rec = d.recent_commits || [];
+      $("ins-recent").innerHTML = rec.length
+        ? rec
+            .map(
+              (c) =>
+                `<li><code>${esc(c.sha7 || c.resource_id || "?")}</code> ${esc(
+                  (c.message || "").toString().slice(0, 80)
+                )}</li>`
+            )
+            .join("")
+        : `<li class="muted">No commit nodes on graph yet.</li>`;
+    }
+    if (msg) {
+      msg.textContent = `Graph ${g.nodes || 0} nodes · ${g.edges || 0} edges · digests content ${
+        (d.digests && d.digests.people_with_content) || 0
+      }/${(d.digests && d.digests.person_twins) || 0}`;
+    }
+  } catch (e) {
+    if (msg) msg.textContent = "Insights failed: " + (e.message || e);
+  }
+}

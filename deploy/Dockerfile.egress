@@ -1,28 +1,25 @@
-# Build:
-#   docker build -f deploy/Dockerfile.egress -t ai-manager-egress ./vertical-security
+# Build: docker build -f deploy/Dockerfile.egress -t ai-manager-egress ./vertical-security
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY config ./config
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=cargo-reg-egress,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-egress,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=target-egress,sharing=locked,target=/src/target \
     cargo build --release --locked \
-    && cp /src/target/release/egress-proxy /src/egress-proxy
+    && cp /src/target/release/egress-proxy /src/egress-proxy.bin
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=build /src/egress-proxy /app/egress-proxy
+COPY --from=build /src/egress-proxy.bin /app/egress-proxy
 COPY --from=build /src/config /app/config
 COPY secrets/dev_secrets.example.json /app/secrets/dev_secrets.example.json
-
 ENV EGRESS_BIND=0.0.0.0:18090
 ENV TOOL_REGISTRY=/app/config/tool_registry.yaml
 ENV SECRETS_FILE=/app/secrets/dev_secrets.json
-
 EXPOSE 18090
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
   CMD curl -sf http://127.0.0.1:18090/healthz || exit 1

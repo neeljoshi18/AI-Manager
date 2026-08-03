@@ -1,20 +1,19 @@
-# Build:
-#   docker build -f deploy/Dockerfile.v2-graph-api -t ai-manager-v2 ./vertical-2
+# Build: docker build -f deploy/Dockerfile.v2-graph-api -t ai-manager-v2 ./vertical-2
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=cargo-reg-v2,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-v2,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=target-v2,sharing=locked,target=/src/target \
     cargo build --release -p graph-api \
-    && cp /src/target/release/graph-api /src/graph-api
+    && cp /src/target/release/graph-api /src/graph-api.bin
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=build /src/graph-api /app/graph-api
+COPY --from=build /src/graph-api.bin /app/graph-api
 ENV HTTP_BIND=0.0.0.0:18082
 ENV RUNTIME_MODE=embedded
 EXPOSE 18082

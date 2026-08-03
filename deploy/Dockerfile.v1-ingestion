@@ -1,6 +1,4 @@
-# Build from monorepo root or with context=vertical-1:
-#   docker build -f deploy/Dockerfile.v1-ingestion -t ai-manager-v1 ./vertical-1
-# Cargo registry/target cached via BuildKit — subsequent builds are minutes not 20m.
+# Build: docker build -f deploy/Dockerfile.v1-ingestion -t ai-manager-v1 ./vertical-1
 FROM rust:1-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
@@ -8,17 +6,18 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY proto ./proto
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+# Per-service cache IDs + locked sharing avoid parallel compose cargo races.
+RUN --mount=type=cache,id=cargo-reg-v1,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-v1,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=target-v1,sharing=locked,target=/src/target \
     cargo build --release -p telemetry-ingestion \
-    && cp /src/target/release/telemetry-ingestion /src/telemetry-ingestion
+    && cp /src/target/release/telemetry-ingestion /src/telemetry-ingestion.bin
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=build /src/telemetry-ingestion /app/telemetry-ingestion
+COPY --from=build /src/telemetry-ingestion.bin /app/telemetry-ingestion
 ENV HTTP_BIND=0.0.0.0:18080
 ENV RUNTIME_MODE=embedded
 ENV SKIP_AUTH=true

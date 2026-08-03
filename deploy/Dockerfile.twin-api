@@ -1,22 +1,21 @@
-# Build from monorepo root:
-#   docker build -f deploy/Dockerfile.twin-api -t ai-manager-twin-api ./vertical-3
+# Build: docker build -f deploy/Dockerfile.twin-api -t ai-manager-twin-api ./vertical-3
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY app-static ./app-static
 COPY demo-static ./demo-static
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=cargo-reg-twin,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-twin,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=target-twin,sharing=locked,target=/src/target \
     cargo build --release -p twin-api \
-    && cp /src/target/release/twin-api /src/twin-api
+    && cp /src/target/release/twin-api /src/twin-api.bin
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=build /src/twin-api /app/twin-api
+COPY --from=build /src/twin-api.bin /app/twin-api
 COPY --from=build /src/app-static /app/app-static
 COPY --from=build /src/demo-static /app/demo-static
 ENV BIND_ADDR=0.0.0.0:18083

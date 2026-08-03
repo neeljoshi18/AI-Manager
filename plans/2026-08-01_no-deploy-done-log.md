@@ -69,3 +69,15 @@ When founder says **deployed**: run handoff smoke + `GET /v3/tenants/ten_github/
 | sshd :2222 | Not set (sudo password on droplet) — Actions is the campus path |
 
 Campus forever: `git push origin main` → GitHub Actions Deploy staging.
+
+## 2026-08-03 durability confirm (live)
+
+| Check | Result |
+|-------|--------|
+| Actions deploy `30783635161` | **success** |
+| V2 load on boot | `loaded embedded V2 graph snapshot nodes=14 edges=17` |
+| `v2_graph.json` | **13611 bytes** on volume |
+| `v2_membership.json` | **517 bytes** after ensure_users |
+| Graph after full rebuild | **nodes still present** (not wiped) |
+| Digests | neeljoshi18 **4 items**; paneerjeera empty (no edges) |
+| Fast deploy path | `deploy_fast.sh` + BuildKit caches + sequential Actions builds |

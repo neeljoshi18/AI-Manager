@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css" />
+  <link rel="stylesheet" href="/app/styles.css?v=20260804b" />
+  <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
   <div class="shell">
@@ -44,6 +45,10 @@
 
       <!-- TODAY -->
       <section id="view-today" class="view">
+        <div class="card" style="margin-bottom:0.75rem;">
+          <div class="meta-row" id="today-readiness"><span class="pill mid">checking readiness…</span></div>
+          <p class="muted small" style="margin:0.4rem 0 0;">Demo path: <strong>Today</strong> digests → click person → <strong>My status</strong> (Approve / Don't send) → <strong>Graph</strong> → Settings metrics.</p>
+        </div>
         <div class="grid3">
           <div class="stat card">
             <div class="stat-label">Stack</div>
@@ -71,16 +76,17 @@
         </div>
         <div class="card">
           <h2>Team blockers &amp; conflicts</h2>
-          <p class="muted small">Rules v0 — dual owners, BLOCKS, SHIP vs FREEZE. Human-gated; not auto-resolved. Empty after redeploy until real PRs or seed.</p>
-          <div class="actions" style="margin-bottom:0.5rem;">
-            <button type="button" id="btn-seed-intent" class="ghost">Load intent demo (SHIP vs FREEZE)</button>
+          <p class="muted small">Rules v0 — dual owners, BLOCKS, SHIP vs FREEZE. Human-gated; not auto-resolved. Prefer real-team story over alice/bob demo.</p>
+          <div class="actions actions-inline" style="margin-bottom:0.5rem;">
+            <button type="button" id="btn-seed-story" class="primary">Enrich real-team story</button>
+            <button type="button" id="btn-seed-intent" class="ghost">Lab: alice/bob intent demo</button>
           </div>
           <p class="muted small" id="seed-intent-msg"></p>
           <div id="today-conflicts" class="empty-hint">Loading pulse…</div>
         </div>
         <div class="card">
           <h2>Team digests</h2>
-          <p class="muted small">Latest draft per mapped person (multi-person board). Empty = no DM.</p>
+          <p class="muted small">Latest draft per mapped person. <strong>Click a name</strong> to open Approve / Don't send.</p>
           <div id="today-team-digests" class="empty-hint">Loading team digests…</div>
         </div>
         <div class="card">
@@ -284,9 +290,9 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <div class="card">
             <h2>Send test status</h2>
             <p class="muted small">On-demand (one DM). Live GitHub ingests without spamming Slack.</p>
-            <label>Tenant <input id="tenant" value="ten_demo" /></label>
-            <label>Person id <input id="user" value="gu_alice" /></label>
-            <label>Display name <input id="name" value="Alice" /></label>
+            <label>Tenant <input id="tenant" value="ten_github" /></label>
+            <label>Person id <input id="user" value="gu_ec3cab86-2a3c-4737-bb04-d1f2deeae9f8" /></label>
+            <label>Display name <input id="name" value="neeljoshi18" /></label>
             <label>Slack user ID <input id="slack_user" value="U0APK7W1X99" /></label>
             <label>Team channel <input id="channel" value="C0APN754MQV" /></label>
             <button id="btn-sim" class="primary">Send test status DM</button>
@@ -356,6 +362,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js"></script>
+  <script src="/app/app.js?v=20260804b"></script>
 </body>
 </html>

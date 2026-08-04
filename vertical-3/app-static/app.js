@@ -1,12 +1,35 @@
 const $ = (id) => document.getElementById(id);
 
+/** Single product tenant for pilot sales path (not lab ten_demo). */
+const PILOT_TENANT = "ten_github";
+
 let state = {
-  tenant: "ten_demo",
+  tenant: PILOT_TENANT,
   draftId: null,
   ledgerId: null,
   latest: null,
   status: null,
 };
+
+function activeTenant() {
+  return (
+    $("team-tenant")?.value?.trim() ||
+    $("graph-tenant")?.value?.trim() ||
+    $("tenant")?.value?.trim() ||
+    state.tenant ||
+    PILOT_TENANT
+  );
+}
+
+/** Keep tenant fields in sync so Graph / Team / Status don't diverge mid-call. */
+function syncTenantFields(t) {
+  const v = (t || activeTenant()).trim() || PILOT_TENANT;
+  state.tenant = v;
+  for (const id of ["tenant", "team-tenant", "graph-tenant"]) {
+    if ($(id) && $(id).value !== v) $(id).value = v;
+  }
+  return v;
+}
 
 async function jfetch(url, opts) {
   const res = await fetch(url, {
@@ -48,6 +71,8 @@ function fmtAge(secs) {
 }
 
 function showView(name) {
+  document.body.classList.toggle("view-graph-active", name === "graph");
+  // (rest of showView continues below — keep existing body)
   document.querySelectorAll(".view").forEach((el) => el.classList.add("hidden"));
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
   const view = $(`view-${name}`);
@@ -69,6 +94,13 @@ function showView(name) {
   }
   if (name === "insights") {
     refreshDevInsights();
+  }
+  if (name === "status") {
+    loadLatest();
+  }
+  if (name === "today") {
+    refreshPulse();
+    refreshReadiness();
   }
   if (name === "graph") {
     startGraphView();
@@ -255,14 +287,93 @@ function renderLatest(payload) {
   if ($("lab-raw")) $("lab-raw").textContent = JSON.stringify(payload, null, 2);
 }
 
-async function loadLatest() {
-  const tenant = $("tenant")?.value?.trim() || "ten_demo";
+/** Load real pilot draft (team digests) — not lab simulate cache. */
+async function openDraftById(tenant, draftId, ledgerId) {
+  const t = syncTenantFields(tenant || activeTenant());
+  if (!draftId) return false;
   try {
-    const payload = await jfetch(`/v3/demo/latest?tenant_id=${encodeURIComponent(tenant)}`);
+    const draft = await jfetch(
+      `/v3/tenants/${encodeURIComponent(t)}/drafts/${encodeURIComponent(draftId)}`
+    );
+    let ledger = null;
+    const lid = ledgerId || draft.ledger_id;
+    if (lid) {
+      try {
+        ledger = await jfetch(
+          `/v3/tenants/${encodeURIComponent(t)}/ledgers/${encodeURIComponent(lid)}`
+        );
+      } catch (_) {
+        /* ledger optional */
+      }
+    }
+    // Normalize shapes (API may return ledger nested or as ledger field)
+    const ledgerBody = ledger?.ledger || ledger || {};
+    const payload = {
+      draft: draft.draft || draft,
+      ledger_id: lid || draft.ledger_id || null,
+      ledger: ledgerBody,
+      confidence_rollup:
+        ledgerBody.confidence_rollup ||
+        draft.confidence_rollup ||
+        ledger?.confidence_rollup ||
+        "?",
+    };
+    // Ensure draft_id
+    if (payload.draft && !payload.draft.draft_id) {
+      payload.draft.draft_id = draftId;
+    }
     renderLatest(payload);
-  } catch {
-    /* no snapshot yet */
+    return true;
+  } catch (e) {
+    console.warn("openDraftById", e);
+    return false;
   }
+}
+
+async function loadLatest() {
+  const tenant = syncTenantFields(activeTenant());
+  // 1) Prefer real team member drafts with content
+  try {
+    const team = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`);
+    const members = team.members || [];
+    const withContent = members.find(
+      (m) => m.last_digest?.has_content && m.last_digest?.draft_id
+    );
+    const anyDraft = members.find((m) => m.last_digest?.draft_id);
+    const pick = withContent || anyDraft;
+    if (pick?.last_digest?.draft_id) {
+      const ok = await openDraftById(
+        tenant,
+        pick.last_digest.draft_id,
+        pick.last_digest.ledger_id
+      );
+      if (ok) return;
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  // 2) Lab simulate cache (same tenant only)
+  try {
+    const payload = await jfetch(
+      `/v3/demo/latest?tenant_id=${encodeURIComponent(tenant)}`
+    );
+    if (payload?.draft?.draft_id) {
+      renderLatest(payload);
+      return;
+    }
+  } catch {
+    /* no snapshot */
+  }
+  // Empty state for sales path
+  if ($("st-text")) {
+    $("st-text").textContent =
+      "No draft yet for this tenant. Open Team → Compile all digests, or click a person on Today.";
+  }
+  if ($("st-items")) {
+    $("st-items").innerHTML =
+      "<li class='muted'>Compile team digests, then open a person here to Approve / Edit / Don't send.</li>";
+  }
+  state.draftId = null;
 }
 
 async function simulate() {
@@ -270,11 +381,11 @@ async function simulate() {
   $("btn-sim").textContent = "Sending…";
   try {
     const body = {
-      tenant_id: $("tenant").value.trim() || "ten_demo",
-      global_user_id: $("user").value.trim() || "gu_alice",
-      display_name: $("name").value.trim() || "Alice",
-      slack_user_id: $("slack_user").value.trim() || "U_DEMO",
-      channel_id: $("channel").value.trim() || "C_DEMO",
+      tenant_id: syncTenantFields($("tenant")?.value || PILOT_TENANT),
+      global_user_id: $("user").value.trim() || "gu_ec3cab86-2a3c-4737-bb04-d1f2deeae9f8",
+      display_name: $("name").value.trim() || "neeljoshi18",
+      slack_user_id: $("slack_user").value.trim() || "U0APK7W1X99",
+      channel_id: $("channel").value.trim() || "C0APN754MQV",
       skip_shadow: true,
       pr_title: "Product UI test status",
     };
@@ -294,7 +405,7 @@ async function simulate() {
 
 async function act(kind) {
   if (!state.draftId) {
-    alert("No draft yet — send a test status first");
+    alert("No draft yet — open a person from Today/Team digests, or Compile all digests first");
     return;
   }
   const base = `/v3/tenants/${encodeURIComponent(state.tenant)}/drafts/${encodeURIComponent(state.draftId)}`;
@@ -306,9 +417,33 @@ async function act(kind) {
     } else {
       await jfetch(base + "/" + kind, { method: "POST", body: "{}" });
     }
-    await loadLatest();
+    // Reload same draft after action
+    await openDraftById(state.tenant, state.draftId, state.ledgerId);
   } catch (e) {
     alert(kind + " failed: " + (e.message || e));
+  }
+}
+
+async function refreshReadiness() {
+  const el = $("today-readiness");
+  if (!el) return;
+  const tenant = syncTenantFields(activeTenant());
+  try {
+    const r = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/pilot_readiness`
+    );
+    const soft = r.soft_outreach_ready === true;
+    const multi = r.multi_person_ready === true;
+    const content = r.content_people ?? 0;
+    const a2 = r.checklist?.A2_multi_person_digests?.ok;
+    el.innerHTML = [
+      `<span class="pill ${soft || a2 ? "up" : "mid"}">sales: ${soft || a2 ? "ready" : "solo ok"}</span>`,
+      `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "yes" : "no"}</span>`,
+      `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">digests with content: ${content}</span>`,
+      `<span class="pill mid">${esc(r.note || "").slice(0, 80)}</span>`,
+    ].join(" ");
+  } catch (e) {
+    el.innerHTML = `<span class="pill mid">readiness: ${esc(e.message || "n/a")}</span>`;
   }
 }
 
@@ -385,10 +520,7 @@ function esc(s) {
 async function refreshTeamDigestsToday() {
   const el = $("today-team-digests");
   if (!el) return;
-  const tenant =
-    $("team-tenant")?.value?.trim() ||
-    $("tenant")?.value?.trim() ||
-    "ten_github";
+  const tenant = syncTenantFields(activeTenant());
   try {
     const team = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`);
     const members = team.members || [];
@@ -399,6 +531,7 @@ async function refreshTeamDigestsToday() {
     el.innerHTML =
       `<div class="meta-row" style="margin-bottom:0.5rem;">` +
       `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2"}</span>` +
+      `<span class="muted small" style="margin-left:0.5rem;">Click a person → My status (Approve / Don't send)</span>` +
       `</div><ul class="item-list">` +
       members
         .map((m) => {
@@ -417,10 +550,25 @@ async function refreshTeamDigestsToday() {
                     : "draft";
             dig = `<strong>${esc(d.status_label || d.status)}</strong> · ${content} · ${d.dm_sent ? "DM sent" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`;
           }
-          return `<li><strong>${esc(m.display_name || m.subject_id)}</strong> — ${dig}</li>`;
+          const did = d?.draft_id || "";
+          const lid = d?.ledger_id || "";
+          return `<li><button type="button" class="ghost graph-filter-btn dig-open" data-draft="${esc(did)}" data-ledger="${esc(lid)}" data-name="${esc(m.display_name || m.subject_id)}"><strong>${esc(m.display_name || m.subject_id)}</strong></button> — ${dig}</li>`;
         })
         .join("") +
       `</ul>`;
+    el.querySelectorAll(".dig-open").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const did = btn.getAttribute("data-draft");
+        const lid = btn.getAttribute("data-ledger");
+        if (!did) {
+          alert("No draft yet — Team → Compile all digests first");
+          return;
+        }
+        const ok = await openDraftById(tenant, did, lid);
+        if (ok) showView("status");
+        else alert("Could not open draft");
+      });
+    });
   } catch (e) {
     el.innerHTML = `<p class="muted">Team digests unavailable: ${esc(e.message || e)}</p>`;
   }
@@ -907,29 +1055,9 @@ async function refreshGraph(forceLayout) {
   }
 }
 
-async function maybeAutoEnrichGraph(data) {
-  if (graphState.storyTried) return;
-  const by = data.by_type || {};
-  const hasStory =
-    (by.Intent || 0) > 0 ||
-    (by.PullRequest || 0) > 0 ||
-    (data.nodes || []).some((n) => {
-      const t = normalizeType(n.type);
-      return t === "Intent" || t === "PullRequest";
-    });
-  // Only auto when hide-demo is on (product map) and story is thin
-  if (hasStory) return;
-  if ($("graph-hide-demo")?.checked === false) return;
-  graphState.storyTried = true;
-  try {
-    await jfetch(
-      `/v3/tenants/${encodeURIComponent(graphTenant())}/seed/graph_story`,
-      { method: "POST", body: "{}" }
-    );
-    await refreshGraph(true);
-  } catch (_) {
-    /* optional */
-  }
+async function maybeAutoEnrichGraph(_data) {
+  // Disabled: never mutate graph mid-sales call. Use "Enrich story" explicitly.
+  return;
 }
 
 function mergeGraphData(data, forceLayout) {
@@ -1289,13 +1417,13 @@ function renderGraphChrome(data) {
       banner.classList.remove("hidden");
       banner.innerHTML = `<strong>Map is empty.</strong> ${esc(
         data.message ||
-          "After a redeploy, only durable journals refill the map. New GitHub activity re-projects within ~2 min. Pre-durability history cannot be restored."
-      )} <button type="button" class="ghost" id="btn-banner-seed-intent">Load intent demo</button>`;
+          "After a redeploy, only durable journals refill the map. New GitHub activity re-projects within ~2 min."
+      )} <button type="button" class="ghost" id="btn-banner-enrich">Enrich story</button>`;
       setTimeout(() => {
-        const b = $("btn-banner-seed-intent");
+        const b = $("btn-banner-enrich");
         if (b && !b._bound) {
           b._bound = true;
-          b.addEventListener("click", () => seedIntentDemo());
+          b.addEventListener("click", () => enrichGraphStory());
         }
       }, 0);
     } else {
@@ -1846,6 +1974,32 @@ async function seedIntentDemo() {
 if ($("btn-seed-intent")) {
   $("btn-seed-intent").addEventListener("click", seedIntentDemo);
 }
+if ($("btn-seed-story")) {
+  $("btn-seed-story").addEventListener("click", async () => {
+    const msg = $("seed-intent-msg");
+    const btn = $("btn-seed-story");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Enriching…";
+    }
+    try {
+      await enrichGraphStory();
+      if (msg) msg.textContent = "Real-team story seeded (PR + SHIP/FREEZE). Open Graph.";
+      await refreshPulse();
+      await refreshReadiness();
+    } catch (e) {
+      if (msg) msg.textContent = "Story seed failed: " + (e.message || e);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Enrich real-team story";
+      }
+    }
+  });
+}
+// Boot: pilot tenant + readiness strip
+syncTenantFields(PILOT_TENANT);
+refreshReadiness();
 if ($("btn-team-add")) {
   $("btn-team-add").addEventListener("click", addTeamMember);
 }

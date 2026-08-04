@@ -14,6 +14,10 @@
 
 	encode gzip
 
+	# Never serve stale product UI during sales demos
+	@appstatic path /app/*.js /app/*.css /app/ /app/index.html /app/*
+	header @appstatic Cache-Control "no-store, max-age=0, must-revalidate"
+
 	# GitHub / provider webhooks → V1
 	handle /v1/* {
 		reverse_proxy v1:18080

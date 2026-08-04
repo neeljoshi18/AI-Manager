@@ -256,10 +256,29 @@ button.primary, .linkbtn.primary {
   background: var(--text);
   color: #fff;
   border-color: var(--text);
-  width: 100%;
   text-align: center;
   margin-top: 14px;
   padding: 11px 14px;
+}
+/* Full-width primary only as sole CTA in a card — not graph toolbar */
+.card > button.primary:only-of-type,
+.actions > button.primary:only-child {
+  width: 100%;
+}
+.actions-inline,
+.graph-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+.actions-inline button.primary,
+.graph-toolbar-actions button.primary {
+  width: auto;
+  margin-top: 0;
+}
+body.view-graph-active .main {
+  max-width: min(1400px, 100%);
 }
 button.primary:hover, .linkbtn.primary:hover {
   background: #000;

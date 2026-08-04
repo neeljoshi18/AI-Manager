@@ -7,7 +7,7 @@
 
 ## What you are demoing
 
-> AI Manager kills standup theater. It compiles a **status ledger** from engineering activity (PRs/tickets), delivers it **privately first** in Slack, and only posts to the team channel after **veto / edit / consent**.  
+> AI Manager kills standup theater. It compiles a **status ledger** from engineering activity (PRs/tickets), delivers it **privately first** in Slack, and only posts to the team channel after **Approve / Edit / Don't send**.  
 > No enterprise search crawl. No agent sandbox OS. ACL never bypassed.
 
 ---
@@ -25,8 +25,17 @@
    - Confidence tier (Medium for open PR)
    - Evidence refs (`event:…`, `edge:…`)
    - Draft status `pending`
-5. Click **Veto** or **Publish** / **Silence timeout**
+5. Click **Don't send** or **Approve** / **Edit**
 6. Pitch line: *“Private first. Structure first. No productivity rankings.”*
+
+### Product UI path (staging, ~5 min)
+
+1. https://status.neel.world/app/ → **Today** (readiness strip green)
+2. Click a person under **Team digests** → **My status** with real draft
+3. Show **Approve / Edit / Don't send**
+4. **Graph** — people, PR, intents (Hide demo on; Enrich story if thin)
+5. **Settings** — suppress ≫ sent (anti-spam)
+6. Optional: **Dev insights** — dogfood activity heat
 
 ---
 

@@ -94,12 +94,20 @@ jobs:
           if [ "${SKIP_BUILD}" = "true" ]; then
             BUILD_FLAG=""
           fi
-          # Pass token into remote only if set (never echo value)
+          # Pass long-lived PAT into remote only if set (never echo value)
           if [ -n "${BRIDGE_GITHUB_TOKEN:-}" ]; then
-            ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
-              "grep -q '^GITHUB_TOKEN=' \$HOME/ai-manager/deploy/.env.staging 2>/dev/null \
-                && sed -i.bak 's|^GITHUB_TOKEN=.*|GITHUB_TOKEN=${BRIDGE_GITHUB_TOKEN}|' \$HOME/ai-manager/deploy/.env.staging \
-                || echo 'GITHUB_TOKEN=${BRIDGE_GITHUB_TOKEN}' >> \$HOME/ai-manager/deploy/.env.staging"
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<TOKENEOF
+          set -euo pipefail
+          ENVF="\$HOME/ai-manager/deploy/.env.staging"
+          touch "\$ENVF"
+          for KEY in GITHUB_TOKEN GITHUB_PAT BRIDGE_GITHUB_TOKEN; do
+            if grep -q "^\${KEY}=" "\$ENVF" 2>/dev/null; then
+              sed -i.bak "s|^\${KEY}=.*|\${KEY}=${BRIDGE_GITHUB_TOKEN}|" "\$ENVF"
+            else
+              echo "\${KEY}=${BRIDGE_GITHUB_TOKEN}" >> "\$ENVF"
+            fi
+          done
+          TOKENEOF
           fi
           ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<REMOTE
           set -euo pipefail
@@ -110,12 +118,20 @@ jobs:
           export COMPOSE_PARALLEL_LIMIT=1
           export DOCKER_BUILDKIT=1
           export COMPOSE_DOCKER_CLI_BUILD=1
+          # VOLUMES ARE SACRED — never prune data volumes on staging
+          if docker volume ls -q | grep -E 'ai-manager_(v1|v2|twin|bridge)_state' >/dev/null; then
+            echo "sacred volumes present (will NOT prune)"
+            docker volume ls | grep ai-manager || true
+          else
+            echo "warn: expected ai-manager_*_state volumes not all present yet"
+          fi
           # Sequential builds (one service at a time) avoid cargo/registry races on 2vCPU
           if [ -n "${BUILD_FLAG}" ]; then
             for svc in egress v1 v2 twin-api bridge; do
               echo "== build \$svc =="
               docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls build "\$svc"
             done
+            # up without -V / --renew-anon-volumes — keep named volumes
             docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls up -d
           else
             docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls up -d
@@ -130,36 +146,43 @@ jobs:
           echo
           docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging restart bridge || true
           echo
-          # Prove volumes still hold graph state after recreate
+          # Prove volumes still hold graph state after recreate (data currency)
           docker run --rm -v ai-manager_v2_state:/d alpine ls -la /d || true
           docker run --rm -v ai-manager_v1_state:/d alpine ls -la /d || true
+          docker run --rm -v ai-manager_bridge_state:/d alpine ls -la /d || true
+          docker run --rm -v ai-manager_twin_state:/d alpine ls -la /d || true
           REMOTE
 
       - name: Public health + pilot smoke
         run: |
           set -euo pipefail
-          sleep 12
+          sleep 15
           BASE=https://status.neel.world
           curl -sS --max-time 45 -o /dev/null -w "healthz http=%{http_code}\n" "$BASE/healthz"
           curl -sS --max-time 45 "$BASE/healthz" || true
           echo
-          # Product post-deploy (idempotent; empty digests ok if no GH activity)
+          # Product post-deploy (idempotent)
           for path in \
             /v3/tenants/ten_github/team/prune \
             /v3/tenants/ten_github/graph/ensure_users \
-            /v3/tenants/ten_github/seed/intent_demo
+            /v3/tenants/ten_github/seed/intent_demo \
+            /v3/tenants/ten_github/seed/dual_digests
           do
-            code=$(curl -sS --max-time 45 -o /tmp/smoke.json -w "%{http_code}" -X POST "$BASE$path" || echo fail)
+            code=$(curl -sS --max-time 60 -o /tmp/smoke.json -w "%{http_code}" -X POST "$BASE$path" || echo fail)
             echo "POST $path → $code"
+            head -c 400 /tmp/smoke.json 2>/dev/null || true
+            echo
           done
+          # Wait for bridge boot poller a bit, then compile dual digests
+          sleep 25
           curl -sS --max-time 90 -X POST "$BASE/v3/tenants/ten_github/team/compile" \
             -H 'content-type: application/json' \
-            -d '{"force_notify":false,"allow_notify":true}' | head -c 1200 || true
+            -d '{"force_notify":false,"allow_notify":true}' | head -c 2000 || true
           echo
           curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/pilot_readiness" | head -c 1500 || true
           echo
-          # Data currency: Dev insights must be live after twin-api rebuild
-          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/insights/dev" | head -c 1500 || true
+          # Data currency: Dev insights must show commit messages + heat
+          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/insights/dev" | head -c 2000 || true
           echo
-          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/graph?node_limit=30" | head -c 800 || true
+          curl -sS --max-time 30 "$BASE/v3/tenants/ten_github/graph?node_limit=30" | head -c 1000 || true
           echo

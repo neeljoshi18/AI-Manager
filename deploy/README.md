@@ -73,6 +73,21 @@ Bridge **never** posts Slack (ADR-014). Env:
 | `BRIDGE_RECOVERY_MAX_PER_TICK` | Burst project rate while graph empty (default 12) |
 | `TWIN_EMBEDDED_STATE_PATH` | twin-api: persist team map + digests across restarts |
 | `SLACK_USER_MAP` (twin-api) | Seeds multi-person Team on cold start (same format as bridge) |
+| `GITHUB_PAT` / `BRIDGE_GITHUB_TOKEN` | **Long-lived** PAT for private-repo commit poller (data currency). Prefer classic/fine-grained PAT over short-lived `gh` oauth. Actions secret `BRIDGE_GITHUB_TOKEN` is written into droplet `.env.staging` on deploy. |
+| `COMMIT_BOOT_PAGES` / `COMMIT_BOOT_CAP` | First-boot bulk backfill (default 15 pages / 80 commits) |
+
+### Volumes are sacred (data is currency)
+
+Named Docker volumes hold the pilot graph and events. **Never** run `docker volume prune` / `docker system prune -a --volumes` on staging.
+
+| Volume | Content |
+|--------|---------|
+| `ai-manager_v1_state` | V1 ACL + events journal |
+| `ai-manager_v2_state` | Graph + membership |
+| `ai-manager_twin_state` | Digests / team map |
+| `ai-manager_bridge_state` | Event seen + commit seen files |
+
+Deploy workflow lists these after every up and never passes `-V` / `--renew-anon-volumes`.
 
 Partner install: `starting-out-documents/Design Partner_ Install Runbook.md`
 

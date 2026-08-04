@@ -62,14 +62,20 @@ GitHub (source of truth)
 | Deploy from campus | Actions green without local SSH |
 | Restart stack | Graph node count does not collapse to zero (volumes) |
 
-## Follow-ups (next sessions, still on-rails)
+## Shipped follow-ups (2026-08-04)
 
-- Sort recent commits by time desc; show full message from graph attrs
+- Commit **message → title** on map_push + snapshot `message` field + Dev insights UI
+- Boot bulk poller: `COMMIT_BOOT_PAGES=15` / `COMMIT_BOOT_CAP=80`, steady pages/cap
+- Token probe at bridge boot; env prefers `GITHUB_PAT` / `BRIDGE_GITHUB_TOKEN`
+- Dual digests: `POST /v2/.../seed/team_activity` + `POST /v3/.../seed/dual_digests` for empty neighborhoods
+- Volumes sacred: deploy asserts named volumes, never prune, list all state volumes post-up
+
+## Still optional
+
 - IST offset toggle on heat (founder local)
-- Backfill beyond 5 pages on first boot
-- Paneerjeera dual digests once 2nd human has GH authored edges
 - Rate-limit / secondary rate handling for GitHub API
 - PR / issue nodes in insights (not only commits)
+- Rotate BRIDGE_GITHUB_TOKEN to a classic/fine-grained PAT that never expires with oauth
 
 ## Non-goals this arc
 

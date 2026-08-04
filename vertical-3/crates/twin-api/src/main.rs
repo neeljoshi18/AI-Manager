@@ -512,6 +512,10 @@ async fn main() -> anyhow::Result<()> {
             get(dev_insights),
         )
         .route(
+            "/v3/tenants/{tenant_id}/seed/dual_digests",
+            post(seed_dual_digests),
+        )
+        .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}/compile",
             post(compile_twin),
         )
@@ -2451,6 +2455,113 @@ async fn seed_intent_demo_proxy(
     Ok(Json(body))
 }
 
+/// Seed graph activity for every enabled person twin that has no neighborhood (dual digests).
+/// Uses real gu_* subjects — not alice/bob — so team/compile fills 2/N when GH is sparse.
+async fn seed_dual_digests(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(25))
+        .build()
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
+
+    let mut need_seed: Vec<serde_json::Value> = Vec::new();
+    let mut already_have = 0usize;
+    for t in twins
+        .iter()
+        .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
+    {
+        // Membership first
+        let _ = client
+            .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+            .json(&json!({
+                "global_user_id": t.subject_id,
+                "groups": ["grp_eng", "grp_default"],
+            }))
+            .send()
+            .await;
+        // Probe neighborhood
+        let pn = format!("person:{}", t.subject_id);
+        let nb_url = format!(
+            "{v2}/v2/tenants/{tenant_id}/neighborhood?user_id={}&node_id={}&hops=2",
+            urlencoding_subject(&t.subject_id),
+            urlencoding_subject(&pn)
+        );
+        let empty = match client.get(&nb_url).send().await {
+            Ok(r) if r.status().is_success() => {
+                let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
+                let edges = body
+                    .get("edges")
+                    .and_then(|e| e.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                edges == 0
+            }
+            _ => true,
+        };
+        if empty {
+            let provider = t
+                .config_json
+                .get("provider_aliases")
+                .and_then(|a| a.as_array())
+                .and_then(|a| a.iter().find_map(|x| x.as_str()))
+                .unwrap_or(t.display_name.as_str());
+            need_seed.push(json!({
+                "global_user_id": t.subject_id,
+                "display_name": t.display_name,
+                "provider_user_id": provider,
+            }));
+        } else {
+            already_have += 1;
+        }
+    }
+
+    let mut seed_body = json!({ "seeded": false, "subjects": [] });
+    if !need_seed.is_empty() {
+        let url = format!("{v2}/v2/tenants/{tenant_id}/seed/team_activity");
+        let res = client
+            .post(&url)
+            .json(&json!({
+                "subjects": need_seed,
+                "repo": "neeljoshi18/AI-Manager",
+                "commits_per_subject": 3,
+            }))
+            .send()
+            .await
+            .map_err(|e| ApiError::from(TwinError::Upstream(format!("v2 team seed: {e}"))))?;
+        let status = res.status();
+        seed_body = res
+            .json()
+            .await
+            .unwrap_or_else(|_| json!({ "error": "bad_json" }));
+        if !status.is_success() {
+            return Err(ApiError::from(TwinError::Upstream(format!(
+                "v2 team seed HTTP {status}: {seed_body}"
+            ))));
+        }
+    }
+
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "twins_with_edges": already_have,
+        "seeded_subjects": need_seed.len(),
+        "seed": seed_body,
+        "note": "Call team/compile after this for dual digests. Seed only fills empty neighborhoods.",
+    })))
+}
+
+fn urlencoding_subject(s: &str) -> String {
+    // Minimal encode for path/query (gu_ uuid + person: prefix)
+    s.replace(':', "%3A")
+}
+
 #[derive(Deserialize)]
 struct PulseQ {
     tenant_id: Option<String>,
@@ -2655,19 +2766,36 @@ async fn dev_insights(
         .map(|(i, n)| (i, *n))
         .unwrap_or((0, 0));
 
-    // Recent commits sample (from node labels + messages if present)
-    let recent_commits: Vec<serde_json::Value> = commits
+    // Recent commits: prefer message/title from graph properties (data currency)
+    let mut recent_commits: Vec<serde_json::Value> = commits
         .iter()
-        .take(40)
         .map(|n| {
+            let msg = n
+                .get("message")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| n.get("title").and_then(|x| x.as_str()).filter(|s| !s.is_empty()))
+                .unwrap_or("");
+            let sha7 = n
+                .get("label")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?");
             json!({
                 "id": n.get("id"),
-                "sha7": n.get("label"),
-                "message": n.get("title").or_else(|| n.get("label")),
+                "sha7": sha7,
+                "message": msg,
+                "title": msg,
                 "resource_id": n.get("resource_id"),
             })
         })
         .collect();
+    // Prefer commits that have real messages first
+    recent_commits.sort_by(|a, b| {
+        let am = a.get("message").and_then(|x| x.as_str()).unwrap_or("").len();
+        let bm = b.get("message").and_then(|x| x.as_str()).unwrap_or("").len();
+        bm.cmp(&am)
+    });
+    recent_commits.truncate(40);
 
     // Team digest content signals
     let twins = st.store.list_twins(&tenant_id).await.unwrap_or_default();

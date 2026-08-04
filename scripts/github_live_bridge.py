@@ -54,10 +54,12 @@ RAW_MAP = os.environ.get("SLACK_USER_MAP", "")
 TEAM_MAP_REFRESH = float(os.environ.get("TEAM_MAP_REFRESH_SECS", "60"))
 
 # Commit currency: poll GitHub API so CLI/Actions/UI pushes map even if webhooks drop.
+# Prefer long-lived PAT (GITHUB_PAT / BRIDGE_GITHUB_TOKEN) over short-lived Actions oauth tokens.
 GITHUB_TOKEN = (
-    os.environ.get("GITHUB_TOKEN")
+    os.environ.get("GITHUB_PAT")
+    or os.environ.get("BRIDGE_GITHUB_TOKEN")
+    or os.environ.get("GITHUB_TOKEN")
     or os.environ.get("GH_TOKEN")
-    or os.environ.get("GITHUB_PAT")
     or ""
 ).strip()
 GITHUB_REPOS = [
@@ -65,12 +67,17 @@ GITHUB_REPOS = [
     for r in os.environ.get("GITHUB_REPOS", os.environ.get("GITHUB_REPO", "neeljoshi18/AI-Manager")).split(",")
     if r.strip()
 ]
-COMMIT_POLL_SECS = float(os.environ.get("COMMIT_POLL_SECS", "120"))
-COMMIT_POLL_PAGES = int(os.environ.get("COMMIT_POLL_PAGES", "3"))  # 3*100 = 300 commits
+COMMIT_POLL_SECS = float(os.environ.get("COMMIT_POLL_SECS", "90"))
+# Steady-state pages (100 commits each). Boot uses COMMIT_BOOT_PAGES for bulk backfill.
+COMMIT_POLL_PAGES = int(os.environ.get("COMMIT_POLL_PAGES", "5"))
+COMMIT_BOOT_PAGES = int(os.environ.get("COMMIT_BOOT_PAGES", "15"))  # up to 1500 commits first bulk
+COMMIT_BOOT_CAP = int(os.environ.get("COMMIT_BOOT_CAP", "80"))  # max project per boot tick
+COMMIT_TICK_CAP = int(os.environ.get("COMMIT_TICK_CAP", "24"))  # steady tick cap
 COMMIT_SEEN_FILE = os.environ.get(
     "COMMIT_SEEN_FILE", f"/var/lib/ai-manager/bridge_commits_seen_{TENANT}.txt"
 )
 _LAST_COMMIT_POLL = 0.0
+_COMMIT_BOOT_DONE = False
 
 
 def parse_slack_map(raw: str) -> dict[str, str]:
@@ -531,19 +538,58 @@ def synthetic_push_event(
     }
 
 
-def poll_github_commits(seen_events: set[str]) -> int:
+def verify_github_token() -> dict:
+    """Probe GitHub auth; prefer long-lived PAT. Returns {ok, login, remaining, note}."""
+    out = {"ok": False, "login": "", "remaining": None, "note": ""}
+    if not GITHUB_TOKEN:
+        out["note"] = "no GITHUB_PAT/BRIDGE_GITHUB_TOKEN/GITHUB_TOKEN — private repo poll will fail"
+        print(f"commit poller token: {out['note']}", flush=True)
+        return out
+    try:
+        user = gh_get("https://api.github.com/user", timeout=15)
+        out["login"] = str(user.get("login") or "")
+        out["ok"] = True
+    except Exception as e:
+        out["note"] = f"token invalid or expired: {e}"
+        print(f"commit poller token FAIL: {out['note']}", flush=True)
+        return out
+    try:
+        # rate limit probe
+        rl = gh_get("https://api.github.com/rate_limit", timeout=10)
+        core = (rl.get("resources") or {}).get("core") or {}
+        out["remaining"] = core.get("remaining")
+    except Exception:
+        pass
+    # private repo reachability
+    for repo in GITHUB_REPOS[:1]:
+        try:
+            gh_get(f"https://api.github.com/repos/{repo}", timeout=15)
+            out["note"] = f"ok login={out['login']} repo={repo} remaining={out['remaining']}"
+        except Exception as e:
+            out["ok"] = False
+            out["note"] = f"token cannot read {repo}: {e}"
+            print(f"commit poller repo access FAIL: {out['note']}", flush=True)
+            return out
+    print(f"commit poller token: {out['note']}", flush=True)
+    return out
+
+
+def poll_github_commits(seen_events: set[str], force: bool = False, boot: bool = False) -> int:
     """Map recent repo commits into V2 even when webhooks/V1 miss CLI/Actions pushes."""
-    global _LAST_COMMIT_POLL
+    global _LAST_COMMIT_POLL, _COMMIT_BOOT_DONE
     now = time.time()
-    if (now - _LAST_COMMIT_POLL) < COMMIT_POLL_SECS:
+    if not force and (now - _LAST_COMMIT_POLL) < COMMIT_POLL_SECS:
         return 0
     _LAST_COMMIT_POLL = now
     if not v2_healthy():
         return 0
+    pages = COMMIT_BOOT_PAGES if boot or not _COMMIT_BOOT_DONE else COMMIT_POLL_PAGES
+    cap = COMMIT_BOOT_CAP if boot or not _COMMIT_BOOT_DONE else max(COMMIT_TICK_CAP, MAX_PER_TICK * 4)
     commit_seen = load_commit_seen()
     projected = 0
+    hit_cap = False
     for repo in GITHUB_REPOS:
-        for page in range(1, COMMIT_POLL_PAGES + 1):
+        for page in range(1, pages + 1):
             url = (
                 f"https://api.github.com/repos/{repo}/commits"
                 f"?per_page=100&page={page}"
@@ -560,7 +606,7 @@ def poll_github_commits(seen_events: set[str]) -> int:
                 if not sha or sha in commit_seen:
                     continue
                 commit = c.get("commit") or {}
-                message = str((commit.get("message") or "")).split("\n")[0]
+                message = str((commit.get("message") or "")).split("\n")[0].strip()
                 author = c.get("author") or {}
                 # author can be null for some bots
                 login = str(author.get("login") or "")
@@ -591,25 +637,60 @@ def poll_github_commits(seen_events: set[str]) -> int:
                     mark_seen(ev["event_id"], seen_events)
                     mark_commit_seen(sha, commit_seen)
                     projected += 1
-                    if projected >= max(MAX_PER_TICK * 4, 12):
-                        print(f"commit poll projected {projected} (cap this tick)", flush=True)
-                        return projected
+                    if projected >= cap:
+                        print(
+                            f"commit poll projected {projected} (cap={cap} boot={boot or not _COMMIT_BOOT_DONE})",
+                            flush=True,
+                        )
+                        hit_cap = True
+                        break
                 except Exception as e:
                     print(f"commit project fail {sha[:7]}: {e}", flush=True)
                     note_v2_down()
                     return projected
+            if hit_cap:
+                break
             if len(commits) < 100:
                 break
+        if hit_cap:
+            break
+    if not hit_cap:
+        _COMMIT_BOOT_DONE = True
     if projected:
-        print(f"commit poll projected {projected} commits from GitHub API", flush=True)
+        print(
+            f"commit poll projected {projected} commits from GitHub API "
+            f"(pages≤{pages} boot_done={_COMMIT_BOOT_DONE})",
+            flush=True,
+        )
     else:
+        _COMMIT_BOOT_DONE = True
         print("commit poll: no new commits", flush=True)
     return projected
 
 
+def seed_mapped_github_actors() -> None:
+    """Ensure every SLACK_USER_MAP GitHub login/id has a V1 gu_* (dual digest identity)."""
+    for key in list(SLACK_MAP.keys()):
+        if key.startswith("gu_") or key.startswith("U"):
+            continue
+        login, gh_id = "", ""
+        if key.isdigit():
+            gh_id = key
+        else:
+            login = key
+        try:
+            gu, _, _ = seed_actor_gu(login, gh_id)
+            if gu:
+                print(f"seed mapped actor key={key} gu={gu}", flush=True)
+        except Exception as e:
+            print(f"seed mapped actor warn key={key}: {e}", flush=True)
+
+
 def main() -> None:
+    tok = verify_github_token()
     print(
-        f"commit poller repos={GITHUB_REPOS} token_set={bool(GITHUB_TOKEN)} interval={COMMIT_POLL_SECS}s",
+        f"commit poller repos={GITHUB_REPOS} token_ok={tok.get('ok')} "
+        f"interval={COMMIT_POLL_SECS}s boot_pages={COMMIT_BOOT_PAGES} steady_pages={COMMIT_POLL_PAGES}",
         flush=True,
     )
     print(
@@ -629,11 +710,27 @@ def main() -> None:
     reader = ensure_reader()
     print(f"bridge reader global_user_id={reader}", flush=True)
     refresh_team_map(force=True)
+    seed_mapped_github_actors()
     seen = load_seen()
     # Force empty/fill check at boot (embedded V2 may have wiped overnight)
     global _LAST_EMPTY_CHECK
     _LAST_EMPTY_CHECK = 0.0
     maybe_reproject_empty_graph(seen, force=True)
+    # First-boot bulk: map as much Git history as possible (data currency)
+    try:
+        poll_github_commits(seen, force=True, boot=True)
+    except Exception as e:
+        print(f"boot commit poll warn: {e}", flush=True)
+    # Dual digests: ask twin-api to seed activity for empty person neighborhoods
+    try:
+        dual = post(
+            f"{TWIN}/v3/tenants/{TENANT}/seed/dual_digests",
+            {},
+            timeout=30,
+        )
+        print(f"dual digests seed: {dual}", flush=True)
+    except Exception as e:
+        print(f"dual digests seed warn: {e}", flush=True)
 
     while True:
         try:

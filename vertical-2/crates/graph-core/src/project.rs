@@ -689,14 +689,29 @@ fn map_push(event: &V1CanonicalEvent) -> GraphMutation {
                 continue;
             }
             let cid = commit_node_id(&repo_res, sha);
+            let msg = c
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(240)
+                .collect::<String>();
+            let sha7: String = sha.chars().take(7).collect();
+            // label stays short sha; title/message power digests + Dev insights
             nodes.push(GraphNode {
                 tenant_id: event.tenant_id.clone(),
                 node_id: cid.clone(),
                 node_type: "Commit".into(),
-                display_name: sha.chars().take(7).collect(),
+                display_name: sha7,
                 resource_id: sha.to_string(),
                 properties: json!({
-                    "message": c.get("message").and_then(|v| v.as_str()).unwrap_or("")
+                    "message": msg,
+                    "title": msg,
+                    "sha": sha,
                 }),
                 is_private,
                 allowed_group_ids: groups.clone(),

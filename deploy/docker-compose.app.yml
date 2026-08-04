@@ -193,10 +193,16 @@ services:
       # Person 1: neeljoshi18 · Person 2: paneerjeera (A2 multi-person). Team UI overlays too.
       SLACK_USER_MAP: ${SLACK_USER_MAP:-222674398:U0APK7W1X99,neeljoshi18:U0APK7W1X99,309182469:U0BLN0N7VB5,paneerjeera:U0BLN0N7VB5}
       # Data currency: poll GitHub so CLI/Actions/UI commits map even if webhooks drop
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-${GH_TOKEN:-}}
+      # Prefer long-lived PAT: set GITHUB_PAT or GITHUB_TOKEN in deploy/.env.staging
+      GITHUB_PAT: ${GITHUB_PAT:-${BRIDGE_GITHUB_TOKEN:-}}
+      BRIDGE_GITHUB_TOKEN: ${BRIDGE_GITHUB_TOKEN:-${GITHUB_PAT:-}}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-${GITHUB_PAT:-${GH_TOKEN:-}}}
       GITHUB_REPOS: ${GITHUB_REPOS:-neeljoshi18/AI-Manager}
       COMMIT_POLL_SECS: ${COMMIT_POLL_SECS:-90}
       COMMIT_POLL_PAGES: ${COMMIT_POLL_PAGES:-5}
+      COMMIT_BOOT_PAGES: ${COMMIT_BOOT_PAGES:-15}
+      COMMIT_BOOT_CAP: ${COMMIT_BOOT_CAP:-80}
+      COMMIT_TICK_CAP: ${COMMIT_TICK_CAP:-24}
       COMMIT_SEEN_FILE: /var/lib/ai-manager/bridge_commits_seen.txt
     volumes:
       - bridge_state:/var/lib/ai-manager

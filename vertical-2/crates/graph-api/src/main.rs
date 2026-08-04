@@ -87,6 +87,10 @@ async fn main() -> anyhow::Result<()> {
             "/v2/tenants/{tenant_id}/seed/intent_demo",
             post(seed_intent_demo),
         )
+        .route(
+            "/v2/tenants/{tenant_id}/seed/team_activity",
+            post(seed_team_activity),
+        )
         .route("/v2/tenants/{tenant_id}/snapshot", get(graph_snapshot))
         .route("/v2/tenants/{tenant_id}/stats", get(stats))
         .route("/v2/durability", get(durability_status))
@@ -836,6 +840,211 @@ async fn seed_intent_demo(
 }
 
 #[derive(Deserialize)]
+struct TeamActivitySeedBody {
+    /// Real person twins: global_user_id + display_name (+ optional provider login).
+    subjects: Option<Vec<TeamActivitySubject>>,
+    /// Repo resource id e.g. neeljoshi18/AI-Manager
+    repo: Option<String>,
+    /// Commits to seed per subject (default 3)
+    commits_per_subject: Option<usize>,
+}
+
+#[derive(Deserialize, Clone)]
+struct TeamActivitySubject {
+    global_user_id: String,
+    display_name: Option<String>,
+    provider_user_id: Option<String>,
+}
+
+/// Seed recent Commit + AUTHORED + PUSHED_TO for real team members (dual digests pilot).
+/// Not alice/bob theater — uses real gu_* subjects so multi-person digests fill when GH is sparse.
+async fn seed_team_activity(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    body: Option<Json<TeamActivitySeedBody>>,
+) -> Result<impl IntoResponse, ApiError> {
+    use graph_core::ids::{commit_node_id, edge_id, person_node_id, repo_node_id};
+    use graph_core::model::{GraphEdge, GraphMutation, GraphNode};
+    let body = body.map(|j| j.0).unwrap_or(TeamActivitySeedBody {
+        subjects: None,
+        repo: None,
+        commits_per_subject: None,
+    });
+    let repo_res = body
+        .repo
+        .unwrap_or_else(|| "neeljoshi18/AI-Manager".into());
+    let n_commits = body.commits_per_subject.unwrap_or(3).clamp(1, 8);
+    let subjects = body.subjects.unwrap_or_default();
+    if subjects.is_empty() {
+        return Ok(Json(json!({
+            "tenant_id": tenant_id,
+            "seeded": false,
+            "error": "subjects_required",
+            "note": "Pass subjects: [{global_user_id, display_name}] for each person twin needing edges",
+        })));
+    }
+    let groups = vec!["grp_eng".to_string(), "grp_default".to_string()];
+    let group_ids = groups.clone();
+    let now = chrono::Utc::now();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut seeded_for = Vec::new();
+
+    let repo_nid = repo_node_id(&repo_res);
+    nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: repo_nid.clone(),
+        node_type: "Repo".into(),
+        display_name: repo_res.clone(),
+        resource_id: repo_res.clone(),
+        properties: json!({ "seed": "team_activity" }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+
+    for sub in &subjects {
+        let gu = sub.global_user_id.trim();
+        if gu.is_empty() {
+            continue;
+        }
+        let _ = st
+            .membership
+            .set_groups(&tenant_id, gu, &group_ids)
+            .await;
+        let display = sub
+            .display_name
+            .clone()
+            .unwrap_or_else(|| gu.to_string());
+        let provider = sub
+            .provider_user_id
+            .clone()
+            .unwrap_or_else(|| display.clone());
+        let person_nid = person_node_id(gu);
+        nodes.push(GraphNode {
+            tenant_id: tenant_id.clone(),
+            node_id: person_nid.clone(),
+            node_type: "Person".into(),
+            display_name: display.clone(),
+            resource_id: provider.clone(),
+            properties: json!({
+                "provider_user_id": provider,
+                "seed": "team_activity",
+            }),
+            is_private: false,
+            allowed_group_ids: groups.clone(),
+            acl_version: 1,
+        });
+        // PUSHED_TO
+        edges.push(GraphEdge {
+            tenant_id: tenant_id.clone(),
+            edge_id: edge_id(
+                &tenant_id,
+                "PUSHED_TO",
+                &person_nid,
+                &repo_nid,
+                &format!("seed:team:{gu}"),
+            ),
+            edge_type: "PUSHED_TO".into(),
+            from_node_id: person_nid.clone(),
+            to_node_id: repo_nid.clone(),
+            valid_from: now - chrono::Duration::hours(2),
+            valid_to: None,
+            event_id: format!("seed:team:push:{gu}"),
+            properties: json!({ "ref": "refs/heads/main", "seed": "team_activity" }),
+            is_private: true,
+            allowed_group_ids: groups.clone(),
+            acl_version: 1,
+        });
+        for i in 0..n_commits {
+            let sha = format!("seed{gu}{i:02}deadbeefcafe");
+            // stable short fake sha
+            let sha7: String = format!("{:x}", {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                gu.hash(&mut h);
+                i.hash(&mut h);
+                h.finish()
+            })
+            .chars()
+            .take(7)
+            .collect();
+            let msg = format!(
+                "team seed: {} activity {} (dual digest pilot)",
+                display,
+                i + 1
+            );
+            let cid = commit_node_id(&repo_res, &sha);
+            let ts = now - chrono::Duration::hours((i as i64) + 1);
+            nodes.push(GraphNode {
+                tenant_id: tenant_id.clone(),
+                node_id: cid.clone(),
+                node_type: "Commit".into(),
+                display_name: sha7.clone(),
+                resource_id: sha.clone(),
+                properties: json!({
+                    "message": msg,
+                    "title": msg,
+                    "sha": sha,
+                    "seed": "team_activity",
+                }),
+                is_private: true,
+                allowed_group_ids: groups.clone(),
+                acl_version: 1,
+            });
+            edges.push(GraphEdge {
+                tenant_id: tenant_id.clone(),
+                edge_id: edge_id(
+                    &tenant_id,
+                    "AUTHORED",
+                    &person_nid,
+                    &cid,
+                    &format!("seed:team:{gu}:{i}"),
+                ),
+                edge_type: "AUTHORED".into(),
+                from_node_id: person_nid.clone(),
+                to_node_id: cid,
+                valid_from: ts,
+                valid_to: None,
+                event_id: format!("seed:team:commit:{gu}:{i}"),
+                properties: json!({ "seed": "team_activity" }),
+                is_private: true,
+                allowed_group_ids: groups.clone(),
+                acl_version: 1,
+            });
+        }
+        seeded_for.push(json!({
+            "global_user_id": gu,
+            "display_name": display,
+            "commits": n_commits,
+        }));
+    }
+
+    let _ = st
+        .membership
+        .set_groups(&tenant_id, "bridge_reader", &group_ids)
+        .await;
+
+    st.store
+        .apply_mutation(GraphMutation {
+            nodes,
+            edges,
+            states: vec![],
+        })
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "seeded": true,
+        "repo": repo_res,
+        "subjects": seeded_for,
+        "note": "Real gu_* team activity for dual digests when GH edges are sparse. Marked seed=team_activity.",
+    })))
+}
+
+#[derive(Deserialize)]
 struct SnapshotQ {
     user_id: String,
     node_limit: Option<usize>,
@@ -983,12 +1192,20 @@ async fn graph_snapshot(
                 .get("intent_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            // Commit nodes store text in message; PR/issue use title/summary.
             let title = n
                 .properties
                 .get("title")
                 .or_else(|| n.properties.get("summary"))
+                .or_else(|| n.properties.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let message = n
+                .properties
+                .get("message")
+                .or_else(|| n.properties.get("title"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(title);
             json!({
                 "id": n.node_id,
                 "type": n.node_type,
@@ -996,6 +1213,7 @@ async fn graph_snapshot(
                 "resource_id": n.resource_id,
                 "intent_type": intent_type,
                 "title": title,
+                "message": message,
                 "is_private": n.is_private,
             })
         })

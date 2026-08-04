@@ -1586,12 +1586,14 @@ async function refreshDevInsights() {
       const rec = d.recent_commits || [];
       $("ins-recent").innerHTML = rec.length
         ? rec
-            .map(
-              (c) =>
-                `<li><code>${esc(c.sha7 || c.resource_id || "?")}</code> ${esc(
-                  (c.message || "").toString().slice(0, 80)
-                )}</li>`
-            )
+            .map((c) => {
+              const sha = esc(c.sha7 || c.resource_id || "?");
+              const m = (c.message || c.title || "").toString().trim();
+              const msg = m && m !== (c.sha7 || "")
+                ? esc(m.slice(0, 100))
+                : `<span class="muted">no message</span>`;
+              return `<li><code>${sha}</code> ${msg}</li>`;
+            })
             .join("")
         : `<li class="muted">No commit nodes on graph yet.</li>`;
     }

@@ -66,6 +66,9 @@ Start: smoke staging, confirm pilot_readiness + My status draft open path, then 
 - Dual digests seed + real 2/2 content  
 - Hierarchical graph (no hairball) + graph_story  
 - Sales polish: tenant unity, My status real drafts, readiness strip, cache-bust, CSS toolbar, sales_smoke.sh  
+- **Graph snapshot fix:** rank Person/Repo/PR/Intent before Commit so trunc doesn't starve edges  
+- Deploy V1 restart loop until healthy  
+
 
 ---
 

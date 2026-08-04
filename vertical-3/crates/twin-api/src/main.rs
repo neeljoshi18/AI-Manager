@@ -516,6 +516,10 @@ async fn main() -> anyhow::Result<()> {
             post(seed_dual_digests),
         )
         .route(
+            "/v3/tenants/{tenant_id}/seed/graph_story",
+            post(seed_graph_story),
+        )
+        .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}/compile",
             post(compile_twin),
         )
@@ -2560,6 +2564,81 @@ async fn seed_dual_digests(
 fn urlencoding_subject(s: &str) -> String {
     // Minimal encode for path/query (gu_ uuid + person: prefix)
     s.replace(':', "%3A")
+}
+
+/// Seed a readable dual-person intent/PR story on real team gu_* for the Graph map.
+async fn seed_graph_story(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let twins = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let people: Vec<serde_json::Value> = twins
+        .iter()
+        .filter(|t| t.enabled && t.twin_kind == TwinKind::Person)
+        .take(4)
+        .map(|t| {
+            let provider = t
+                .config_json
+                .get("provider_aliases")
+                .and_then(|a| a.as_array())
+                .and_then(|a| a.iter().find_map(|x| x.as_str()))
+                .unwrap_or(t.display_name.as_str());
+            json!({
+                "global_user_id": t.subject_id,
+                "display_name": t.display_name,
+                "provider_user_id": provider,
+            })
+        })
+        .collect();
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(25))
+        .build()
+        .map_err(|e| ApiError::from(TwinError::Upstream(e.to_string())))?;
+    // membership for each
+    for p in &people {
+        if let Some(gid) = p.get("global_user_id").and_then(|x| x.as_str()) {
+            let _ = client
+                .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+                .json(&json!({
+                    "global_user_id": gid,
+                    "groups": ["grp_eng", "grp_default"],
+                }))
+                .send()
+                .await;
+        }
+    }
+    let url = format!("{v2}/v2/tenants/{tenant_id}/seed/graph_story");
+    let res = client
+        .post(&url)
+        .json(&json!({
+            "subjects": people,
+            "repo": "neeljoshi18/AI-Manager",
+        }))
+        .send()
+        .await
+        .map_err(|e| ApiError::from(TwinError::Upstream(format!("v2 graph story: {e}"))))?;
+    let status = res.status();
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "error": "bad_json" }));
+    if !status.is_success() {
+        return Err(ApiError::from(TwinError::Upstream(format!(
+            "v2 graph story HTTP {status}: {body}"
+        ))));
+    }
+    let _ = run_thin_monitors(&st).await;
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "people_seeded": people.len(),
+        "story": body,
+        "note": "Open Graph view — people, PR, SHIP/FREEZE intents, BLOCKS. Hide demo stays on.",
+    })))
 }
 
 #[derive(Deserialize)]

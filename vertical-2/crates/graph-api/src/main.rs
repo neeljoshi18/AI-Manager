@@ -91,6 +91,10 @@ async fn main() -> anyhow::Result<()> {
             "/v2/tenants/{tenant_id}/seed/team_activity",
             post(seed_team_activity),
         )
+        .route(
+            "/v2/tenants/{tenant_id}/seed/graph_story",
+            post(seed_graph_story),
+        )
         .route("/v2/tenants/{tenant_id}/snapshot", get(graph_snapshot))
         .route("/v2/tenants/{tenant_id}/stats", get(stats))
         .route("/v2/durability", get(durability_status))
@@ -1041,6 +1045,246 @@ async fn seed_team_activity(
         "repo": repo_res,
         "subjects": seeded_for,
         "note": "Real gu_* team activity for dual digests when GH edges are sparse. Marked seed=team_activity.",
+    })))
+}
+
+#[derive(Deserialize)]
+struct GraphStoryBody {
+    subjects: Option<Vec<TeamActivitySubject>>,
+    repo: Option<String>,
+}
+
+/// Seed a readable product story on *real* team gu_* (not alice/bob):
+/// Repo + open PR + dual intents SHIP/FREEZE + BLOCKS + AUTHORED edges.
+/// Powers the Graph map as the center of attraction.
+async fn seed_graph_story(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    body: Option<Json<GraphStoryBody>>,
+) -> Result<impl IntoResponse, ApiError> {
+    use graph_core::ids::{edge_id, person_node_id, pr_node_id, repo_node_id, stable_edge_id};
+    use graph_core::model::{GraphEdge, GraphMutation, GraphNode};
+    let body = body.map(|j| j.0).unwrap_or(GraphStoryBody {
+        subjects: None,
+        repo: None,
+    });
+    let repo_res = body
+        .repo
+        .unwrap_or_else(|| "neeljoshi18/AI-Manager".into());
+    let mut subjects = body.subjects.unwrap_or_default();
+    if subjects.len() < 2 {
+        // Fallback labels if caller didn't pass twins — still graph-visible
+        if subjects.is_empty() {
+            subjects.push(TeamActivitySubject {
+                global_user_id: "gu_story_a".into(),
+                display_name: Some("Engineer A".into()),
+                provider_user_id: Some("story_a".into()),
+            });
+        }
+        if subjects.len() < 2 {
+            subjects.push(TeamActivitySubject {
+                global_user_id: "gu_story_b".into(),
+                display_name: Some("Engineer B".into()),
+                provider_user_id: Some("story_b".into()),
+            });
+        }
+    }
+    let groups = vec!["grp_eng".to_string(), "grp_default".to_string()];
+    let now = chrono::Utc::now();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+
+    for s in &subjects {
+        let _ = st
+            .membership
+            .set_groups(&tenant_id, s.global_user_id.trim(), &groups)
+            .await;
+    }
+    let _ = st
+        .membership
+        .set_groups(&tenant_id, "bridge_reader", &groups)
+        .await;
+
+    let p1 = &subjects[0];
+    let p2 = &subjects[1];
+    let p1_id = person_node_id(p1.global_user_id.trim());
+    let p2_id = person_node_id(p2.global_user_id.trim());
+    let p1_name = p1
+        .display_name
+        .clone()
+        .unwrap_or_else(|| p1.global_user_id.clone());
+    let p2_name = p2
+        .display_name
+        .clone()
+        .unwrap_or_else(|| p2.global_user_id.clone());
+
+    let mk_person = |id: &str, name: &str, provider: &str| GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: id.into(),
+        node_type: "Person".into(),
+        display_name: name.into(),
+        resource_id: provider.into(),
+        properties: json!({ "seed": "graph_story", "provider_user_id": provider }),
+        is_private: false,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+    nodes.push(mk_person(
+        &p1_id,
+        &p1_name,
+        p1.provider_user_id.as_deref().unwrap_or(&p1_name),
+    ));
+    nodes.push(mk_person(
+        &p2_id,
+        &p2_name,
+        p2.provider_user_id.as_deref().unwrap_or(&p2_name),
+    ));
+
+    let repo_nid = repo_node_id(&repo_res);
+    nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: repo_nid.clone(),
+        node_type: "Repo".into(),
+        display_name: repo_res.clone(),
+        resource_id: repo_res.clone(),
+        properties: json!({ "seed": "graph_story" }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+
+    let pr_res = format!("{repo_res}/pr/story-1");
+    let pr_nid = pr_node_id(&pr_res);
+    let pr_title = "Ship pilot release — dual-owner review";
+    nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: pr_nid.clone(),
+        node_type: "PullRequest".into(),
+        display_name: pr_title.into(),
+        resource_id: pr_res.clone(),
+        properties: json!({
+            "title": pr_title,
+            "state": "OPEN",
+            "seed": "graph_story",
+        }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+
+    let i_ship = format!("intent:{p1_id}:{pr_nid}:ship");
+    let i_freeze = format!("intent:{p2_id}:{pr_nid}:freeze");
+    let i_blocked = format!("intent:{p1_id}:{pr_nid}:blocked");
+    nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: i_ship.clone(),
+        node_type: "Intent".into(),
+        display_name: "SHIP: ready for pilot".into(),
+        resource_id: pr_res.clone(),
+        properties: json!({
+            "intent_type": "SHIP",
+            "confidence": 0.88,
+            "seed": "graph_story",
+            "about_node_id": pr_nid,
+            "owner_node_id": p1_id,
+        }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+    nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: i_freeze.clone(),
+        node_type: "Intent".into(),
+        display_name: "FREEZE: hold merge until demo".into(),
+        resource_id: pr_res.clone(),
+        properties: json!({
+            "intent_type": "FREEZE",
+            "confidence": 0.9,
+            "seed": "graph_story",
+            "about_node_id": pr_nid,
+            "owner_node_id": p2_id,
+        }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+    nodes.push(GraphNode {
+        tenant_id: tenant_id.clone(),
+        node_id: i_blocked.clone(),
+        node_type: "Intent".into(),
+        display_name: "BLOCKED: waiting on partner review".into(),
+        resource_id: pr_res.clone(),
+        properties: json!({
+            "intent_type": "BLOCKED",
+            "confidence": 0.85,
+            "seed": "graph_story",
+            "about_node_id": pr_nid,
+            "owner_node_id": p1_id,
+        }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+
+    let edge = |etype: &str, from: &str, to: &str, event: &str, hours_ago: i64| GraphEdge {
+        tenant_id: tenant_id.clone(),
+        edge_id: edge_id(&tenant_id, etype, from, to, event),
+        edge_type: etype.into(),
+        from_node_id: from.into(),
+        to_node_id: to.into(),
+        valid_from: now - chrono::Duration::hours(hours_ago),
+        valid_to: None,
+        event_id: event.into(),
+        properties: json!({ "seed": "graph_story" }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    };
+
+    edges.push(edge("AUTHORED", &p1_id, &pr_nid, "story:authored:p1", 6));
+    edges.push(edge("BELONGS_TO", &pr_nid, &repo_nid, "story:belongs", 6));
+    edges.push(edge("PUSHED_TO", &p1_id, &repo_nid, "story:push:p1", 5));
+    edges.push(edge("PUSHED_TO", &p2_id, &repo_nid, "story:push:p2", 4));
+    edges.push(edge("CLAIMS", &p1_id, &i_ship, "story:claims:ship", 3));
+    edges.push(edge("CLAIMS", &p2_id, &i_freeze, "story:claims:freeze", 3));
+    edges.push(edge("ABOUT", &i_ship, &pr_nid, "story:about:ship", 3));
+    edges.push(edge("ABOUT", &i_freeze, &pr_nid, "story:about:freeze", 3));
+    edges.push(edge("ABOUT", &i_blocked, &pr_nid, "story:about:blocked", 2));
+    edges.push(edge("BLOCKS", &i_freeze, &i_ship, "story:blocks", 2));
+    // stable dual-owner conflict edge for UI
+    edges.push(GraphEdge {
+        tenant_id: tenant_id.clone(),
+        edge_id: stable_edge_id(&tenant_id, "BLOCKS", &i_blocked, &pr_nid),
+        edge_type: "BLOCKS".into(),
+        from_node_id: i_blocked.clone(),
+        to_node_id: pr_nid.clone(),
+        valid_from: now - chrono::Duration::hours(1),
+        valid_to: None,
+        event_id: "story:blocks:pr".into(),
+        properties: json!({ "seed": "graph_story" }),
+        is_private: true,
+        allowed_group_ids: groups.clone(),
+        acl_version: 1,
+    });
+
+    st.store
+        .apply_mutation(GraphMutation {
+            nodes,
+            edges,
+            states: vec![],
+        })
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "seeded": true,
+        "repo": repo_res,
+        "pr": pr_res,
+        "people": [p1_name, p2_name],
+        "intents": ["SHIP", "FREEZE", "BLOCKED"],
+        "note": "Real-team graph story for map layout — SHIP vs FREEZE dual owners + BLOCKS",
     })))
 }
 

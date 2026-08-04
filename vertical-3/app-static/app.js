@@ -651,15 +651,15 @@ async function refreshMetrics() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Graph live map — force layout, filters, selection, live poll
+   Graph live map — hierarchical layout (people → work → intents)
+   Avoids commit hairball circle; recent-commits-only by default.
    ═══════════════════════════════════════════════════════════════ */
 const graphState = {
   raw: null,
-  nodes: [], // { id, type, label, x, y, vx, vy, r, meta }
+  nodes: [], // { id, type, label, x, y, vx, vy, r, meta, pinSoft, visual }
   edges: [], // { id, type, from, to }
   filters: {}, // type -> bool
   selected: null,
-  sim: null,
   liveTimer: null,
   anim: null,
   drag: null,
@@ -668,6 +668,10 @@ const graphState = {
   panning: null,
   lastFetch: 0,
   types: [],
+  frame: 0,
+  fitTimer: null,
+  storyTried: false,
+  settled: false,
 };
 
 const GRAPH_TYPE_ORDER = [
@@ -681,6 +685,20 @@ const GRAPH_TYPE_ORDER = [
   "Commit",
   "Channel",
 ];
+
+/** Core story nodes — always preferred in layout/fit */
+const GRAPH_HUB_TYPES = new Set([
+  "Person",
+  "PullRequest",
+  "Issue",
+  "Ticket",
+  "Intent",
+  "Repo",
+  "Team",
+]);
+
+/** Max commits drawn when "Recent commits" is on (stops the circle hairball). */
+const COMMIT_VISUAL_MAX = 14;
 
 function graphTenant() {
   return (
@@ -727,9 +745,10 @@ function ensureGraphCanvas() {
   const resize = () => {
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(320, Math.floor(rect.width * dpr));
-    canvas.height = Math.max(360, Math.floor(rect.height * dpr));
-    canvas.style.height = Math.max(360, rect.height) + "px";
+    const h = Math.max(640, rect.height || 680);
+    canvas.width = Math.max(480, Math.floor(rect.width * dpr));
+    canvas.height = Math.floor(h * dpr);
+    canvas.style.height = h + "px";
     drawGraph();
   };
   window.addEventListener("resize", resize);
@@ -737,8 +756,18 @@ function ensureGraphCanvas() {
 
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    const factor = e.deltaY > 0 ? 0.92 : 1.08;
-    graphState.scale = Math.min(3.5, Math.max(0.25, graphState.scale * factor));
+    // Zoom toward cursor (not just scale about origin)
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const mx = (e.clientX - rect.left) * dpr;
+    const my = (e.clientY - rect.top) * dpr;
+    const worldX = (mx - graphState.pan.x) / graphState.scale;
+    const worldY = (my - graphState.pan.y) / graphState.scale;
+    const factor = e.deltaY > 0 ? 0.9 : 1.12;
+    const next = Math.min(2.8, Math.max(0.45, graphState.scale * factor));
+    graphState.scale = next;
+    graphState.pan.x = mx - worldX * next;
+    graphState.pan.y = my - worldY * next;
     drawGraph();
   }, { passive: false });
 
@@ -808,16 +837,22 @@ function canvasPoint(canvas, e) {
 function hitNode(x, y) {
   for (let i = graphState.nodes.length - 1; i >= 0; i--) {
     const n = graphState.nodes[i];
-    if (!typeVisible(n.type)) continue;
+    if (!nodeVisible(n)) continue;
     const dx = n.x - x;
     const dy = n.y - y;
-    if (dx * dx + dy * dy <= (n.r + 4) * (n.r + 4)) return n;
+    if (dx * dx + dy * dy <= (n.r + 6) * (n.r + 6)) return n;
   }
   return null;
 }
 
 function typeVisible(t) {
   if (graphState.filters[t] === false) return false;
+  return true;
+}
+
+function nodeVisible(n) {
+  if (!n || !typeVisible(n.type)) return false;
+  if (n.visual === false) return false;
   return true;
 }
 
@@ -830,14 +865,21 @@ function normalizeType(t) {
 
 function nodeRadius(type) {
   switch (type) {
-    case "Person": return 16;
-    case "PullRequest": return 12;
+    case "Person": return 20;
+    case "PullRequest": return 14;
     case "Issue":
-    case "Ticket": return 11;
-    case "Intent": return 10;
-    case "Repo": return 14;
-    default: return 9;
+    case "Ticket": return 13;
+    case "Intent": return 13;
+    case "Repo": return 18;
+    case "Commit": return 7;
+    default: return 10;
   }
+}
+
+function edgeTimeMs(e) {
+  const vf = e.valid_from || e.meta?.valid_from || "";
+  const t = Date.parse(vf);
+  return Number.isFinite(t) ? t : 0;
 }
 
 async function refreshGraph(forceLayout) {
@@ -849,12 +891,14 @@ async function refreshGraph(forceLayout) {
     }
     const includeDemo = $("graph-hide-demo")?.checked === false;
     const data = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=500&edge_limit=1000&include_demo=${includeDemo ? "true" : "false"}`
+      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=500&edge_limit=1200&include_demo=${includeDemo ? "true" : "false"}`
     );
     graphState.raw = data;
     graphState.lastFetch = Date.now();
     mergeGraphData(data, forceLayout);
     renderGraphChrome(data);
+    // Auto-enrich once if the map is commit-only (no intents/PRs for the story)
+    maybeAutoEnrichGraph(data).catch(() => {});
     drawGraph();
   } catch (e) {
     if (statsEl) {
@@ -863,10 +907,34 @@ async function refreshGraph(forceLayout) {
   }
 }
 
+async function maybeAutoEnrichGraph(data) {
+  if (graphState.storyTried) return;
+  const by = data.by_type || {};
+  const hasStory =
+    (by.Intent || 0) > 0 ||
+    (by.PullRequest || 0) > 0 ||
+    (data.nodes || []).some((n) => {
+      const t = normalizeType(n.type);
+      return t === "Intent" || t === "PullRequest";
+    });
+  // Only auto when hide-demo is on (product map) and story is thin
+  if (hasStory) return;
+  if ($("graph-hide-demo")?.checked === false) return;
+  graphState.storyTried = true;
+  try {
+    await jfetch(
+      `/v3/tenants/${encodeURIComponent(graphTenant())}/seed/graph_story`,
+      { method: "POST", body: "{}" }
+    );
+    await refreshGraph(true);
+  } catch (_) {
+    /* optional */
+  }
+}
+
 function mergeGraphData(data, forceLayout) {
   const prev = new Map(graphState.nodes.map((n) => [n.id, n]));
   const types = new Set();
-  // Hide demo seed people + collapse same-label Person nodes (one human = one node)
   const edgeDeg = new Map();
   for (const e of data.edges || []) {
     edgeDeg.set(e.from, (edgeDeg.get(e.from) || 0) + 1);
@@ -874,12 +942,13 @@ function mergeGraphData(data, forceLayout) {
   }
   const hideDemo =
     $("graph-hide-demo")?.checked !== false; /* default hide alice/bob seed */
-  const bestByLabel = new Map(); // label_lower -> node
+  const bestByLabel = new Map();
   for (const n of data.nodes || []) {
     if (normalizeType(n.type) !== "Person") continue;
     if (n.duplicate_person) continue;
     const lab = String(n.label || n.id || "").toLowerCase();
-    if (hideDemo && (lab === "alice" || lab === "bob")) continue;
+    if (hideDemo && (lab === "alice" || lab === "bob" || lab.includes("demo_alice") || lab.includes("demo_bob"))) continue;
+    if (hideDemo && String(n.id || "").includes("gu_demo_")) continue;
     const prevN = bestByLabel.get(lab);
     if (!prevN) {
       bestByLabel.set(lab, n);
@@ -887,7 +956,6 @@ function mergeGraphData(data, forceLayout) {
     }
     const dNew = edgeDeg.get(n.id) || 0;
     const dOld = edgeDeg.get(prevN.id) || 0;
-    // Prefer more connected; then prefer non-from_team_map; then numeric resource_id
     const score = (node, deg) => {
       let s = deg * 10;
       if (!node.from_team_map) s += 3;
@@ -898,7 +966,6 @@ function mergeGraphData(data, forceLayout) {
     if (score(n, dNew) > score(prevN, dOld)) bestByLabel.set(lab, n);
   }
   const keepPersonIds = new Set([...bestByLabel.values()].map((n) => n.id));
-  // Rewrite edges that pointed at collapsed people
   const aliasTo = new Map();
   for (const n of data.nodes || []) {
     if (normalizeType(n.type) !== "Person") continue;
@@ -906,63 +973,101 @@ function mergeGraphData(data, forceLayout) {
     const keep = bestByLabel.get(lab);
     if (keep && keep.id !== n.id) aliasTo.set(n.id, keep.id);
   }
-  if (data.edges) {
-    data.edges = data.edges.map((e) => ({
-      ...e,
-      from: aliasTo.get(e.from) || e.from,
-      to: aliasTo.get(e.to) || e.to,
-    }));
-  }
+  let edgesIn = (data.edges || []).map((e) => ({
+    ...e,
+    from: aliasTo.get(e.from) || e.from,
+    to: aliasTo.get(e.to) || e.to,
+  }));
+  // Drop self-loops after collapse
+  edgesIn = edgesIn.filter((e) => e.from !== e.to);
+
   const rawNodes = (data.nodes || []).filter((n) => {
-    if (normalizeType(n.type) !== "Person") return true;
-    return keepPersonIds.has(n.id);
+    const t = normalizeType(n.type);
+    if (hideDemo && (t === "Person" || String(n.id || "").includes("gu_demo_"))) {
+      if (String(n.id || "").includes("gu_demo_")) return false;
+      if (String(n.label || "").toLowerCase() === "alice" || String(n.label || "").toLowerCase() === "bob") return false;
+    }
+    if (hideDemo && String(n.id || "").includes("demo-repo")) return false;
+    if (hideDemo && n.seed === "intent_demo") return false;
+    if (t === "Person") return keepPersonIds.has(n.id);
+    return true;
   });
+
+  // Rank commits by newest linked edge — only draw top N when recent-only is on
+  const commitScore = new Map();
+  for (const e of edgesIn) {
+    const ts = edgeTimeMs(e);
+    for (const end of [e.from, e.to]) {
+      if (String(end).startsWith("commit:") || rawNodes.find((n) => n.id === end && normalizeType(n.type) === "Commit")) {
+        commitScore.set(end, Math.max(commitScore.get(end) || 0, ts));
+      }
+    }
+  }
+  const commitIds = rawNodes
+    .filter((n) => normalizeType(n.type) === "Commit")
+    .map((n) => n.id)
+    .sort((a, b) => (commitScore.get(b) || 0) - (commitScore.get(a) || 0));
+  const recentOnly = $("graph-recent-commits")?.checked !== false;
+  const keepCommit = new Set(
+    recentOnly ? commitIds.slice(0, COMMIT_VISUAL_MAX) : commitIds
+  );
+
   const nodes = rawNodes.map((n, i) => {
     const type = normalizeType(n.type);
     types.add(type);
     const old = prev.get(n.id);
     const r = nodeRadius(type);
+    const visual =
+      type !== "Commit" ? true : keepCommit.has(n.id);
     if (old && !forceLayout) {
       return {
         ...old,
         type,
-        label: n.label || n.id,
+        label: displayLabel(n, type),
         r,
         meta: n,
+        visual,
       };
     }
-    // seed positions by type rings so multi-person layout is readable
-    const angle = (i / Math.max(1, rawNodes.length)) * Math.PI * 2;
-    const ring =
-      type === "Person" ? 80 :
-      type === "Repo" ? 200 :
-      type === "Intent" ? 160 :
-      120;
     return {
       id: n.id,
       type,
-      label: n.label || n.id,
-      x: old?.x ?? Math.cos(angle) * ring + (Math.random() - 0.5) * 20,
-      y: old?.y ?? Math.sin(angle) * ring + (Math.random() - 0.5) * 20,
+      label: displayLabel(n, type),
+      x: old?.x ?? 0,
+      y: old?.y ?? 0,
       vx: 0,
       vy: 0,
       r,
       fx: null,
       fy: null,
+      pinSoft: null,
       meta: n,
+      visual,
+      _seedI: i,
     };
   });
+
   graphState.nodes = nodes;
-  graphState.edges = (data.edges || []).map((e) => ({
+  graphState.edges = edgesIn.map((e) => ({
     id: e.id,
     type: e.type || "RELATED",
     from: e.from,
     to: e.to,
     meta: e,
+    valid_from: e.valid_from,
   }));
-  // init filters for new types
+
+  if (forceLayout || !prev.size) {
+    applyHierarchicalSeed(graphState.nodes, graphState.edges);
+    graphState.settled = false;
+    graphState.frame = 0;
+  }
+
   for (const t of types) {
-    if (graphState.filters[t] === undefined) graphState.filters[t] = true;
+    if (graphState.filters[t] === undefined) {
+      // Default: everything on (commits already capped visually)
+      graphState.filters[t] = true;
+    }
   }
   graphState.types = Array.from(types).sort((a, b) => {
     const ia = GRAPH_TYPE_ORDER.indexOf(a);
@@ -970,7 +1075,147 @@ function mergeGraphData(data, forceLayout) {
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
   });
   renderGraphFilters();
-  if (forceLayout) fitGraph();
+  if (forceLayout) {
+    // Fit hubs after a short settle — avoids aggressive zoom-out on cold start
+    scheduleFitAfterSettle();
+  }
+}
+
+function displayLabel(n, type) {
+  if (type === "Commit") {
+    const msg = (n.title || n.message || "").toString().trim();
+    const sha = (n.label || "").toString();
+    if (msg && msg !== sha) return msg.slice(0, 36);
+    return sha || n.id;
+  }
+  if (type === "Intent") {
+    return n.intent_type || n.label || n.id;
+  }
+  if (type === "PullRequest") {
+    return (n.title || n.label || "PR").toString().slice(0, 40);
+  }
+  return n.label || n.id;
+}
+
+/** Place people on top row, repo center, work mid, intents near work, commits fan under author. */
+function applyHierarchicalSeed(nodes, edges) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const people = nodes.filter((n) => n.type === "Person" && n.visual !== false);
+  const repos = nodes.filter((n) => n.type === "Repo" && n.visual !== false);
+  const work = nodes.filter(
+    (n) =>
+      (n.type === "PullRequest" || n.type === "Issue" || n.type === "Ticket") &&
+      n.visual !== false
+  );
+  const intents = nodes.filter((n) => n.type === "Intent" && n.visual !== false);
+  const commits = nodes.filter((n) => n.type === "Commit" && n.visual !== false);
+  const other = nodes.filter(
+    (n) =>
+      n.visual !== false &&
+      !["Person", "Repo", "PullRequest", "Issue", "Ticket", "Intent", "Commit"].includes(n.type)
+  );
+
+  // Author map for commits via AUTHORED
+  const authorOf = new Map();
+  for (const e of edges) {
+    if (e.type === "AUTHORED") {
+      const from = byId.get(e.from);
+      const to = byId.get(e.to);
+      if (from?.type === "Person" && to?.type === "Commit") authorOf.set(to.id, from.id);
+      if (to?.type === "Person" && from?.type === "Commit") authorOf.set(from.id, to.id);
+    }
+  }
+  // Intent about work via ABOUT/CLAIMS
+  const aboutOf = new Map();
+  for (const e of edges) {
+    if (e.type === "ABOUT" || e.type === "CLAIMS") {
+      const a = byId.get(e.from);
+      const b = byId.get(e.to);
+      if (a?.type === "Intent" && b && (b.type === "PullRequest" || b.type === "Issue")) {
+        aboutOf.set(a.id, b.id);
+      }
+      if (b?.type === "Intent" && a && (a.type === "PullRequest" || a.type === "Issue")) {
+        aboutOf.set(b.id, a.id);
+      }
+    }
+  }
+
+  const spacing = 180;
+  people.forEach((p, i) => {
+    const x = (i - (people.length - 1) / 2) * spacing;
+    const y = -180;
+    p.x = x;
+    p.y = y;
+    p.pinSoft = { x, y, k: 0.045 };
+  });
+
+  repos.forEach((r, i) => {
+    const x = (i - (repos.length - 1) / 2) * 220;
+    const y = 20;
+    r.x = x;
+    r.y = y;
+    r.pinSoft = { x, y, k: 0.05 };
+  });
+
+  work.forEach((w, i) => {
+    // Place under the people band, left-to-right
+    const x = (i - (work.length - 1) / 2) * 160;
+    const y = -40;
+    w.x = x;
+    w.y = y;
+    w.pinSoft = { x, y, k: 0.03 };
+  });
+
+  intents.forEach((it, i) => {
+    const about = aboutOf.get(it.id);
+    const anchor = about ? byId.get(about) : null;
+    const x = (anchor?.x ?? (i - (intents.length - 1) / 2) * 140) + (i % 2 === 0 ? -50 : 50);
+    const y = (anchor?.y ?? -40) - 90;
+    it.x = x;
+    it.y = y;
+    it.pinSoft = { x, y, k: 0.04 };
+  });
+
+  // Commits: fan under each author (or under first person)
+  const byAuthor = new Map();
+  for (const c of commits) {
+    const a = authorOf.get(c.id) || people[0]?.id || "";
+    if (!byAuthor.has(a)) byAuthor.set(a, []);
+    byAuthor.get(a).push(c);
+  }
+  for (const [aid, list] of byAuthor) {
+    const person = byId.get(aid) || people[0];
+    const px = person?.x ?? 0;
+    const py = person?.y ?? -180;
+    list.forEach((c, i) => {
+      const col = i % 5;
+      const row = Math.floor(i / 5);
+      const x = px + (col - 2) * 36;
+      const y = py + 90 + row * 32;
+      c.x = x;
+      c.y = y;
+      c.pinSoft = { x, y, k: 0.025 };
+    });
+  }
+
+  other.forEach((n, i) => {
+    const x = (i - (other.length - 1) / 2) * 100;
+    const y = 140;
+    n.x = x;
+    n.y = y;
+    n.pinSoft = { x, y, k: 0.02 };
+  });
+}
+
+function scheduleFitAfterSettle() {
+  if (graphState.fitTimer) clearTimeout(graphState.fitTimer);
+  // Immediate soft fit so user sees something centered
+  fitGraph({ hubsOnly: true, maxScale: 1.15, minScale: 0.7 });
+  graphState.fitTimer = setTimeout(() => {
+    fitGraph({ hubsOnly: true, maxScale: 1.25, minScale: 0.65 });
+    graphState.settled = true;
+    drawGraph();
+  }, 700);
 }
 
 function renderGraphFilters() {
@@ -979,8 +1224,10 @@ function renderGraphFilters() {
   el.innerHTML = graphState.types
     .map((t) => {
       const on = graphState.filters[t] !== false;
-      const count = graphState.nodes.filter((n) => n.type === t).length;
-      return `<button type="button" class="ghost graph-filter-btn ${on ? "" : "off"}" data-type="${esc(t)}">${esc(t)} (${count})</button>`;
+      const total = graphState.nodes.filter((n) => n.type === t).length;
+      const vis = graphState.nodes.filter((n) => n.type === t && n.visual !== false).length;
+      const countLabel = total === vis ? String(total) : `${vis}/${total}`;
+      return `<button type="button" class="ghost graph-filter-btn ${on ? "" : "off"}" data-type="${esc(t)}">${esc(t)} (${countLabel})</button>`;
     })
     .join("");
   el.querySelectorAll("[data-type]").forEach((btn) => {
@@ -988,6 +1235,7 @@ function renderGraphFilters() {
       const t = btn.getAttribute("data-type");
       graphState.filters[t] = graphState.filters[t] === false;
       renderGraphFilters();
+      scheduleFitAfterSettle();
       drawGraph();
     });
   });
@@ -1157,14 +1405,27 @@ function renderGraphDetail(n) {
 }
 
 function stepForce() {
-  const nodes = graphState.nodes.filter((n) => typeVisible(n.type));
+  graphState.frame = (graphState.frame || 0) + 1;
+  const nodes = graphState.nodes.filter((n) => nodeVisible(n));
   if (nodes.length === 0) return;
   const byId = new Map(graphState.nodes.map((n) => [n.id, n]));
-  const edges = graphState.edges.filter(
-    (e) => typeVisible(byId.get(e.from)?.type) && typeVisible(byId.get(e.to)?.type)
-  );
+  const edges = graphState.edges.filter((e) => {
+    const a = byId.get(e.from);
+    const b = byId.get(e.to);
+    return a && b && nodeVisible(a) && nodeVisible(b);
+  });
 
-  // repulsion
+  // Soft anchors (hierarchical story stays readable)
+  for (const n of nodes) {
+    if (n.fx != null || !n.pinSoft) continue;
+    const k = n.pinSoft.k || 0.03;
+    n.vx += (n.pinSoft.x - n.x) * k;
+    n.vy += (n.pinSoft.y - n.y) * k;
+  }
+
+  // Repulsion — skip commit↔commit pairs far apart (perf + less explosion)
+  const nCount = nodes.length;
+  const repulse = nCount > 40 ? 420 : 700;
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i];
@@ -1172,12 +1433,14 @@ function stepForce() {
       let dx = b.x - a.x;
       let dy = b.y - a.y;
       let dist2 = dx * dx + dy * dy || 0.01;
+      if (a.type === "Commit" && b.type === "Commit" && dist2 > 120 * 120) continue;
+      if (dist2 > 380 * 380) continue;
       const dist = Math.sqrt(dist2);
-      const minD = a.r + b.r + 28;
-      let force = 900 / dist2;
-      if (dist < minD) force += (minD - dist) * 0.15;
-      // same-type mild clustering for people
-      if (a.type === "Person" && b.type === "Person") force *= 0.55;
+      const minD = a.r + b.r + (a.type === "Commit" || b.type === "Commit" ? 10 : 36);
+      let force = repulse / dist2;
+      if (dist < minD) force += (minD - dist) * 0.22;
+      if (a.type === "Person" && b.type === "Person") force *= 0.4;
+      if (a.type === "Commit" && b.type === "Commit") force *= 0.35;
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
       a.vx -= fx;
@@ -1187,7 +1450,7 @@ function stepForce() {
     }
   }
 
-  // springs
+  // Springs
   for (const e of edges) {
     const a = byId.get(e.from);
     const b = byId.get(e.to);
@@ -1195,13 +1458,30 @@ function stepForce() {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-    let ideal = 90;
-    if (e.type === "CLAIMS" || e.type === "ABOUT") ideal = 55;
-    if (e.type === "BLOCKS" || e.type === "BLOCKED_BY") ideal = 70;
-    if (e.type === "AUTHORED" || e.type === "ASSIGNED_TO") ideal = 75;
-    if (e.type === "BELONGS_TO") ideal = 100;
-    if (e.type === "MEMBER_OF") ideal = 85;
-    const k = 0.035;
+    let ideal = 110;
+    let k = 0.04;
+    if (e.type === "CLAIMS" || e.type === "ABOUT") {
+      ideal = 70;
+      k = 0.06;
+    }
+    if (e.type === "BLOCKS" || e.type === "BLOCKED_BY") {
+      ideal = 95;
+      k = 0.055;
+    }
+    if (e.type === "AUTHORED") {
+      ideal = a.type === "Commit" || b.type === "Commit" ? 55 : 90;
+      k = 0.05;
+    }
+    if (e.type === "PUSHED_TO") {
+      ideal = 130;
+      k = 0.025;
+    }
+    if (e.type === "BELONGS_TO" || e.type === "CHECKED") {
+      ideal = 100;
+      k = 0.03;
+    }
+    // Don't let dozens of PUSHED_TO stretch the whole map
+    if (e.type === "PUSHED_TO" && (a.type === "Commit" || b.type === "Commit")) continue;
     const f = (dist - ideal) * k;
     const fx = (dx / dist) * f;
     const fy = (dy / dist) * f;
@@ -1211,15 +1491,16 @@ function stepForce() {
     b.vy -= fy;
   }
 
-  // center gravity
+  // Mild center gravity
   for (const n of nodes) {
-    n.vx += -n.x * 0.002;
-    n.vy += -n.y * 0.002;
+    n.vx += -n.x * 0.0012;
+    n.vy += -n.y * 0.0012;
   }
 
-  // integrate
+  // Integrate with velocity cap
+  const damp = graphState.frame > 90 ? 0.78 : 0.84;
   for (const n of graphState.nodes) {
-    if (!typeVisible(n.type)) continue;
+    if (!nodeVisible(n)) continue;
     if (n.fx != null) {
       n.x = n.fx;
       n.y = n.fy;
@@ -1227,34 +1508,51 @@ function stepForce() {
       n.vy = 0;
       continue;
     }
-    n.vx *= 0.82;
-    n.vy *= 0.82;
+    n.vx *= damp;
+    n.vy *= damp;
+    const sp = Math.hypot(n.vx, n.vy);
+    if (sp > 8) {
+      n.vx = (n.vx / sp) * 8;
+      n.vy = (n.vy / sp) * 8;
+    }
     n.x += n.vx;
     n.y += n.vy;
   }
 }
 
-function fitGraph() {
-  const nodes = graphState.nodes.filter((n) => typeVisible(n.type));
+function fitGraph(opts = {}) {
+  const hubsOnly = opts.hubsOnly !== false;
+  const minScale = opts.minScale ?? 0.65;
+  const maxScale = opts.maxScale ?? 1.35;
+  let nodes = graphState.nodes.filter((n) => nodeVisible(n));
+  if (hubsOnly) {
+    const hubs = nodes.filter((n) => GRAPH_HUB_TYPES.has(n.type));
+    if (hubs.length >= 2) nodes = hubs;
+    else if (hubs.length === 1 && nodes.length > 8) {
+      // one hub + a few nearby commits
+      nodes = hubs.concat(nodes.filter((n) => n.type === "Commit").slice(0, 6));
+    }
+  }
   const canvas = $("graph-canvas");
   if (!canvas || !nodes.length) {
-    graphState.pan = { x: 0, y: 0 };
+    graphState.pan = { x: canvas ? canvas.width / 2 : 0, y: canvas ? canvas.height / 2 : 0 };
     graphState.scale = 1;
     return;
   }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const n of nodes) {
-    minX = Math.min(minX, n.x - n.r);
-    minY = Math.min(minY, n.y - n.r);
-    maxX = Math.max(maxX, n.x + n.r);
-    maxY = Math.max(maxY, n.y + n.r);
+    minX = Math.min(minX, n.x - n.r - 24);
+    minY = Math.min(minY, n.y - n.r - 28);
+    maxX = Math.max(maxX, n.x + n.r + 24);
+    maxY = Math.max(maxY, n.y + n.r + 36);
   }
-  const w = maxX - minX || 1;
-  const h = maxY - minY || 1;
-  const pad = 48;
+  const w = Math.max(120, maxX - minX);
+  const h = Math.max(120, maxY - minY);
+  const pad = 72;
   const sx = (canvas.width - pad * 2) / w;
   const sy = (canvas.height - pad * 2) / h;
-  graphState.scale = Math.min(2.2, Math.max(0.35, Math.min(sx, sy)));
+  // Never aggressively zoom out below minScale
+  graphState.scale = Math.min(maxScale, Math.max(minScale, Math.min(sx, sy)));
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   graphState.pan.x = canvas.width / 2 - cx * graphState.scale;
@@ -1275,61 +1573,115 @@ function drawGraph() {
   ctx.scale(graphState.scale, graphState.scale);
 
   const byId = new Map(graphState.nodes.map((n) => [n.id, n]));
+  const selected = graphState.selected;
+  const visibleNodes = graphState.nodes.filter((n) => nodeVisible(n));
+  const visibleEdges = graphState.edges.filter((e) => {
+    const a = byId.get(e.from);
+    const b = byId.get(e.to);
+    return a && b && nodeVisible(a) && nodeVisible(b);
+  });
 
-  // edges
-  for (const e of graphState.edges) {
+  // Draw non-selected edges first (dim), then story edges, then selected neighborhood
+  const edgePriority = (e) => {
+    if (e.type === "BLOCKS" || e.type === "BLOCKED_BY") return 3;
+    if (e.type === "CLAIMS" || e.type === "ABOUT") return 2;
+    if (e.type === "AUTHORED" || e.type === "ASSIGNED_TO") return 1;
+    return 0;
+  };
+  const sorted = [...visibleEdges].sort((a, b) => edgePriority(a) - edgePriority(b));
+
+  for (const e of sorted) {
     const a = byId.get(e.from);
     const b = byId.get(e.to);
     if (!a || !b) continue;
-    if (!typeVisible(a.type) || !typeVisible(b.type)) continue;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
+    const inSel = selected && (a.id === selected || b.id === selected);
+    // Skip most PUSHED_TO clutter unless selected
+    if (e.type === "PUSHED_TO" && !inSel && visibleEdges.length > 25) continue;
+
     const isBlock = /block/i.test(e.type);
     const isClaim = e.type === "CLAIMS" || e.type === "ABOUT";
-    ctx.strokeStyle = isBlock ? "#111" : isClaim ? "#737373" : "#a3a3a3";
-    ctx.lineWidth = isBlock ? 1.6 / graphState.scale : 1 / graphState.scale;
-    if (isClaim) ctx.setLineDash([4 / graphState.scale, 3 / graphState.scale]);
-    else if (isBlock) ctx.setLineDash([2 / graphState.scale, 2 / graphState.scale]);
+    ctx.beginPath();
+    // slight curve for readability
+    const mx = (a.x + b.x) / 2 + (a.y - b.y) * 0.08;
+    const my = (a.y + b.y) / 2 + (b.x - a.x) * 0.08;
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(mx, my, b.x, b.y);
+    let alpha = inSel ? 1 : selected ? 0.18 : 0.55;
+    if (isBlock) alpha = Math.max(alpha, 0.9);
+    if (isClaim) alpha = Math.max(alpha, 0.75);
+    ctx.strokeStyle = isBlock
+      ? `rgba(17,17,17,${alpha})`
+      : isClaim
+        ? `rgba(82,82,82,${alpha})`
+        : `rgba(163,163,163,${alpha})`;
+    ctx.lineWidth = (isBlock ? 2.2 : inSel ? 1.6 : 1.1) / graphState.scale;
+    if (isClaim) ctx.setLineDash([5 / graphState.scale, 4 / graphState.scale]);
+    else if (isBlock) ctx.setLineDash([3 / graphState.scale, 3 / graphState.scale]);
     else ctx.setLineDash([]);
     ctx.stroke();
     ctx.setLineDash([]);
-    // edge label at mid if few edges or selected
-    if (
-      graphState.edges.length < 40 ||
-      a.id === graphState.selected ||
-      b.id === graphState.selected
-    ) {
-      const mx = (a.x + b.x) / 2;
-      const my = (a.y + b.y) / 2;
+
+    const showLabel =
+      isBlock ||
+      isClaim ||
+      inSel ||
+      (visibleEdges.length < 30 && edgePriority(e) >= 1);
+    if (showLabel) {
       ctx.font = `${10 / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = "#a3a3a3";
+      ctx.fillStyle = inSel || isBlock ? "#404040" : "#a3a3a3";
       ctx.textAlign = "center";
-      ctx.fillText(e.type, mx, my - 3 / graphState.scale);
+      ctx.fillText(e.type, mx, my - 4 / graphState.scale);
     }
   }
 
-  // nodes
-  for (const n of graphState.nodes) {
-    if (!typeVisible(n.type)) continue;
-    const selected = n.id === graphState.selected;
-    drawNodeShape(ctx, n, selected);
-    // label
-    ctx.font = `${11 / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
-    ctx.fillStyle = "#111";
-    ctx.textAlign = "center";
-    const label = truncateLabel(n.label, 22);
-    ctx.fillText(label, n.x, n.y + n.r + 12 / graphState.scale);
-    if (n.type === "Intent" && n.meta?.intent_type) {
-      ctx.fillStyle = "#737373";
-      ctx.font = `${9 / graphState.scale}px ui-monospace, monospace`;
-      ctx.fillText(n.meta.intent_type, n.x, n.y + n.r + 22 / graphState.scale);
+  // Nodes: commits first (under), hubs on top
+  const paintOrder = [...visibleNodes].sort((a, b) => {
+    const rank = (t) =>
+      t === "Commit" ? 0 : t === "Repo" ? 1 : t === "Intent" ? 3 : t === "Person" ? 4 : 2;
+    return rank(a.type) - rank(b.type);
+  });
+
+  for (const n of paintOrder) {
+    const isSel = n.id === selected;
+    const dim = selected && !isSel;
+    ctx.globalAlpha = dim ? 0.35 : 1;
+    drawNodeShape(ctx, n, isSel);
+    const showLabel =
+      GRAPH_HUB_TYPES.has(n.type) ||
+      isSel ||
+      graphState.scale >= 1.05 ||
+      visibleNodes.filter((x) => x.type === "Commit").length <= 10;
+    if (showLabel) {
+      ctx.font = `${(n.type === "Person" ? 12 : 11) / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = "#111";
+      ctx.textAlign = "center";
+      const maxLen = n.type === "Commit" ? 28 : n.type === "Person" ? 20 : 26;
+      ctx.fillText(truncateLabel(n.label, maxLen), n.x, n.y + n.r + 14 / graphState.scale);
+      if (n.type === "Intent" && n.meta?.intent_type) {
+        ctx.fillStyle = "#737373";
+        ctx.font = `${9 / graphState.scale}px ui-monospace, monospace`;
+        ctx.fillText(n.meta.intent_type, n.x, n.y + n.r + 24 / graphState.scale);
+      }
     }
+    ctx.globalAlpha = 1;
   }
 
   ctx.restore();
 
-  // empty state
+  // HUD: visible vs total
+  const total = graphState.nodes.length;
+  const vis = visibleNodes.length;
+  if (total > vis) {
+    ctx.fillStyle = "#737373";
+    ctx.font = `${11 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = "left";
+    ctx.fillText(
+      `Showing ${vis}/${total} nodes (recent commits / filters)`,
+      12 * dpr,
+      20 * dpr
+    );
+  }
+
   if (!graphState.nodes.length) {
     const raw = graphState.raw || {};
     const v2Up = raw.v2_up !== false && raw.error !== "v2_unreachable";
@@ -1502,19 +1854,64 @@ if ($("btn-graph-refresh")) {
 }
 if ($("btn-graph-fit")) {
   $("btn-graph-fit").addEventListener("click", () => {
-    fitGraph();
+    fitGraph({ hubsOnly: true, maxScale: 1.3, minScale: 0.65 });
     drawGraph();
   });
 }
+if ($("btn-graph-reset")) {
+  $("btn-graph-reset").addEventListener("click", () => {
+    applyHierarchicalSeed(graphState.nodes, graphState.edges);
+    scheduleFitAfterSettle();
+    drawGraph();
+  });
+}
+async function enrichGraphStory() {
+  const tenant = graphTenant();
+  const btn = $("btn-graph-story");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Enriching…";
+  }
+  try {
+    await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/seed/dual_digests`, {
+      method: "POST",
+      body: "{}",
+    }).catch(() => ({}));
+    await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/seed/graph_story`, {
+      method: "POST",
+      body: "{}",
+    });
+    // Also keep classic intent demo available if user unchecks Hide demo
+    graphState.storyTried = true;
+    await refreshGraph(true);
+  } catch (e) {
+    console.warn("graph story enrich failed", e);
+    // fallback intent demo
+    try {
+      await seedIntentDemo();
+    } catch (_) {}
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Enrich story";
+    }
+  }
+}
+if ($("btn-graph-story")) {
+  $("btn-graph-story").addEventListener("click", () => enrichGraphStory());
+}
 if ($("graph-hide-demo")) {
   $("graph-hide-demo").addEventListener("change", () => refreshGraph(true));
+}
+if ($("graph-recent-commits")) {
+  $("graph-recent-commits").addEventListener("change", () => refreshGraph(true));
 }
 if ($("graph-live")) {
   $("graph-live").addEventListener("change", () => {
     if ($("view-graph")?.classList.contains("hidden")) return;
     stopGraphLive();
     if ($("graph-live").checked) {
-      graphState.liveTimer = setInterval(() => refreshGraph(false), 5000);
+      graphState.liveTimer = setInterval(() => refreshGraph(false), 8000);
     }
   });
 }

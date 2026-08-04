@@ -460,16 +460,17 @@ code {
   position: relative;
   padding: 0;
   overflow: hidden;
-  min-height: 480px;
+  min-height: 640px;
 }
 #graph-canvas {
   display: block;
   width: 100%;
-  height: 560px;
+  height: 680px;
+  min-height: 640px;
   cursor: grab;
   background:
-    radial-gradient(circle at 1px 1px, #ececec 1px, transparent 0) 0 0 / 20px 20px,
-    #fafafa;
+    radial-gradient(circle at 1px 1px, #e8e8e8 1px, transparent 0) 0 0 / 24px 24px,
+    linear-gradient(180deg, #fcfcfc 0%, #f4f4f5 100%);
   touch-action: none;
 }
 #graph-canvas:active { cursor: grabbing; }

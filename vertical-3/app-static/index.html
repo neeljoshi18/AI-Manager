@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260804c" />
+  <link rel="stylesheet" href="/app/styles.css?v=20260804d" />
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -58,6 +58,7 @@
             <div class="actions-inline cockpit-actions">
               <button type="button" id="ck-compile" class="primary">Compile digests</button>
               <button type="button" id="ck-enrich" class="ghost">Enrich story</button>
+              <button type="button" id="ck-connect" class="ghost">Connect Slack/GH</button>
               <button type="button" id="ck-graph" class="ghost">Open graph</button>
               <button type="button" id="ck-team" class="ghost">Map people</button>
               <button type="button" id="ck-refresh" class="ghost">Refresh</button>
@@ -405,18 +406,28 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="card">
           <h2>Connectors</h2>
+          <p class="muted small">Install path for partners. Tokens never sit on twin-api env (ADR-012). Teams delivery is next session.</p>
+          <div class="meta-row" id="conn-oauth-status" style="margin-bottom:0.75rem;"><span class="pill mid">checking install status…</span></div>
           <div class="grid2">
             <div>
               <p><strong>GitHub</strong></p>
               <p class="muted small" id="conn-github">Ingest via V1 webhooks. Last event age above when V1 is up.</p>
-              <button type="button" class="ghost" id="btn-gh-app">Install GitHub App…</button>
+              <p class="muted small">Webhook: <code id="conn-gh-webhook">—</code></p>
+              <div class="actions-inline">
+                <button type="button" class="primary" id="btn-gh-app">Install GitHub App…</button>
+                <button type="button" class="ghost" id="btn-gh-webhook-copy">Copy webhook URL</button>
+              </div>
             </div>
             <div>
               <p><strong>Slack</strong></p>
               <p class="muted small" id="conn-slack">Outbound DMs via egress vault only (ADR-012). Batched notify (ADR-014).</p>
-              <button type="button" class="ghost" id="btn-slack-oauth">Connect Slack…</button>
+              <div class="actions-inline">
+                <button type="button" class="primary" id="btn-slack-oauth">Connect Slack…</button>
+              </div>
+              <p class="muted small" id="conn-slack-manual" style="margin-top:0.5rem;"></p>
             </div>
           </div>
+          <p class="muted small" style="margin-top:0.75rem;" id="conn-teams-note">Microsoft Teams: same digests + Approve loop on the roadmap (delivery adapter). Not live yet.</p>
         </div>
       </section>
 
@@ -467,6 +478,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260804b"></script>
+  <script src="/app/app.js?v=20260804d"></script>
 </body>
 </html>

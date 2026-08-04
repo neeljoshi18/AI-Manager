@@ -4,7 +4,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -469,7 +469,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v3/demo/simulate", post(demo_simulate))
         .route("/v3/demo/latest", get(demo_latest))
         .route("/v3/onboarding/status", get(onboarding_status))
+        .route("/v3/oauth/status", get(oauth_status))
         .route("/v3/oauth/slack/start", get(oauth_slack_start))
+        .route("/v3/oauth/slack/callback", get(oauth_slack_callback))
         .route("/v3/oauth/github/start", get(oauth_github_start))
         .route(
             "/v3/tenants/{tenant_id}/twins",
@@ -1215,18 +1217,103 @@ async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// Public install status for Connections / Cockpit (never returns secret values).
+async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
+    let public = std::env::var("PUBLIC_BASE_URL").unwrap_or_default();
+    let tenant = std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into());
+    let slack_oauth = env_present("SLACK_CLIENT_ID") && env_present("SLACK_CLIENT_SECRET");
+    let gh_app = env_present("GITHUB_APP_ID") || env_present("GITHUB_APP_SLUG");
+    let vault_writable = oauth_vault_path()
+        .map(|p| p.parent().map(|d| d.exists()).unwrap_or(false))
+        .unwrap_or(false);
+    let webhook = if public.starts_with("https://") {
+        format!("{public}/v1/tenants/{tenant}/webhooks/github")
+    } else {
+        format!("https://YOUR_HOST/v1/tenants/{tenant}/webhooks/github")
+    };
+    let app_slug = std::env::var("GITHUB_APP_SLUG").unwrap_or_else(|_| "ai-manager".into());
+    let github_install = if gh_app {
+        Some(format!("https://github.com/apps/{app_slug}/installations/new"))
+    } else {
+        None
+    };
+    Json(json!({
+        "tenant_id": tenant,
+        "public_base_url": public,
+        "slack": {
+            "oauth_credentials": slack_oauth,
+            "egress_mode": st.slack_mode,
+            "vault_write_path_set": oauth_vault_path().is_some(),
+            "vault_parent_exists": vault_writable,
+            "manual_path": "vertical-security/secrets/dev_secrets.json → SLACK_BOT_TOKEN (egress only)",
+            "manifest": "deploy/oauth/slack-app-manifest.json",
+            "callback": format!("{}/v3/oauth/slack/callback", public.trim_end_matches('/')),
+            "note": if slack_oauth {
+                "Connect Slack opens authorize URL; callback writes SLACK_BOT_TOKEN to vault if OAUTH_VAULT_PATH set. Restart egress after first OAuth."
+            } else {
+                "Set SLACK_CLIENT_ID + SLACK_CLIENT_SECRET in deploy/.env.staging, or paste bot token into vault manually."
+            },
+        },
+        "github": {
+            "app_env_present": gh_app,
+            "install_url": github_install,
+            "webhook_url": webhook,
+            "manifest": "deploy/oauth/github-app-manifest.yml",
+            "manual_path": "Install GitHub App on org/repos; set WEBHOOK_SECRET_ten_github in vault",
+            "note": "Webhooks hit V1; graph fills via bridge even without OAuth button.",
+        },
+        "teams": {
+            "status": "roadmap",
+            "note": "Microsoft Teams delivery adapter is next-session work (same Approve/Edit/Don't send).",
+        },
+    }))
+}
+
+fn oauth_vault_path() -> Option<PathBuf> {
+    let p = std::env::var("OAUTH_VAULT_PATH")
+        .or_else(|_| std::env::var("SECRETS_FILE"))
+        .ok()?;
+    let p = p.trim();
+    if p.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(p))
+}
+
+fn upsert_vault_secret(path: &std::path::Path, key: &str, value: &str) -> Result<(), String> {
+    let mut map: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        v.as_object().cloned().unwrap_or_default()
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        serde_json::Map::new()
+    };
+    map.insert(key.to_string(), json!(value));
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, pretty).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn oauth_slack_start() -> impl IntoResponse {
     if !env_present("SLACK_CLIENT_ID") || !env_present("SLACK_CLIENT_SECRET") {
+        // 200 so product UI never looks "broken 501"
         return (
-            StatusCode::NOT_IMPLEMENTED,
+            StatusCode::OK,
             Json(json!({
+                "ready": false,
                 "error": "slack_oauth_not_configured",
-                "message": "Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET (human secrets). Manifest: deploy/oauth/slack-app-manifest.json. Until then use vault SLACK_BOT_TOKEN via egress.",
-                "manual_path": "vertical-security/secrets/dev_secrets.json"
+                "message": "Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET in deploy/.env.staging. Until then use vault SLACK_BOT_TOKEN via egress.",
+                "manual_path": "vertical-security/secrets/dev_secrets.json",
+                "manifest": "deploy/oauth/slack-app-manifest.json",
             })),
         );
     }
-    // Full authorize redirect when credentials exist (next slice after human secrets).
     let client_id = std::env::var("SLACK_CLIENT_ID").unwrap_or_default();
     let redirect = std::env::var("SLACK_REDIRECT_URI").unwrap_or_else(|_| {
         format!(
@@ -1246,29 +1333,203 @@ async fn oauth_slack_start() -> impl IntoResponse {
         Json(json!({
             "ready": true,
             "authorize_url": url,
-            "note": "Open authorize_url in browser; callback store bot token in egress vault only."
+            "redirect_uri": redirect,
+            "note": "Opens Slack install. Callback stores bot token in OAUTH_VAULT_PATH (egress vault). Restart egress after first connect so delivery picks up the token."
         })),
     )
 }
 
+#[derive(Deserialize)]
+struct SlackOAuthCb {
+    code: Option<String>,
+    error: Option<String>,
+    state: Option<String>,
+}
+
+/// Slack OAuth redirect target — exchanges code, writes SLACK_BOT_TOKEN to vault (ADR-012 path).
+async fn oauth_slack_callback(Query(q): Query<SlackOAuthCb>) -> impl IntoResponse {
+    if let Some(err) = q.error {
+        return Html(oauth_html(
+            "Slack connect cancelled",
+            &format!("Slack returned error: <code>{}</code>", esc_html(&err)),
+            false,
+        ))
+        .into_response();
+    }
+    let Some(code) = q.code.filter(|c| !c.is_empty()) else {
+        return Html(oauth_html(
+            "Missing code",
+            "No OAuth <code>code</code> query param. Start again from Connections → Connect Slack.",
+            false,
+        ))
+        .into_response();
+    };
+    if !env_present("SLACK_CLIENT_ID") || !env_present("SLACK_CLIENT_SECRET") {
+        return Html(oauth_html(
+            "OAuth not configured",
+            "Server missing SLACK_CLIENT_ID / SLACK_CLIENT_SECRET.",
+            false,
+        ))
+        .into_response();
+    }
+    let client_id = std::env::var("SLACK_CLIENT_ID").unwrap_or_default();
+    let client_secret = std::env::var("SLACK_CLIENT_SECRET").unwrap_or_default();
+    let redirect = std::env::var("SLACK_REDIRECT_URI").unwrap_or_else(|_| {
+        format!(
+            "{}/v3/oauth/slack/callback",
+            std::env::var("PUBLIC_BASE_URL").unwrap_or_default()
+        )
+    });
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Html(oauth_html("Client error", &esc_html(&e.to_string()), false)).into_response();
+        }
+    };
+    let res = client
+        .post("https://slack.com/api/oauth.v2.access")
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect.as_str()),
+        ])
+        .send()
+        .await;
+    let body: serde_json::Value = match res {
+        Ok(r) => r.json().await.unwrap_or(json!({"ok": false, "error": "bad_json"})),
+        Err(e) => {
+            return Html(oauth_html("Token exchange failed", &esc_html(&e.to_string()), false))
+                .into_response();
+        }
+    };
+    if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let err = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        return Html(oauth_html(
+            "Slack rejected install",
+            &format!("<code>{}</code> — check redirect URL matches Slack app settings.", esc_html(err)),
+            false,
+        ))
+        .into_response();
+    }
+    // Bot token lives under access_token for bot installs (oauth.v2)
+    let token = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            body.get("bot")
+                .and_then(|b| b.get("bot_access_token"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    if token.is_empty() || !token.starts_with("xoxb-") {
+        return Html(oauth_html(
+            "No bot token in response",
+            "Install may have been user-only. Ensure bot scopes chat:write,im:write.",
+            false,
+        ))
+        .into_response();
+    }
+    let team = body
+        .get("team")
+        .and_then(|t| t.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("workspace");
+    let extra = if let Some(path) = oauth_vault_path() {
+        match upsert_vault_secret(&path, "SLACK_BOT_TOKEN", &token) {
+            Ok(()) => {
+                tracing::info!(team = %team, "slack oauth vault updated");
+                format!(
+                    "<p>Saved <code>SLACK_BOT_TOKEN</code> to vault path. <strong>Restart the egress container</strong> so delivery reloads secrets (or redeploy).</p><p class=\"muted\">Path: <code>{}</code></p>",
+                    esc_html(&path.display().to_string())
+                )
+            }
+            Err(e) => format!(
+                "<p class=\"warn\">Token received but vault write failed: {} — paste token into <code>vertical-security/secrets/dev_secrets.json</code> manually.</p>",
+                esc_html(&e)
+            ),
+        }
+    } else {
+        "<p class=\"warn\"><code>OAUTH_VAULT_PATH</code> not set — token not written. Paste bot token into egress vault manually.</p>".to_string()
+    };
+    let _ = q.state; // reserved for CSRF later
+    Html(oauth_html(
+        "Slack connected",
+        &format!(
+            "<p>Workspace <strong>{}</strong> authorized. Digests use Notify Policy v1 (Approve / Edit / Don't send).</p>{}",
+            esc_html(team),
+            extra
+        ),
+        true,
+    ))
+    .into_response()
+}
+
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn oauth_html(title: &str, body: &str, ok: bool) -> String {
+    let color = if ok { "#111" } else { "#7f1d1d" };
+    format!(
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8"/><title>{title}</title>
+<style>
+body{{font-family:ui-sans-serif,system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;color:#111}}
+h1{{font-size:1.35rem;color:{color}}}
+.muted{{color:#737373;font-size:0.9rem}}
+.warn{{color:#9a3412}}
+a.btn{{display:inline-block;margin-top:1rem;padding:0.6rem 1rem;background:#111;color:#fff;text-decoration:none;border-radius:6px}}
+code{{font-size:0.85em}}
+</style></head><body>
+<h1>{title}</h1>
+{body}
+<p><a class="btn" href="/app/">Back to app</a>
+<a class="btn" href="/app/" style="background:#fff;color:#111;border:1px solid #111;margin-left:0.5rem">Connections</a></p>
+<p class="muted">AI Manager · tokens never logged · ADR-012 egress vault</p>
+</body></html>"#
+    )
+}
+
 async fn oauth_github_start() -> impl IntoResponse {
-    if !env_present("GITHUB_APP_ID") {
+    let app_slug = std::env::var("GITHUB_APP_SLUG").unwrap_or_else(|_| "ai-manager".into());
+    let public = std::env::var("PUBLIC_BASE_URL").unwrap_or_default();
+    let tenant = std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into());
+    let webhook = if public.starts_with("https://") {
+        format!("{}/v1/tenants/{}/webhooks/github", public.trim_end_matches('/'), tenant)
+    } else {
+        format!("/v1/tenants/{tenant}/webhooks/github")
+    };
+    if !env_present("GITHUB_APP_ID") && !env_present("GITHUB_APP_SLUG") {
         return (
-            StatusCode::NOT_IMPLEMENTED,
+            StatusCode::OK,
             Json(json!({
+                "ready": false,
                 "error": "github_app_not_configured",
-                "message": "Set GITHUB_APP_ID (and related secrets). Manifest: deploy/oauth/github-app-manifest.yml. Manual webhooks to V1 still work.",
-                "webhook_path": "/v1/tenants/{tenant_id}/webhooks/github"
+                "message": "Set GITHUB_APP_SLUG (and GITHUB_APP_ID) in deploy/.env.staging. Manual webhooks to V1 still work.",
+                "webhook_url": webhook,
+                "manifest": "deploy/oauth/github-app-manifest.yml",
             })),
         );
     }
-    let app_slug = std::env::var("GITHUB_APP_SLUG").unwrap_or_else(|_| "ai-manager".into());
     let url = format!("https://github.com/apps/{app_slug}/installations/new");
     (
         StatusCode::OK,
         Json(json!({
             "ready": true,
-            "install_url": url
+            "install_url": url,
+            "webhook_url": webhook,
+            "app_slug": app_slug,
+            "note": "Install App on org/repos. Webhooks must hit webhook_url with HMAC secret in vault."
         })),
     )
 }

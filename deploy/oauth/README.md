@@ -15,13 +15,20 @@ Code and manifests live here so staging install does not depend on tribal knowle
 ### Human steps when secrets are ready
 
 1. Create Slack app from manifest at [api.slack.com/apps](https://api.slack.com/apps).
-2. Set Redirect URL to `https://$DOMAIN/v3/oauth/slack/callback` (route not wired until client id exists).
-3. Copy **Bot User OAuth Token** into egress vault as `SLACK_BOT_TOKEN`.
-4. Never set `SLACK_BOT_TOKEN` on twin-api env.
+2. Set Redirect URL to `https://$DOMAIN/v3/oauth/slack/callback` (wired: exchanges code → writes vault).
+3. Put `SLACK_CLIENT_ID` + `SLACK_CLIENT_SECRET` in `deploy/.env.staging` (not git).
+4. Product UI → **Connections → Connect Slack** (or Cockpit → Connect Slack/GH).
+5. Callback writes `SLACK_BOT_TOKEN` into `OAUTH_VAULT_PATH` (`/secrets/dev_secrets.json` on staging).
+6. **Restart egress** so it reloads the vault (or full deploy).
+7. Never put `SLACK_BOT_TOKEN` on twin-api env (ADR-012).
+
+### Manual path (always works)
+
+Paste bot token into `vertical-security/secrets/dev_secrets.json` as `SLACK_BOT_TOKEN` and restart egress.
 
 ### Blocked on human
 
-- Slack Client ID / Client Secret
+- Slack Client ID / Client Secret (for OAuth button)
 - Public HTTPS redirect URL (staging domain)
 
 ## GitHub App

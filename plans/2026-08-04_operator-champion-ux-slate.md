@@ -14,15 +14,17 @@
 
 | # | Item | Status |
 |---|------|--------|
-| 0 | Sales Call Documents + leave-behind one-pager | Docs pack done; one-pager this batch |
-| 1 | **Champion cockpit UI** (package live APIs) | **This batch** |
-| 2 | Team mapping: bulk paste + clearer copy (Path A) | **This batch** |
-| 3 | Connect Slack / GitHub real install (kill 501) | Next |
-| 4 | Delivery abstraction + Teams bot | Next |
-| 5 | Roles champion/member | Next |
-| 6 | Google/SSO join | Later |
-| 7 | Tomorrow focus board (persist assignments) | Scaffold now; persist later |
+| 0 | Sales Call Documents + leave-behind one-pager | **Done** |
+| 1 | **Champion cockpit UI** (package live APIs) | **Done** |
+| 2 | Team mapping: bulk paste + clearer copy (Path A) | **Done** |
+| 3 | Connect Slack / GitHub real install | **Done this session** (status API, Slack callback→vault, GH install URL + webhook copy, UI) |
+| 4 | Delivery abstraction + **Teams bot** | **Next session** |
+| 5 | Roles champion/member | **Next session** |
+| 6 | Google/SSO join | **Next session+** |
+| 7 | Tomorrow focus board (persist assignments) | Scaffold live; **persist next session** |
 | 8 | Other chat adapters | After Teams |
+
+**Session boundary:** Items **4–8** ship in the **next session** (see `starting-out-documents/Session Handoff_ Context Transfer 2026-08-04c.md`).
 
 ## Cockpit panels (v1 — this batch)
 

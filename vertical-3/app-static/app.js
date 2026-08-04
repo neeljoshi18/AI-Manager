@@ -93,6 +93,11 @@ function showView(name) {
   if (name === "cockpit") {
     refreshCockpit();
   }
+  if (name === "connections") {
+    refreshConnectors();
+    refreshHealth();
+    refreshOnboarding();
+  }
   if (name === "team") {
     refreshTeam();
   }
@@ -780,22 +785,76 @@ async function startOAuth(kind) {
   try {
     const res = await fetch(path);
     const body = await res.json().catch(() => ({}));
-    if (res.status === 501 || body.error) {
-      alert(
-        (body.message || "Not configured") +
-          "\n\nManual path: " +
-          (body.manual_path || body.webhook_path || "deploy/oauth/README.md")
-      );
+    if (body.ready === false || body.error) {
+      const manual =
+        body.manual_path ||
+        body.webhook_url ||
+        body.webhook_path ||
+        "deploy/oauth/README.md";
+      const msg =
+        (body.message || "Not fully configured") +
+        "\n\nManual path:\n" +
+        manual +
+        (body.webhook_url ? "\n\nWebhook URL:\n" + body.webhook_url : "");
+      alert(msg);
+      // Still open install URL if present (e.g. GH slug without full env)
+      if (body.install_url) window.open(body.install_url, "_blank", "noopener");
       return;
     }
     const url = body.authorize_url || body.install_url;
     if (url) {
       window.open(url, "_blank", "noopener");
+      if (kind === "slack") {
+        // Soft reminder after popup
+        setTimeout(() => {
+          /* status line only */
+        }, 0);
+      }
     } else {
       alert(JSON.stringify(body, null, 2));
     }
   } catch (e) {
     alert("OAuth start failed: " + (e.message || e));
+  }
+}
+
+/** Refresh Connectors panel + oauth pills (Connections). */
+async function refreshConnectors() {
+  const statusEl = $("conn-oauth-status");
+  try {
+    const o = await jfetch("/v3/oauth/status");
+    const slack = o.slack || {};
+    const gh = o.github || {};
+    if (statusEl) {
+      statusEl.innerHTML = [
+        `<span class="pill ${slack.oauth_credentials ? "up" : "mid"}">Slack OAuth: ${slack.oauth_credentials ? "ready" : "manual vault"}</span>`,
+        `<span class="pill ${gh.app_env_present ? "up" : "mid"}">GitHub App: ${gh.app_env_present ? "ready" : "set slug/id"}</span>`,
+        `<span class="pill mid">Teams: roadmap</span>`,
+      ].join(" ");
+    }
+    if ($("conn-github")) {
+      $("conn-github").textContent = gh.note || $("conn-github").textContent;
+    }
+    if ($("conn-gh-webhook") && gh.webhook_url) {
+      $("conn-gh-webhook").textContent = gh.webhook_url;
+    }
+    if ($("conn-slack")) {
+      $("conn-slack").textContent =
+        (slack.note || "Outbound digests via egress vault.") +
+        (slack.egress_mode ? ` Mode: ${slack.egress_mode}.` : "");
+    }
+    if ($("conn-slack-manual")) {
+      $("conn-slack-manual").textContent = slack.manual_path
+        ? `Manual: ${slack.manual_path}`
+        : "";
+    }
+    if ($("conn-teams-note") && o.teams?.note) {
+      $("conn-teams-note").textContent = "Microsoft Teams: " + o.teams.note;
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="pill mid">install status: ${esc(e.message || "n/a")}</span>`;
+    }
   }
 }
 
@@ -2331,7 +2390,25 @@ if ($("ck-graph")) $("ck-graph").addEventListener("click", () => showView("graph
 if ($("ck-graph-2")) $("ck-graph-2").addEventListener("click", () => showView("graph"));
 if ($("ck-team")) $("ck-team").addEventListener("click", () => showView("team"));
 if ($("ck-insights")) $("ck-insights").addEventListener("click", () => showView("insights"));
+if ($("ck-connect")) $("ck-connect").addEventListener("click", () => showView("connections"));
 if ($("btn-team-bulk")) $("btn-team-bulk").addEventListener("click", () => bulkImportTeam());
+if ($("btn-gh-webhook-copy")) {
+  $("btn-gh-webhook-copy").addEventListener("click", async () => {
+    const t = $("conn-gh-webhook")?.textContent?.trim();
+    if (!t || t === "—") {
+      await refreshConnectors();
+    }
+    const url = $("conn-gh-webhook")?.textContent?.trim();
+    if (url && url !== "—") {
+      try {
+        await navigator.clipboard.writeText(url);
+        alert("Webhook URL copied");
+      } catch {
+        prompt("Copy webhook URL:", url);
+      }
+    }
+  });
+}
 if ($("btn-team-add")) {
   $("btn-team-add").addEventListener("click", addTeamMember);
 }

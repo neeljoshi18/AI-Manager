@@ -111,7 +111,8 @@ services:
     image: ai-manager-twin-api:local
     ports:
       - "18083:18083"
-    # OAuth client id/secret from deploy/.env.staging (gitignored). Never SLACK_BOT_TOKEN here.
+    # OAuth client id/secret from deploy/.env.staging (gitignored). Never put SLACK_BOT_TOKEN in env.
+    # OAUTH_VAULT_PATH: Slack OAuth callback writes SLACK_BOT_TOKEN for egress (restart egress after).
     env_file:
       - path: .env.staging
         required: false
@@ -133,6 +134,8 @@ services:
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
       GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID:-}
+      OAUTH_VAULT_PATH: ${OAUTH_VAULT_PATH:-/secrets/dev_secrets.json}
+      DEFAULT_TENANT_ID: ${DEFAULT_TENANT_ID:-ten_github}
       # 24h lookback — pilot standup replacement (sparse commit days still get digests)
       STATUS_WINDOW_SECS: ${STATUS_WINDOW_SECS:-86400}
       NOTIFY_INTERVAL_SECS: ${NOTIFY_INTERVAL_SECS:-1800}
@@ -149,6 +152,8 @@ services:
       SEED_TEAM_CHANNEL: ${SLACK_TEST_CHANNEL_ID:-C0APN754MQV}
     volumes:
       - twin_state:/var/lib/ai-manager
+      # RW so Slack OAuth callback can upsert SLACK_BOT_TOKEN (egress still reads same file)
+      - ../vertical-security/secrets:/secrets
     depends_on:
       - v1
       - v2

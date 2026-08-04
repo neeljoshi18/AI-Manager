@@ -72,7 +72,7 @@ function fmtAge(secs) {
 
 function showView(name) {
   document.body.classList.toggle("view-graph-active", name === "graph");
-  // (rest of showView continues below — keep existing body)
+  document.body.classList.toggle("view-cockpit-active", name === "cockpit");
   document.querySelectorAll(".view").forEach((el) => el.classList.add("hidden"));
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
   const view = $(`view-${name}`);
@@ -80,15 +80,19 @@ function showView(name) {
   const btn = document.querySelector(`.nav-item[data-view="${name}"]`);
   if (btn) btn.classList.add("active");
   const titles = {
-    today: ["Today", "Org pulse — what the graph knows right now"],
+    cockpit: ["Champion cockpit", "Pod pulse · digests · conflicts · heat · tomorrow focus"],
+    today: ["Today", "Org pulse — lighter view; use Cockpit for full operator console"],
     status: ["My status", "Approve / edit / don't send · change-only Slack"],
-    team: ["Team", "Multi-person Slack map · intents · conflicts"],
+    team: ["Team", "Map eng pod · bulk import · compile digests"],
     graph: ["Graph", "Live context map — people, work, intents, edges"],
     connections: ["Connections", "Services and on-demand test status"],
     settings: ["Settings", "Cadence, metrics, product boundaries"],
     insights: ["Dev insights", "Activity heat · commits · when you ship — data is currency"],
     lab: ["Lab", "Engineer console and raw JSON"],
   };
+  if (name === "cockpit") {
+    refreshCockpit();
+  }
   if (name === "team") {
     refreshTeam();
   }
@@ -444,6 +448,292 @@ async function refreshReadiness() {
     ].join(" ");
   } catch (e) {
     el.innerHTML = `<span class="pill mid">readiness: ${esc(e.message || "n/a")}</span>`;
+  }
+}
+
+/** Champion cockpit — packages readiness, pod, conflicts, heat, graph, tomorrow focus. */
+async function refreshCockpit() {
+  const tenant = syncTenantFields(activeTenant());
+  const msg = $("ck-msg");
+  if (msg) msg.textContent = "Refreshing cockpit…";
+  try {
+    const [ready, team, pulse, ins, graph] = await Promise.all([
+      jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/pilot_readiness`).catch((e) => ({
+        error: e.message,
+      })),
+      jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`).catch(() => ({ members: [] })),
+      jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=1`
+      ).catch(() => ({ conflicts: { cards: [] }, intents: {} })),
+      jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/insights/dev`).catch(() => null),
+      jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=200&edge_limit=400&include_demo=false`
+      ).catch(() => null),
+    ]);
+
+    // Readiness
+    const soft = ready.soft_outreach_ready === true;
+    const multi = ready.multi_person_ready === true || team.multi_person_ready === true;
+    const content = ready.content_people ?? 0;
+    if ($("ck-readiness")) {
+      $("ck-readiness").innerHTML = [
+        `<span class="pill ${soft ? "up" : "mid"}">soft outreach: ${soft ? "ready" : "solo ok"}</span>`,
+        `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "yes" : "need ≥2"}</span>`,
+        `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">content digests: ${content}</span>`,
+        `<span class="pill mid">${esc((ready.note || ready.error || "").toString().slice(0, 100))}</span>`,
+      ].join(" ");
+    }
+
+    const members = team.members || [];
+    const mapped = members.filter((m) => m.slack_mapped).length;
+    const withContent = members.filter((m) => m.last_digest?.has_content).length;
+    const cards = pulse.conflicts?.cards || [];
+    const confCount = pulse.conflicts?.count ?? cards.length;
+
+    if ($("ck-stat-mapped")) $("ck-stat-mapped").textContent = String(mapped);
+    if ($("ck-stat-mapped-d"))
+      $("ck-stat-mapped-d").textContent = `${members.length} twins · ${team.unique_slack_users ?? mapped} unique chat`;
+    if ($("ck-stat-content")) $("ck-stat-content").textContent = String(withContent);
+    if ($("ck-stat-content-d"))
+      $("ck-stat-content-d").textContent = `${members.filter((m) => m.last_digest).length} with any draft`;
+    if ($("ck-stat-conflicts")) $("ck-stat-conflicts").textContent = String(confCount);
+    if ($("ck-stat-conflicts-d"))
+      $("ck-stat-conflicts-d").textContent =
+        confCount > 0 ? "shared-work conflicts live" : "no open work conflicts";
+
+    // Pod roster
+    const pod = $("ck-pod");
+    if (pod) {
+      if (!members.length) {
+        pod.innerHTML = `<li class="muted">No pod members — open <strong>Team</strong> and map people (or bulk import).</li>`;
+      } else {
+        pod.innerHTML = members
+          .map((m) => {
+            const d = m.last_digest;
+            let dig = "no digest yet";
+            if (d) {
+              dig = d.has_content
+                ? `${d.approx_item_count || "?"} item(s) · ${d.status_label || d.status}`
+                : d.empty_placeholder
+                  ? "empty window"
+                  : d.status_label || d.status || "draft";
+            }
+            const did = d?.draft_id || "";
+            const lid = d?.ledger_id || "";
+            return `<li>
+              <button type="button" class="ghost graph-filter-btn pod-row-btn dig-open"
+                data-draft="${esc(did)}" data-ledger="${esc(lid)}">
+                <strong>${esc(m.display_name || m.subject_id)}</strong>
+                ${m.slack_mapped ? "" : " · <span class='muted'>unmapped chat</span>"}
+              </button>
+              <div class="muted small">${esc(dig)}${d?.preview ? " · " + esc(d.preview.slice(0, 72)) : ""}</div>
+            </li>`;
+          })
+          .join("");
+        pod.querySelectorAll(".dig-open").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const did = btn.getAttribute("data-draft");
+            const lid = btn.getAttribute("data-ledger");
+            if (!did) {
+              alert("No draft yet — Compile digests first");
+              return;
+            }
+            const ok = await openDraftById(tenant, did, lid);
+            if (ok) showView("status");
+          });
+        });
+      }
+    }
+
+    // Conflicts
+    const confEl = $("ck-conflicts");
+    if (confEl) {
+      if (!cards.length) {
+        confEl.innerHTML = `<p class="muted">No open live conflicts. Enrich story or ship real dual-owner PRs to surface SHIP/FREEZE.</p>`;
+      } else {
+        confEl.innerHTML =
+          `<ul class="item-list">` +
+          cards
+            .slice(0, 12)
+            .map(
+              (c) =>
+                `<li><strong>[${esc(c.severity || c.kind)}]</strong> ${esc(c.summary || c.kind)} <span class="muted small">${esc(c.kind || "")}</span></li>`
+            )
+            .join("") +
+          `</ul>`;
+      }
+    }
+    const intentUl = $("ck-intents");
+    if (intentUl) {
+      const sample = pulse.intents?.sample || [];
+      intentUl.innerHTML = sample.length
+        ? sample
+            .slice(0, 12)
+            .map((n) => {
+              const ty = n.intent_type || n.type || "Intent";
+              return `<li><strong>${esc(ty)}</strong> ${esc(n.label || n.title || n.id || "")}</li>`;
+            })
+            .join("")
+        : `<li class="muted">No live intents in sample</li>`;
+    }
+
+    // Heat
+    if (ins && ins.activity) {
+      const act = ins.activity;
+      if ($("ck-heat-insight")) $("ck-heat-insight").textContent = act.insight || "";
+      const hod = act.hour_of_day_utc || {};
+      const counts = hod.counts || [];
+      const labels = hod.labels || [];
+      if ($("ck-heat-hours")) {
+        let lines = [];
+        for (let i = 0; i < counts.length; i++) {
+          const n = counts[i] || 0;
+          if (!n) continue;
+          const bar = "█".repeat(Math.min(28, n));
+          lines.push(`${labels[i] || i}: ${bar} ${n}`);
+        }
+        $("ck-heat-hours").textContent = lines.join("\n") || "No heat yet.";
+      }
+      if ($("ck-heat-authors")) {
+        const by = act.by_author || {};
+        const top = Object.entries(by)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 6)
+          .map(([k, v]) => `${k}: ${v} authored`)
+          .join(" · ");
+        $("ck-heat-authors").textContent = top
+          ? `Authored volume (context, not rank): ${top}`
+          : "";
+      }
+    } else if ($("ck-heat-insight")) {
+      $("ck-heat-insight").textContent = "Heat unavailable";
+    }
+
+    // Graph stats
+    if ($("ck-graph-stats") && graph) {
+      $("ck-graph-stats").textContent = JSON.stringify(
+        {
+          nodes: (graph.nodes || []).length,
+          edges: (graph.edges || []).length,
+          by_type: graph.by_type || {},
+          edge_by_type: graph.edge_by_type || {},
+        },
+        null,
+        2
+      );
+    }
+
+    // Tomorrow focus — suggestions from conflicts, intents, digests
+    const tomorrow = [];
+    for (const c of cards.slice(0, 5)) {
+      tomorrow.push({
+        kind: "conflict",
+        text: `${c.severity || c.kind}: ${c.summary || c.kind}`,
+        why: "Resolve shared-work conflict before next standup",
+      });
+    }
+    for (const n of (pulse.intents?.sample || []).slice(0, 5)) {
+      const ty = n.intent_type || "Intent";
+      if (ty === "BLOCKED" || ty === "FREEZE" || ty === "SHIP") {
+        tomorrow.push({
+          kind: "intent",
+          text: `${ty}: ${n.label || n.title || ""}`,
+          why: "Intent needs champion attention",
+        });
+      }
+    }
+    for (const m of members) {
+      if (m.last_digest?.has_content && m.last_digest?.preview) {
+        const line = (m.last_digest.preview || "").split("\n").find((l) => l.includes("•"));
+        if (line) {
+          tomorrow.push({
+            kind: "digest",
+            text: `${m.display_name}: ${line.replace(/^[\s*•]+/, "").slice(0, 90)}`,
+            why: "From their latest status draft",
+          });
+        }
+      }
+    }
+    // de-dupe by text
+    const seenT = new Set();
+    const uniq = [];
+    for (const t of tomorrow) {
+      const k = t.text.slice(0, 80);
+      if (seenT.has(k)) continue;
+      seenT.add(k);
+      uniq.push(t);
+    }
+    const tomEl = $("ck-tomorrow");
+    if (tomEl) {
+      tomEl.innerHTML = uniq.length
+        ? uniq
+            .slice(0, 10)
+            .map(
+              (t) =>
+                `<li><span class="pill mid">${esc(t.kind)}</span> <strong>${esc(t.text)}</strong><div class="muted small">${esc(t.why)}</div></li>`
+            )
+            .join("")
+        : `<li class="muted">No suggestions yet — compile digests or enrich story so open work appears.</li>`;
+    }
+
+    if (msg) {
+      msg.textContent = `Updated ${new Date().toISOString().slice(11, 19)} UTC · tenant ${tenant}`;
+    }
+  } catch (e) {
+    if (msg) msg.textContent = "Cockpit failed: " + (e.message || e);
+  }
+}
+
+async function bulkImportTeam() {
+  const tenant = syncTenantFields(activeTenant());
+  const raw = $("tm-bulk")?.value || "";
+  const msg = $("team-bulk-msg");
+  const lines = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    if (msg) msg.textContent = "Paste at least one line.";
+    return;
+  }
+  let ok = 0;
+  let fail = 0;
+  const notes = [];
+  for (const line of lines) {
+    // display | github | slack | optional subject
+    const parts = line.split("|").map((s) => s.trim());
+    if (parts.length < 3) {
+      fail++;
+      notes.push(`bad line: ${line.slice(0, 40)}`);
+      continue;
+    }
+    const [display_name, github, slack_user_id, subjectOpt] = parts;
+    const subject_id = subjectOpt || github || display_name;
+    const provider_aliases = [github, display_name].filter(Boolean);
+    try {
+      await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team/members`, {
+        method: "POST",
+        body: JSON.stringify({
+          subject_id,
+          display_name: display_name || subject_id,
+          slack_user_id,
+          provider_aliases,
+          skip_shadow: true,
+          enabled: true,
+        }),
+      });
+      ok++;
+    } catch (e) {
+      fail++;
+      notes.push(`${display_name}: ${e.message || e}`);
+    }
+  }
+  if (msg) {
+    msg.textContent = `Imported ${ok} ok, ${fail} failed. ${notes.slice(0, 3).join(" · ")}`;
+  }
+  await refreshTeam();
+  if (!$("view-cockpit")?.classList.contains("hidden")) {
+    await refreshCockpit();
   }
 }
 
@@ -1897,8 +2187,15 @@ $("btn-refresh").addEventListener("click", async () => {
   await loadLatest();
   await refreshPulse();
   await refreshMetrics();
+  await refreshReadiness();
+  if (!$("view-cockpit")?.classList.contains("hidden")) {
+    await refreshCockpit();
+  }
   if (!$("view-graph")?.classList.contains("hidden")) {
     await refreshGraph(false);
+  }
+  if (!$("view-insights")?.classList.contains("hidden")) {
+    await refreshDevInsights();
   }
 });
 $("btn-sim").addEventListener("click", simulate);
@@ -1997,9 +2294,44 @@ if ($("btn-seed-story")) {
     }
   });
 }
-// Boot: pilot tenant + readiness strip
+// Boot: pilot tenant + champion cockpit default
 syncTenantFields(PILOT_TENANT);
 refreshReadiness();
+if ($("view-cockpit") && !$("view-cockpit").classList.contains("hidden")) {
+  refreshCockpit();
+}
+
+// Cockpit actions
+if ($("ck-refresh")) $("ck-refresh").addEventListener("click", () => refreshCockpit());
+if ($("ck-compile")) {
+  $("ck-compile").addEventListener("click", async () => {
+    const msg = $("ck-msg");
+    if (msg) msg.textContent = "Compiling digests…";
+    // ensure team-tenant aligned
+    syncTenantFields(activeTenant());
+    if ($("team-tenant")) $("team-tenant").value = activeTenant();
+    await compileTeamDigests();
+    await refreshCockpit();
+  });
+}
+if ($("ck-enrich")) {
+  $("ck-enrich").addEventListener("click", async () => {
+    const msg = $("ck-msg");
+    if (msg) msg.textContent = "Enriching story…";
+    try {
+      await enrichGraphStory();
+      await refreshCockpit();
+      if (msg) msg.textContent = "Story enriched.";
+    } catch (e) {
+      if (msg) msg.textContent = "Enrich failed: " + (e.message || e);
+    }
+  });
+}
+if ($("ck-graph")) $("ck-graph").addEventListener("click", () => showView("graph"));
+if ($("ck-graph-2")) $("ck-graph-2").addEventListener("click", () => showView("graph"));
+if ($("ck-team")) $("ck-team").addEventListener("click", () => showView("team"));
+if ($("ck-insights")) $("ck-insights").addEventListener("click", () => showView("insights"));
+if ($("btn-team-bulk")) $("btn-team-bulk").addEventListener("click", () => bulkImportTeam());
 if ($("btn-team-add")) {
   $("btn-team-add").addEventListener("click", addTeamMember);
 }

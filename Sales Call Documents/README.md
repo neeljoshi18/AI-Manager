@@ -8,6 +8,7 @@
 
 | # | Doc | When |
 |---|-----|------|
+| **00** | `00_Leave_Behind_One_Pager.pdf` | **Email after call** — single page leave-behind |
 | **01** | `01_UX_Brief_Sales_Call.pdf` | Always — current truth, 5-min path, employee vs champion |
 | **02** | `02_Ideal_10_Person_UX_Vision.pdf` | Deep dive — north-star 10-person journey |
 | **03** | `03_Auth_Onboarding_and_Chat.pdf` | “How do we log in / Slack vs Teams?” |

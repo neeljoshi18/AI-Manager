@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260804b" />
+  <link rel="stylesheet" href="/app/styles.css?v=20260804c" />
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -18,7 +18,8 @@
         </div>
       </div>
       <nav>
-        <button class="nav-item active" data-view="today">Today</button>
+        <button class="nav-item active" data-view="cockpit">Cockpit</button>
+        <button class="nav-item" data-view="today">Today</button>
         <button class="nav-item" data-view="status">My status</button>
         <button class="nav-item" data-view="team">Team</button>
         <button class="nav-item" data-view="graph">Graph</button>
@@ -35,19 +36,112 @@
     <main class="main">
       <header class="top">
         <div>
-          <h1 id="view-title">Today</h1>
-          <p class="muted" id="view-sub">Org pulse — what the graph knows right now</p>
+          <h1 id="view-title">Champion cockpit</h1>
+          <p class="muted" id="view-sub">Pod pulse · digests · conflicts · heat · tomorrow focus</p>
         </div>
         <div class="top-actions">
           <button id="btn-refresh" class="ghost">Refresh</button>
         </div>
       </header>
 
+      <!-- CHAMPION COCKPIT (operator north star) -->
+      <section id="view-cockpit" class="view">
+        <div class="card cockpit-hero">
+          <div class="cockpit-hero-row">
+            <div>
+              <h2 style="margin:0;">Champion cockpit</h2>
+              <p class="muted small" style="margin:0.35rem 0 0;">
+                Eng pod pulse — digests, conflicts, heat, graph. Not LOC rankings.
+                Map people under <strong>Team</strong>; digests land in chat (Slack today · Teams roadmap).
+              </p>
+            </div>
+            <div class="actions-inline cockpit-actions">
+              <button type="button" id="ck-compile" class="primary">Compile digests</button>
+              <button type="button" id="ck-enrich" class="ghost">Enrich story</button>
+              <button type="button" id="ck-graph" class="ghost">Open graph</button>
+              <button type="button" id="ck-team" class="ghost">Map people</button>
+              <button type="button" id="ck-refresh" class="ghost">Refresh</button>
+            </div>
+          </div>
+          <div class="meta-row" id="ck-readiness" style="margin-top:0.75rem;"><span class="pill mid">loading…</span></div>
+          <p class="muted small" id="ck-msg" style="margin:0.4rem 0 0;"></p>
+        </div>
+
+        <div class="grid3" id="ck-stats">
+          <div class="stat card">
+            <div class="stat-label">Pod mapped</div>
+            <div class="stat-value" id="ck-stat-mapped">—</div>
+            <div class="muted small" id="ck-stat-mapped-d">people with chat map</div>
+          </div>
+          <div class="stat card">
+            <div class="stat-label">Digests with content</div>
+            <div class="stat-value" id="ck-stat-content">—</div>
+            <div class="muted small" id="ck-stat-content-d">non-empty status</div>
+          </div>
+          <div class="stat card">
+            <div class="stat-label">Live conflicts</div>
+            <div class="stat-value" id="ck-stat-conflicts">—</div>
+            <div class="muted small" id="ck-stat-conflicts-d">work conflicts, not people scores</div>
+          </div>
+        </div>
+
+        <div class="cockpit-grid">
+          <div class="card">
+            <div class="cockpit-card-h">
+              <h2 style="margin:0;">Eng pod</h2>
+              <span class="muted small">Click → My status (Approve / Don't send)</span>
+            </div>
+            <ul id="ck-pod" class="item-list"><li class="muted">Loading…</li></ul>
+          </div>
+          <div class="card">
+            <div class="cockpit-card-h">
+              <h2 style="margin:0;">Work conflicts</h2>
+              <span class="muted small">SHIP / FREEZE / BLOCKED · dual owners</span>
+            </div>
+            <div id="ck-conflicts" class="empty-hint">Loading…</div>
+            <h3 class="graph-side-h">Intents sample</h3>
+            <ul id="ck-intents" class="item-list"><li class="muted">—</li></ul>
+          </div>
+        </div>
+
+        <div class="cockpit-grid">
+          <div class="card">
+            <div class="cockpit-card-h">
+              <h2 style="margin:0;">Team heat</h2>
+              <span class="muted small">When the pod ships — not individual rankings</span>
+            </div>
+            <p id="ck-heat-insight" class="muted"></p>
+            <pre id="ck-heat-hours" class="box" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow:auto;"></pre>
+            <p class="muted small" id="ck-heat-authors"></p>
+          </div>
+          <div class="card">
+            <div class="cockpit-card-h">
+              <h2 style="margin:0;">Graph snapshot</h2>
+              <span class="muted small">Permissioned context map</span>
+            </div>
+            <pre id="ck-graph-stats" class="box small">{}</pre>
+            <div class="actions-inline" style="margin-top:0.5rem;">
+              <button type="button" id="ck-graph-2" class="ghost">Open full graph</button>
+              <button type="button" id="ck-insights" class="ghost">Dev insights</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cockpit-card-h">
+            <h2 style="margin:0;">Tomorrow focus <span class="pill mid">suggestions</span></h2>
+            <span class="muted small">Human-gated — from open conflicts, intents, and digests. Not auto-assigned tasks.</span>
+          </div>
+          <ul id="ck-tomorrow" class="item-list"><li class="muted">Loading…</li></ul>
+          <p class="muted small" id="ck-tomorrow-note">Persist assignments land in a later slice; use these as standup-killers today.</p>
+        </div>
+      </section>
+
       <!-- TODAY -->
-      <section id="view-today" class="view">
+      <section id="view-today" class="view hidden">
         <div class="card" style="margin-bottom:0.75rem;">
           <div class="meta-row" id="today-readiness"><span class="pill mid">checking readiness…</span></div>
-          <p class="muted small" style="margin:0.4rem 0 0;">Demo path: <strong>Today</strong> digests → click person → <strong>My status</strong> (Approve / Don't send) → <strong>Graph</strong> → Settings metrics.</p>
+          <p class="muted small" style="margin:0.4rem 0 0;">Prefer <strong>Cockpit</strong> for the full champion view. Path: digests → My status → Graph.</p>
         </div>
         <div class="grid3">
           <div class="stat card">
@@ -172,6 +266,7 @@
         </div>
         <div class="card">
           <h2>Add / update member</h2>
+          <p class="muted small">Path A mapping (live): one person at a time. Chat id is Slack today; Teams id when adapter ships.</p>
           <label>Subject id (global_user_id) <input id="tm-subject" placeholder="gu_… or provider key" /></label>
           <label>Display name <input id="tm-name" placeholder="Alex" /></label>
           <label>Slack user ID <input id="tm-slack" placeholder="U0…" /></label>
@@ -183,6 +278,16 @@
             <button id="btn-team-add" class="primary">Save member</button>
           </div>
           <p class="muted small" id="team-add-msg"></p>
+        </div>
+        <div class="card">
+          <h2>Bulk map (eng pod)</h2>
+          <p class="muted small">One person per line: <code>display_name | github_login | slack_user_id | optional_subject</code>. Example: <code>Alex | alexdev | U0ABC |</code></p>
+          <textarea id="tm-bulk" rows="6" placeholder="Alex | alexdev | U0123ABC |
+Sam | samcodes | U0456DEF |" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;"></textarea>
+          <div class="actions" style="margin-top:0.5rem;">
+            <button type="button" id="btn-team-bulk" class="primary">Import lines</button>
+          </div>
+          <p class="muted small" id="team-bulk-msg"></p>
         </div>
         <div class="card">
           <h2>Intents (rules v0)</h2>

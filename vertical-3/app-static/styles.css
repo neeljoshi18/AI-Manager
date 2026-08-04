@@ -280,6 +280,49 @@ button.primary, .linkbtn.primary {
 body.view-graph-active .main {
   max-width: min(1400px, 100%);
 }
+
+/* —— Champion cockpit —— */
+body.view-cockpit-active .main {
+  max-width: min(1200px, 100%);
+}
+.cockpit-hero-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.cockpit-actions {
+  max-width: 100%;
+}
+.cockpit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+@media (max-width: 900px) {
+  .cockpit-grid { grid-template-columns: 1fr; }
+}
+.cockpit-card-h {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 0.75rem;
+}
+.cockpit-card-h h2 {
+  font-size: 1.05rem;
+}
+.pod-row-btn {
+  text-align: left;
+  width: 100%;
+  justify-content: flex-start;
+}
+#ck-pod li {
+  margin-bottom: 0.35rem;
+}
 button.primary:hover, .linkbtn.primary:hover {
   background: #000;
   opacity: 0.9;

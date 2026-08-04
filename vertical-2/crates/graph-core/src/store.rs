@@ -617,7 +617,25 @@ impl GraphStore for InMemoryGraphStore {
             .filter(|e| e.key().0 == ctx.tenant_id && Self::visible_node(ctx, e.value()))
             .map(|e| e.value().clone())
             .collect();
-        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        // Product map priority: people/work/intents first, commits last.
+        // Lexicographic node_id put commit:* first and starved Person/PR/Intent + their edges.
+        let type_rank = |t: &str| -> u8 {
+            match t {
+                "Person" => 0,
+                "Repo" => 1,
+                "PullRequest" => 2,
+                "Issue" | "Ticket" => 3,
+                "Intent" => 4,
+                "Team" | "Channel" => 5,
+                "Commit" => 9,
+                _ => 6,
+            }
+        };
+        nodes.sort_by(|a, b| {
+            type_rank(&a.node_type)
+                .cmp(&type_rank(&b.node_type))
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
         nodes.truncate(node_limit);
 
         let mut edges: Vec<GraphEdge> = self
@@ -633,7 +651,23 @@ impl GraphStore for InMemoryGraphStore {
             let ids: HashSet<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
             edges.retain(|e| ids.contains(&e.from_node_id) && ids.contains(&e.to_node_id));
         }
-        edges.sort_by(|a, b| a.edge_id.cmp(&b.edge_id));
+        // Prefer story edges (BLOCKS/CLAIMS/ABOUT/AUTHORED) over bulk PUSHED_TO when truncated
+        let edge_rank = |t: &str| -> u8 {
+            match t {
+                "BLOCKS" | "BLOCKED_BY" => 0,
+                "CLAIMS" | "ABOUT" => 1,
+                "AUTHORED" | "ASSIGNED_TO" => 2,
+                "BELONGS_TO" | "MEMBER_OF" => 3,
+                "CHECKED" => 4,
+                "PUSHED_TO" => 8,
+                _ => 5,
+            }
+        };
+        edges.sort_by(|a, b| {
+            edge_rank(&a.edge_type)
+                .cmp(&edge_rank(&b.edge_type))
+                .then_with(|| b.valid_from.cmp(&a.valid_from))
+        });
         edges.truncate(edge_limit);
         Ok((nodes, edges))
     }

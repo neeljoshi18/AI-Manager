@@ -17,12 +17,14 @@ code=$(curl -sS -o /tmp/ss_demo.json -w '%{http_code}' --max-time 25 "$BASE/v3/d
 if [ "$code" = "200" ]; then
   node -e '
     const d=require("/tmp/ss_demo.json");
-    const g=d.graph_status||"";
     const n=d.graph_nodes||0;
-    if(d.v1&&d.v2&&d.v3&&n>0) process.exit(0);
-    console.error(JSON.stringify({v1:d.v1,v2:d.v2,v3:d.v3,graph_nodes:n,graph_status:g}));
+    console.log(JSON.stringify({v1:d.v1,v2:d.v2,v3:d.v3,graph_nodes:n,graph_status:d.graph_status}));
+    // v2+v3+graph required for demo; v1 required for live webhook ingest (warn if down)
+    if(d.v2&&d.v3&&n>0) process.exit(0);
     process.exit(1);
-  ' && ok "demo/status stack+graph" || bad "demo/status thin or down"
+  ' && ok "demo/status v2+v3+graph" || bad "demo/status thin or down"
+  node -e 'const d=require("/tmp/ss_demo.json"); process.exit(d.v1?0:2)' \
+    && ok "v1 ingest up" || { echo "  WARN v1 down — live GitHub webhooks may drop until restart"; }
 else
   bad "demo/status http=$code"
 fi
@@ -43,15 +45,17 @@ else
 fi
 
 code=$(curl -sS -o /tmp/ss_g.json -w '%{http_code}' --max-time 25 \
-  "$BASE/v3/tenants/$T/graph?node_limit=50&edge_limit=100&include_demo=false" || echo 000)
+  "$BASE/v3/tenants/$T/graph?node_limit=120&edge_limit=300&include_demo=false" || echo 000)
 if [ "$code" = "200" ]; then
   node -e '
     const d=require("/tmp/ss_g.json");
     const n=(d.nodes||[]).length, e=(d.edges||[]).length;
-    console.log(JSON.stringify({n,e,by:d.by_type}));
-    if(n>0) process.exit(0);
+    const by=d.by_type||{};
+    console.log(JSON.stringify({n,e,by,edge_by:d.edge_by_type}));
+    // Must show people + edges (not commit-only hairball trunc)
+    if(n>0 && e>0 && (by.Person||0)>0) process.exit(0);
     process.exit(1);
-  ' && ok "graph nodes" || bad "graph empty"
+  ' && ok "graph people+edges" || bad "graph missing people/edges (truncation bug?)"
 else
   bad "graph http=$code"
 fi

@@ -1039,7 +1039,7 @@ async function refreshGraph(forceLayout) {
     }
     const includeDemo = $("graph-hide-demo")?.checked === false;
     const data = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=500&edge_limit=1200&include_demo=${includeDemo ? "true" : "false"}`
+      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=600&edge_limit=1500&include_demo=${includeDemo ? "true" : "false"}`
     );
     graphState.raw = data;
     graphState.lastFetch = Date.now();

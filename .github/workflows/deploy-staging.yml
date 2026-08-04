@@ -139,12 +139,27 @@ jobs:
           docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging --profile tls ps
           curl -sf --max-time 8 http://127.0.0.1:18083/healthz || true
           echo
-          # V1 sometimes hangs after recreate — force restart + health
-          docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging restart v1 || true
-          sleep 4
-          curl -sf --max-time 5 http://127.0.0.1:18080/healthz || true
+          # V1 sometimes hangs after recreate — restart until healthy (sales gate)
+          for i in 1 2 3 4 5; do
+            if curl -sf --max-time 4 http://127.0.0.1:18080/healthz >/dev/null; then
+              echo "v1 healthy on try \$i"
+              break
+            fi
+            echo "v1 unhealthy try \$i — restart"
+            docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging restart v1 || true
+            sleep 6
+          done
+          curl -sf --max-time 5 http://127.0.0.1:18080/healthz || echo "V1 STILL DOWN"
           echo
           docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging restart bridge || true
+          sleep 3
+          # If V1 still dead, recreate container (keeps volume)
+          if ! curl -sf --max-time 4 http://127.0.0.1:18080/healthz >/dev/null; then
+            echo "v1 recreate (preserve volumes)"
+            docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging up -d --force-recreate --no-deps v1 || true
+            sleep 8
+            curl -sf --max-time 5 http://127.0.0.1:18080/healthz || echo "V1 STILL DOWN after recreate"
+          fi
           echo
           # Prove volumes still hold graph state after recreate (data currency)
           docker run --rm -v ai-manager_v2_state:/d alpine ls -la /d || true

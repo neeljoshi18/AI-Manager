@@ -3989,6 +3989,14 @@ async fn publish_draft(
             st.metrics.publish_fail.fetch_add(1, Ordering::Relaxed);
             if matches!(e, TwinError::Egress(_)) {
                 st.metrics.egress_fail.fetch_add(1, Ordering::Relaxed);
+                // Human-readable path for My status Approve when Slack egress is down
+                let detail = e.to_string();
+                return Err(ApiError {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!(
+                        "Approve needs Slack egress (channel share). Delivery proxy failed — check egress health + vault SLACK_BOT_TOKEN, then retry. ({detail})"
+                    ),
+                });
             }
             Err(ApiError::from(e))
         }

@@ -418,6 +418,8 @@ async function act(kind) {
     return;
   }
   const base = `/v3/tenants/${encodeURIComponent(state.tenant)}/drafts/${encodeURIComponent(state.draftId)}`;
+  const labels = { publish: "Approve", veto: "Don't send", edit: "Edit" };
+  const label = labels[kind] || kind;
   try {
     if (kind === "edit") {
       const text = prompt("Edited status text:", $("st-text").textContent);
@@ -428,8 +430,23 @@ async function act(kind) {
     }
     // Reload same draft after action
     await openDraftById(state.tenant, state.draftId, state.ledgerId);
+    if (kind === "publish") {
+      const st = state.latest?.draft?.status || "";
+      if (st === "published" || st === "Published") {
+        /* ok */
+      }
+    }
   } catch (e) {
-    alert(kind + " failed: " + (e.message || e));
+    const msg = String(e.message || e);
+    if (kind === "publish" && /egress|502|BAD_GATEWAY|proxy/i.test(msg)) {
+      alert(
+        "Approve failed — Slack delivery proxy is down or the bot token is missing.\n\n" +
+          "Ops: recover egress (vault SLACK_BOT_TOKEN) and retry Approve.\n\n" +
+          msg
+      );
+    } else {
+      alert(label + " failed: " + msg);
+    }
   }
 }
 
@@ -814,6 +831,7 @@ async function startOAuth(kind) {
       : kind === "teams"
         ? "/v3/oauth/teams/start"
         : "/v3/oauth/github/start";
+  const guideEl = $("conn-guide");
   try {
     const res = await fetch(path);
     const body = await res.json().catch(() => ({}));
@@ -833,15 +851,71 @@ async function startOAuth(kind) {
           ? "\n\nTeams messaging endpoint:\n" + body.messaging_endpoint
           : "");
       alert(msg);
+      if (guideEl) {
+        guideEl.innerHTML = `<strong>Setup needed.</strong> ${esc(body.message || "Not configured")}. Manual: <code>${esc(manual)}</code>`;
+      }
       // Still open install URL if present (e.g. GH slug without full env)
       if (body.install_url) window.open(body.install_url, "_blank", "noopener");
       return;
     }
     const url = body.authorize_url || body.install_url;
-    if (url) {
-      window.open(url, "_blank", "noopener");
-    } else {
+    if (!url) {
       alert(JSON.stringify(body, null, 2));
+      return;
+    }
+    // Pre-flight: what will happen
+    if (kind === "slack") {
+      if (guideEl) {
+        guideEl.innerHTML =
+          `<strong>Connect Slack</strong> — Slack will ask to install the AI Manager bot on your workspace. ` +
+          `After you click Allow, you should see “Slack connected”. Digests use that bot token (vault only). ` +
+          `If DMs fail after first connect, restart egress once so it reloads secrets.`;
+      }
+      const ok = confirm(
+        "Connect Slack\n\n" +
+          "1. Slack will open — install the bot on your workspace\n" +
+          "2. Approve chat:write / im:write\n" +
+          "3. You’ll land on a “Slack connected” page\n" +
+          "4. Come back here and Refresh status\n\n" +
+          "Continue to Slack?"
+      );
+      if (!ok) return;
+    } else if (kind === "github") {
+      if (guideEl) {
+        guideEl.innerHTML =
+          `<strong>Install GitHub App</strong> — pick the org/repos that should feed status. ` +
+          `Webhooks hit <code>${esc(body.webhook_url || "…/webhooks/github")}</code>. ` +
+          `Graph fills via V1→bridge→V2 (needs Graph healthy).`;
+      }
+      const ok = confirm(
+        "Install GitHub App\n\n" +
+          "1. GitHub will open the App install page\n" +
+          "2. Choose org + repositories for status\n" +
+          "3. Webhooks post to status.neel.world automatically\n" +
+          "4. Return here — open Graph / Cockpit after a minute\n\n" +
+          "Continue to GitHub?"
+      );
+      if (!ok) return;
+    } else if (kind === "teams") {
+      if (guideEl) {
+        guideEl.innerHTML =
+          `<strong>Connect Teams</strong> — Azure Bot + Adaptive Cards. Needs TEAMS_APP_ID + vault TEAMS_BOT_TOKEN. ` +
+          `Messaging endpoint: <code>${esc(body.messaging_endpoint || "")}</code>`;
+      }
+    }
+    const win = window.open(url, "_blank", "noopener");
+    if (!win) {
+      alert(
+        "Popup blocked. Allow popups for status.neel.world, or open this URL manually:\n\n" +
+          url
+      );
+      if (guideEl) {
+        guideEl.innerHTML += ` <a href="${esc(url)}" target="_blank" rel="noopener">Open install link</a>`;
+      }
+    } else if (guideEl && kind === "slack") {
+      guideEl.innerHTML +=
+        ` <button type="button" class="ghost" id="conn-refresh-after">I finished — refresh status</button>`;
+      $("conn-refresh-after")?.addEventListener("click", () => refreshConnectors());
     }
   } catch (e) {
     alert("OAuth start failed: " + (e.message || e));
@@ -902,6 +976,38 @@ async function refreshConnectors() {
     if ($("conn-sso-note") && o.sso?.note) {
       $("conn-sso-note").textContent = "Google/SSO: " + o.sso.note;
     }
+    // Checklist visual (ready = credentials present; not full end-to-end proof)
+    const mark = (id, ok, text) => {
+      const el = $(id);
+      if (!el) return;
+      el.textContent = text;
+      el.style.color = ok ? "var(--up, #0a7)" : "";
+      el.style.fontWeight = ok ? "600" : "";
+    };
+    mark(
+      "conn-step-slack",
+      !!slack.oauth_credentials,
+      slack.oauth_credentials
+        ? "Connect Slack — OAuth ready (button opens Slack install)"
+        : "Connect Slack — set SLACK_CLIENT_ID/SECRET or paste vault token"
+    );
+    mark(
+      "conn-step-gh",
+      !!gh.app_env_present,
+      gh.app_env_present
+        ? "Install GitHub App — ready (button opens App install)"
+        : "Install GitHub App — set GITHUB_APP_SLUG / ID"
+    );
+    mark(
+      "conn-step-map",
+      true,
+      "Map pod under Team (Slack user ids) — bulk import available"
+    );
+    mark(
+      "conn-step-graph",
+      true,
+      "Graph + digests — needs healthy V2 + bridge after GitHub install"
+    );
   } catch (e) {
     if (statusEl) {
       statusEl.innerHTML = `<span class="pill mid">install status: ${esc(e.message || "n/a")}</span>`;

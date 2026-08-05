@@ -410,8 +410,18 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="card">
           <h2>Connectors</h2>
-          <p class="muted small">Install path for partners. Tokens never sit on twin-api env (ADR-012). Slack or Teams — same digests + Approve loop.</p>
+          <p class="muted small">One-click install for partners. Tokens never sit on twin-api env (ADR-012). Slack delivers digests; GitHub fills the graph.</p>
           <div class="meta-row" id="conn-oauth-status" style="margin-bottom:0.75rem;"><span class="pill mid">checking install status…</span></div>
+          <div class="card" style="background:var(--surface-2, #f6f7f9); margin-bottom:0.75rem; padding:0.75rem 1rem;" id="conn-guide">
+            <strong>What champions do:</strong> Connect Slack (bot for DMs) → Install GitHub App (work signals) → map people under Team → open Cockpit / Graph.
+            ICs mostly only see Slack digests (Approve / Edit / Don't send).
+          </div>
+          <ol class="muted small" id="conn-checklist" style="margin:0 0 0.75rem 1.1rem;">
+            <li id="conn-step-slack">Connect Slack — bot install OAuth (opens Slack)</li>
+            <li id="conn-step-gh">Install GitHub App — org/repos (opens GitHub)</li>
+            <li id="conn-step-map">Map pod under Team (Slack user ids)</li>
+            <li id="conn-step-graph">Graph healthy + digests compiling</li>
+          </ol>
           <div class="grid2">
             <div>
               <p><strong>GitHub</strong></p>

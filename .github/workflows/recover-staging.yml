@@ -1,0 +1,152 @@
+# Fast staging recovery (no image rebuild). Runs from GitHub network (campus SSH often blocked).
+# Actions → Recover staging → Run workflow
+name: Recover staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated services to restart (default: v2,egress,bridge,twin-api,autoheal)"
+        type: string
+        default: "v2,egress,bridge,twin-api,autoheal"
+      rebuild_twin:
+        description: "Also rebuild twin-api image (UI + API polish)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Known hosts
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          set -euo pipefail
+          HOST="${STAGING_HOST:-206.189.129.31}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -T 10 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          chmod 600 ~/.ssh/known_hosts || true
+
+      - name: Rsync monorepo (keep host secrets)
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
+          rsync -az --delete \
+            --exclude '**/target/' \
+            --exclude '.git/' \
+            --exclude 'ssh/' \
+            --exclude '**/.DS_Store' \
+            --exclude '**/node_modules/' \
+            --exclude 'vertical-security/secrets/dev_secrets.json' \
+            --exclude 'deploy/.env.staging' \
+            -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
+            ./ "${HOST}:~/ai-manager/"
+
+      - name: Restart services + health
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          SERVICES: ${{ github.event.inputs.services }}
+          REBUILD_TWIN: ${{ github.event.inputs.rebuild_twin }}
+        run: |
+          set -euo pipefail
+          HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<REMOTE
+          set -euo pipefail
+          cd "\$HOME/ai-manager"
+          export DOMAIN=status.neel.world
+          export DOCKER_BUILDKIT=1
+          COMPOSE="docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging"
+          echo "== ps before =="
+          \$COMPOSE --profile tls ps || \$COMPOSE ps || true
+
+          # Ensure stack is up (no full rebuild)
+          \$COMPOSE --profile tls up -d || \$COMPOSE up -d
+
+          if [ "${REBUILD_TWIN}" = "true" ]; then
+            echo "== rebuild twin-api only =="
+            \$COMPOSE build twin-api
+            \$COMPOSE up -d --no-deps twin-api
+          fi
+
+          IFS=',' read -ra SVCS <<< "${SERVICES}"
+          for s in "\${SVCS[@]}"; do
+            s=\$(echo "\$s" | xargs)
+            [ -z "\$s" ] && continue
+            echo "== restart \$s =="
+            \$COMPOSE restart "\$s" || true
+          done
+
+          # If V2 still dead, force-recreate container (keeps named volume)
+          sleep 5
+          if ! curl -sf --max-time 3 http://127.0.0.1:18082/healthz >/dev/null; then
+            echo "v2 still down — force-recreate (preserve volume)"
+            \$COMPOSE up -d --force-recreate --no-deps v2 || true
+            sleep 8
+          fi
+          if ! curl -sf --max-time 3 http://127.0.0.1:18090/healthz >/dev/null; then
+            echo "egress still down — force-recreate"
+            \$COMPOSE up -d --force-recreate --no-deps egress || true
+            sleep 5
+          fi
+          # twin may need bounce after egress
+          \$COMPOSE restart twin-api || true
+          sleep 4
+          \$COMPOSE restart bridge || true
+          sleep 3
+
+          echo "== health local =="
+          curl -sf --max-time 5 http://127.0.0.1:18090/healthz && echo " egress ok" || echo " EGRESS DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18082/healthz && echo " v2 ok" || echo " V2 DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18080/healthz && echo " v1 ok" || echo " V1 DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18083/healthz && echo " twin ok" || echo " TWIN DOWN"
+          # V2 stats if up
+          curl -sf --max-time 5 http://127.0.0.1:18082/v2/tenants/ten_github/stats || true
+          echo
+          \$COMPOSE --profile tls ps || \$COMPOSE ps || true
+          REMOTE
+
+      - name: Public smoke
+        run: |
+          set -euo pipefail
+          BASE=https://status.neel.world
+          sleep 8
+          for i in 1 2 3 4 5 6; do
+            g=$(curl -sS --max-time 20 "$BASE/v3/tenants/ten_github/graph?node_limit=20&include_demo=false" || true)
+            echo "try $i graph: $(echo "$g" | head -c 200)"
+            if echo "$g" | grep -q '"error":"v2_unreachable"'; then
+              sleep 10
+              continue
+            fi
+            break
+          done
+          curl -sS --max-time 15 "$BASE/healthz" || true
+          echo
+          # Publish smoke if draft exists (may 502 if channel wrong — log only)
+          DID=$(curl -sS --max-time 15 "$BASE/v3/tenants/ten_github/team" | python3 -c "import sys,json; m=json.load(sys.stdin).get('members') or [];
+print(next((x.get('last_digest',{}) or {}).get('draft_id','') for x in m if (x.get('last_digest') or {}).get('has_content')), '')" 2>/dev/null || true)
+          echo "content draft=$DID"
+          if [ -n "${DID:-}" ]; then
+            code=$(curl -sS --max-time 20 -o /tmp/pub.json -w "%{http_code}" -X POST "$BASE/v3/tenants/ten_github/drafts/$DID/publish" || echo fail)
+            echo "publish → $code"
+            head -c 300 /tmp/pub.json 2>/dev/null || true
+            echo
+          fi

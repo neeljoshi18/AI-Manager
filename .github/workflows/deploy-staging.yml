@@ -30,6 +30,10 @@ on:
         description: "Skip image rebuild (pull-only compose up)"
         type: boolean
         default: false
+      recover_only:
+        description: "Recover mode: restart V2/egress/bridge (no full multi-service rebuild)"
+        type: boolean
+        default: false
 
 concurrency:
   group: staging-deploy
@@ -79,7 +83,50 @@ jobs:
             -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
             ./ "${HOST}:~/ai-manager/"
 
+      - name: Recover V2 + egress (fast path)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_only == true }}
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/ai-manager"
+          export DOCKER_BUILDKIT=1
+          COMPOSE="docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging"
+          $COMPOSE --profile tls up -d || $COMPOSE up -d
+          echo "== rebuild twin-api (UI/API polish) =="
+          $COMPOSE build twin-api
+          $COMPOSE up -d --no-deps twin-api
+          for s in v2 egress autoheal twin-api bridge; do
+            echo "== restart $s =="
+            $COMPOSE restart "$s" || true
+          done
+          sleep 6
+          if ! curl -sf --max-time 3 http://127.0.0.1:18082/healthz >/dev/null; then
+            echo "v2 force-recreate"
+            $COMPOSE up -d --force-recreate --no-deps v2
+            sleep 10
+          fi
+          if ! curl -sf --max-time 3 http://127.0.0.1:18090/healthz >/dev/null; then
+            echo "egress force-recreate"
+            $COMPOSE up -d --force-recreate --no-deps egress
+            sleep 6
+          fi
+          $COMPOSE restart twin-api bridge || true
+          sleep 4
+          echo "== health =="
+          curl -sf --max-time 5 http://127.0.0.1:18090/healthz && echo " egress ok" || echo " EGRESS DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18082/healthz && echo " v2 ok" || echo " V2 DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18080/healthz && echo " v1 ok" || echo " V1 DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18083/healthz && echo " twin ok" || echo " TWIN DOWN"
+          $COMPOSE --profile tls ps || true
+          REMOTE
+
       - name: Compose up on droplet
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.recover_only == true) }}
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER }}

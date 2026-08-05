@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260805a" />
-  <script>window.__APP_JS_V="20260805a";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260805b" />
+  <script>window.__APP_JS_V="20260805b";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -498,6 +498,15 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <p class="muted small">From <code>/metrics</code>. Learning-window scorecard uses these. Suppressed ≫ sent means anti-spam is working.</p>
         </div>
         <div class="card">
+          <h2>System health (staging)</h2>
+          <p class="muted small">Public stack probe — no SSH. Green = process up; data still lives on droplet volumes until Neon/Postgres is wired.</p>
+          <div class="actions-inline">
+            <button type="button" id="btn-stack-health" class="primary">Probe stack</button>
+          </div>
+          <div class="meta-row" id="stack-health-pills" style="margin-top:0.5rem;"></div>
+          <pre id="stack-health-raw" class="box small" style="max-height:220px;overflow:auto;">{}</pre>
+        </div>
+        <div class="card">
           <h2>Live event trail</h2>
           <p class="muted small">Approve / Don't send / compile — embedded log now; Neon Postgres when <code>OBSERVE_DATABASE_URL</code> is set.</p>
           <div class="actions-inline">
@@ -528,6 +537,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260805a"></script>
+  <script src="/app/app.js?v=20260805b"></script>
 </body>
 </html>

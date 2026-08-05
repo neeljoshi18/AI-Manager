@@ -2608,6 +2608,49 @@ async function refreshEvents() {
 if ($("btn-events-refresh")) {
   $("btn-events-refresh").addEventListener("click", () => refreshEvents());
 }
+async function refreshStackHealth() {
+  const pills = $("stack-health-pills");
+  const raw = $("stack-health-raw");
+  try {
+    const d = await jfetch("/v3/demo/status");
+    const row = (name, up) =>
+      `<span class="pill ${up ? "up" : "down"}">${name}: ${up ? "up" : "down"}</span>`;
+    if (pills) {
+      pills.innerHTML = [
+        row("v1", d.v1 === true),
+        row("v2", d.v2 === true),
+        row("v3/twin", d.v3 === true),
+        row("egress", d.egress === true),
+        `<span class="pill mid">graph: ${esc(d.graph_status || "?")} (${d.graph_nodes || 0}n/${d.graph_edges || 0}e)</span>`,
+        `<span class="pill mid">mode: ${esc(d.mode || "?")}</span>`,
+        `<span class="pill mid">slack: ${esc(d.slack_mode || "?")}</span>`,
+      ].join(" ");
+    }
+    if (raw) {
+      raw.textContent = JSON.stringify(
+        {
+          v1: d.v1,
+          v2: d.v2,
+          v3: d.v3,
+          egress: d.egress,
+          graph_status: d.graph_status,
+          graph_nodes: d.graph_nodes,
+          graph_edges: d.graph_edges,
+          durability: d.durability,
+          slack_mode: d.slack_mode,
+          delivery_adapter: d.delivery_adapter,
+        },
+        null,
+        2
+      );
+    }
+  } catch (e) {
+    if (pills) pills.innerHTML = `<span class="pill down">probe failed: ${esc(e.message || e)}</span>`;
+  }
+}
+if ($("btn-stack-health")) {
+  $("btn-stack-health").addEventListener("click", () => refreshStackHealth());
+}
 if ($("btn-team-refresh")) {
   $("btn-team-refresh").addEventListener("click", refreshTeam);
 }

@@ -1,14 +1,12 @@
+use crate::delivery::{DeliveryAdapterKind, DeliveryClient, DeliveryPostResult};
 use async_trait::async_trait;
 use twin_core::egress::{EgressClient, SLACK_TOOL};
 use twin_core::{TwinError, TwinResult};
 
-#[derive(Debug, Clone)]
-pub struct SlackPostResult {
-    pub channel: String,
-    pub ts: String,
-}
+/// Backward-compatible alias used by older call sites / tests.
+pub type SlackPostResult = DeliveryPostResult;
 
-/// Slack Web API surface used by delivery. Always via egress in production.
+/// Slack Web API surface used by delivery. Prefer [`DeliveryClient`].
 #[async_trait]
 pub trait SlackClient: Send + Sync {
     async fn post_dm(&self, slack_user_id: &str, text: &str) -> TwinResult<SlackPostResult>;
@@ -33,6 +31,21 @@ impl EgressSlackClient {
 #[async_trait]
 impl SlackClient for EgressSlackClient {
     async fn post_dm(&self, slack_user_id: &str, text: &str) -> TwinResult<SlackPostResult> {
+        DeliveryClient::post_dm(self, slack_user_id, text).await
+    }
+
+    async fn post_channel(&self, channel_id: &str, text: &str) -> TwinResult<SlackPostResult> {
+        DeliveryClient::post_channel(self, channel_id, text).await
+    }
+}
+
+#[async_trait]
+impl DeliveryClient for EgressSlackClient {
+    fn adapter_kind(&self) -> DeliveryAdapterKind {
+        DeliveryAdapterKind::Slack
+    }
+
+    async fn post_dm(&self, slack_user_id: &str, text: &str) -> TwinResult<DeliveryPostResult> {
         // conversations.open then chat.postMessage — simplified: postMessage with user channel
         let open_body = serde_json::json!({ "users": slack_user_id });
         let open_resp = self
@@ -53,10 +66,10 @@ impl SlackClient for EgressSlackClient {
             .unwrap_or(slack_user_id)
             .to_string();
 
-        self.post_channel(&channel, text).await
+        DeliveryClient::post_channel(self, &channel, text).await
     }
 
-    async fn post_channel(&self, channel_id: &str, text: &str) -> TwinResult<SlackPostResult> {
+    async fn post_channel(&self, channel_id: &str, text: &str) -> TwinResult<DeliveryPostResult> {
         let body = serde_json::json!({
             "channel": channel_id,
             "text": text,
@@ -70,9 +83,7 @@ impl SlackClient for EgressSlackClient {
             .json()
             .await
             .map_err(|e| TwinError::Egress(e.to_string()))?;
-        if !status.is_success()
-            || json.get("ok").and_then(|v| v.as_bool()) == Some(false)
-        {
+        if !status.is_success() || json.get("ok").and_then(|v| v.as_bool()) == Some(false) {
             return Err(TwinError::Egress(format!(
                 "slack post failed: status={status} body={json}"
             )));
@@ -82,7 +93,7 @@ impl SlackClient for EgressSlackClient {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        Ok(SlackPostResult {
+        Ok(DeliveryPostResult {
             channel: channel_id.to_string(),
             ts,
         })

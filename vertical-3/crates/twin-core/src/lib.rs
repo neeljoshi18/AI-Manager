@@ -17,7 +17,7 @@ pub mod store_crdb;
 pub use config::TwinConfig;
 pub use confidence::{roll_up_confidence, score_item_confidence};
 pub use error::{TwinError, TwinResult};
-pub use egress::{EgressClient, EgressConfig, TOOL_HEADER};
+pub use egress::{EgressClient, EgressConfig, SLACK_TOOL, TEAMS_TOOL, TOOL_HEADER};
 pub use ids::{ledger_id_for, person_twin_id, team_twin_id};
 pub use model::*;
 pub use notify_policy::{

@@ -11,3 +11,14 @@ tools:
     secret: SLACK_BOT_TOKEN
     header: Authorization
     prefix: "Bearer "
+  # Microsoft Teams Bot Framework connector (vault: TEAMS_BOT_TOKEN).
+  # Path segments (e.g. /amer) are not part of host allowlist — only hostnames.
+  teams_bot:
+    hosts:
+      - "smba.trafficmanager.net"
+      - "api.botframework.com"
+      - "login.microsoftonline.com"
+      - "token.botframework.com"
+    secret: TEAMS_BOT_TOKEN
+    header: Authorization
+    prefix: "Bearer "

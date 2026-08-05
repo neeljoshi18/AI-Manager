@@ -7,6 +7,8 @@ use std::time::Duration;
 
 pub const TOOL_HEADER: &str = "X-AI-Manager-Tool";
 pub const SLACK_TOOL: &str = "slack_api";
+/// Microsoft Teams / Bot Framework connector via egress (vault: TEAMS_BOT_TOKEN).
+pub const TEAMS_TOOL: &str = "teams_bot";
 
 #[derive(Debug, Clone)]
 pub struct EgressConfig {

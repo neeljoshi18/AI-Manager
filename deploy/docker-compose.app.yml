@@ -125,6 +125,12 @@ services:
       EGRESS_PROXY_URL: http://egress:18090
       EGRESS_ENFORCE: "true"
       USE_EGRESS_SLACK: "true"
+      # Chat delivery adapter: slack (default) | teams. Slack path unchanged unless teams selected.
+      DELIVERY_ADAPTER: ${DELIVERY_ADAPTER:-slack}
+      USE_EGRESS_TEAMS: ${USE_EGRESS_TEAMS:-false}
+      TEAMS_APP_ID: ${TEAMS_APP_ID:-}
+      TEAMS_TENANT_ID: ${TEAMS_TENANT_ID:-}
+      TEAMS_SERVICE_URL: ${TEAMS_SERVICE_URL:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
       SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}

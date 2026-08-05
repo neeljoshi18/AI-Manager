@@ -52,7 +52,7 @@
               <h2 style="margin:0;">Champion cockpit</h2>
               <p class="muted small" style="margin:0.35rem 0 0;">
                 Eng pod pulse — digests, conflicts, heat, graph. Not LOC rankings.
-                Map people under <strong>Team</strong>; digests land in chat (Slack today · Teams roadmap).
+                Map people under <strong>Team</strong>; digests land in chat (Slack default · Teams adapter ready).
               </p>
             </div>
             <div class="actions-inline cockpit-actions">
@@ -130,11 +130,15 @@
 
         <div class="card">
           <div class="cockpit-card-h">
-            <h2 style="margin:0;">Tomorrow focus <span class="pill mid">suggestions</span></h2>
-            <span class="muted small">Human-gated — from open conflicts, intents, and digests. Not auto-assigned tasks.</span>
+            <h2 style="margin:0;">Tomorrow focus <span class="pill mid">suggestions + pinned</span></h2>
+            <span class="muted small">Human-gated — from open conflicts, intents, and digests. Pin assignments for the pod.</span>
           </div>
           <ul id="ck-tomorrow" class="item-list"><li class="muted">Loading…</li></ul>
-          <p class="muted small" id="ck-tomorrow-note">Persist assignments land in a later slice; use these as standup-killers today.</p>
+          <div class="actions-inline" style="margin-top:0.5rem;">
+            <button type="button" id="ck-tomorrow-save" class="primary">Pin focus board</button>
+            <button type="button" id="ck-tomorrow-clear" class="ghost">Clear pins</button>
+          </div>
+          <p class="muted small" id="ck-tomorrow-note">Suggestions merge with saved pins (tenant state). Champion role can pin; members see the board.</p>
         </div>
       </section>
 
@@ -406,7 +410,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="card">
           <h2>Connectors</h2>
-          <p class="muted small">Install path for partners. Tokens never sit on twin-api env (ADR-012). Teams delivery is next session.</p>
+          <p class="muted small">Install path for partners. Tokens never sit on twin-api env (ADR-012). Slack or Teams — same digests + Approve loop.</p>
           <div class="meta-row" id="conn-oauth-status" style="margin-bottom:0.75rem;"><span class="pill mid">checking install status…</span></div>
           <div class="grid2">
             <div>
@@ -427,7 +431,27 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
               <p class="muted small" id="conn-slack-manual" style="margin-top:0.5rem;"></p>
             </div>
           </div>
-          <p class="muted small" style="margin-top:0.75rem;" id="conn-teams-note">Microsoft Teams: same digests + Approve loop on the roadmap (delivery adapter). Not live yet.</p>
+          <div style="margin-top:0.75rem;">
+            <p><strong>Microsoft Teams</strong></p>
+            <p class="muted small" id="conn-teams-note">Same digests + Adaptive Cards (Approve / Edit / Don't send). Vault: TEAMS_BOT_TOKEN.</p>
+            <div class="actions-inline">
+              <button type="button" class="primary" id="btn-teams-connect">Connect Teams…</button>
+            </div>
+            <p class="muted small" id="conn-teams-manual" style="margin-top:0.5rem;"></p>
+          </div>
+          <p class="muted small" style="margin-top:0.75rem;" id="conn-sso-note">Google/SSO: identity plane (roadmap with multi-tenant packaging). Still Connect chat + GitHub for data.</p>
+        </div>
+        <div class="card">
+          <h2>Roles (champion vs member)</h2>
+          <p class="muted small">Pilot-SSO pilot: default everyone is champion. List champion subject ids to treat others as members (own status only).</p>
+          <label>Champion subject ids (comma-separated)
+            <input id="roles-champions" placeholder="neeljoshi18, paneerjeera" />
+          </label>
+          <div class="actions-inline" style="margin-top:0.5rem;">
+            <button type="button" id="btn-roles-save" class="primary">Save roles</button>
+            <button type="button" id="btn-roles-reload" class="ghost">Reload</button>
+          </div>
+          <p class="muted small" id="roles-msg"></p>
         </div>
       </section>
 

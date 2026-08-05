@@ -18,11 +18,11 @@
 | 1 | **Champion cockpit UI** (package live APIs) | **Done** |
 | 2 | Team mapping: bulk paste + clearer copy (Path A) | **Done** |
 | 3 | Connect Slack / GitHub real install | **Done this session** (status API, Slack callback→vault, GH install URL + webhook copy, UI) |
-| 4 | Delivery abstraction + **Teams bot** | **Next session** |
-| 5 | Roles champion/member | **Next session** |
-| 6 | Google/SSO join | **Next session+** |
-| 7 | Tomorrow focus board (persist assignments) | Scaffold live; **persist next session** |
-| 8 | Other chat adapters | After Teams |
+| 4 | Delivery abstraction + **Teams bot** | **Done** (shared `DeliveryClient`; Teams Adaptive Cards; Slack default unchanged) |
+| 5 | Roles champion/member | **Done** (tenant roles API + Connections UI; pilot default champion) |
+| 6 | Google/SSO join | **Scaffold** in oauth/status (roadmap; multi-tenant packaging) |
+| 7 | Tomorrow focus board (persist assignments) | **Done** (GET/PUT + cockpit pin) |
+| 8 | Other chat adapters | After Slack+Teams proven in pilot |
 
 **Session boundary:** Items **4–8** ship in the **next session** (see `starting-out-documents/Session Handoff_ Context Transfer 2026-08-04c.md`).
 

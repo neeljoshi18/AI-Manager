@@ -628,13 +628,14 @@ async function refreshCockpit() {
       );
     }
 
-    // Tomorrow focus — suggestions from conflicts, intents, digests
+    // Tomorrow focus — suggestions from conflicts, intents, digests + persisted pins
     const tomorrow = [];
     for (const c of cards.slice(0, 5)) {
       tomorrow.push({
         kind: "conflict",
         text: `${c.severity || c.kind}: ${c.summary || c.kind}`,
         why: "Resolve shared-work conflict before next standup",
+        pinned: false,
       });
     }
     for (const n of (pulse.intents?.sample || []).slice(0, 5)) {
@@ -644,6 +645,7 @@ async function refreshCockpit() {
           kind: "intent",
           text: `${ty}: ${n.label || n.title || ""}`,
           why: "Intent needs champion attention",
+          pinned: false,
         });
       }
     }
@@ -655,9 +657,27 @@ async function refreshCockpit() {
             kind: "digest",
             text: `${m.display_name}: ${line.replace(/^[\s*•]+/, "").slice(0, 90)}`,
             why: "From their latest status draft",
+            pinned: false,
           });
         }
       }
+    }
+    let pinnedItems = [];
+    try {
+      const foc = await jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/tomorrow_focus`
+      );
+      pinnedItems = foc.focus?.items || [];
+    } catch (_) {
+      /* optional */
+    }
+    for (const p of pinnedItems) {
+      tomorrow.unshift({
+        kind: p.kind || "pin",
+        text: p.text || p.title || JSON.stringify(p),
+        why: p.why || "Pinned assignment",
+        pinned: true,
+      });
     }
     // de-dupe by text
     const seenT = new Set();
@@ -668,17 +688,24 @@ async function refreshCockpit() {
       seenT.add(k);
       uniq.push(t);
     }
+    window.__ckTomorrowUniq = uniq;
     const tomEl = $("ck-tomorrow");
     if (tomEl) {
       tomEl.innerHTML = uniq.length
         ? uniq
-            .slice(0, 10)
+            .slice(0, 12)
             .map(
               (t) =>
-                `<li><span class="pill mid">${esc(t.kind)}</span> <strong>${esc(t.text)}</strong><div class="muted small">${esc(t.why)}</div></li>`
+                `<li><span class="pill ${t.pinned ? "up" : "mid"}">${esc(t.kind)}${t.pinned ? " · pinned" : ""}</span> <strong>${esc(t.text)}</strong><div class="muted small">${esc(t.why)}</div></li>`
             )
             .join("")
         : `<li class="muted">No suggestions yet — compile digests or enrich story so open work appears.</li>`;
+    }
+    if ($("ck-tomorrow-note")) {
+      const nPin = pinnedItems.length;
+      $("ck-tomorrow-note").textContent = nPin
+        ? `${nPin} pinned assignment(s) persisted for this tenant · suggestions merge above.`
+        : "Pin the board to persist champion focus across reloads (tenant state).";
     }
 
     if (msg) {
@@ -781,7 +808,12 @@ async function refreshOnboarding() {
 }
 
 async function startOAuth(kind) {
-  const path = kind === "slack" ? "/v3/oauth/slack/start" : "/v3/oauth/github/start";
+  const path =
+    kind === "slack"
+      ? "/v3/oauth/slack/start"
+      : kind === "teams"
+        ? "/v3/oauth/teams/start"
+        : "/v3/oauth/github/start";
   try {
     const res = await fetch(path);
     const body = await res.json().catch(() => ({}));
@@ -790,12 +822,16 @@ async function startOAuth(kind) {
         body.manual_path ||
         body.webhook_url ||
         body.webhook_path ||
+        body.messaging_endpoint ||
         "deploy/oauth/README.md";
       const msg =
         (body.message || "Not fully configured") +
         "\n\nManual path:\n" +
         manual +
-        (body.webhook_url ? "\n\nWebhook URL:\n" + body.webhook_url : "");
+        (body.webhook_url ? "\n\nWebhook URL:\n" + body.webhook_url : "") +
+        (body.messaging_endpoint
+          ? "\n\nTeams messaging endpoint:\n" + body.messaging_endpoint
+          : "");
       alert(msg);
       // Still open install URL if present (e.g. GH slug without full env)
       if (body.install_url) window.open(body.install_url, "_blank", "noopener");
@@ -804,12 +840,6 @@ async function startOAuth(kind) {
     const url = body.authorize_url || body.install_url;
     if (url) {
       window.open(url, "_blank", "noopener");
-      if (kind === "slack") {
-        // Soft reminder after popup
-        setTimeout(() => {
-          /* status line only */
-        }, 0);
-      }
     } else {
       alert(JSON.stringify(body, null, 2));
     }
@@ -825,11 +855,19 @@ async function refreshConnectors() {
     const o = await jfetch("/v3/oauth/status");
     const slack = o.slack || {};
     const gh = o.github || {};
+    const teams = o.teams || {};
+    const teamsPill =
+      teams.status === "ready"
+        ? "up"
+        : teams.status === "configured" || teams.app_id_present
+          ? "mid"
+          : "mid";
     if (statusEl) {
       statusEl.innerHTML = [
         `<span class="pill ${slack.oauth_credentials ? "up" : "mid"}">Slack OAuth: ${slack.oauth_credentials ? "ready" : "manual vault"}</span>`,
         `<span class="pill ${gh.app_env_present ? "up" : "mid"}">GitHub App: ${gh.app_env_present ? "ready" : "set slug/id"}</span>`,
-        `<span class="pill mid">Teams: roadmap</span>`,
+        `<span class="pill ${teamsPill}">Teams: ${esc(teams.status || "manual")}</span>`,
+        `<span class="pill mid">adapter: ${esc(o.delivery_adapter || "slack")}</span>`,
       ].join(" ");
     }
     if ($("conn-github")) {
@@ -848,13 +886,98 @@ async function refreshConnectors() {
         ? `Manual: ${slack.manual_path}`
         : "";
     }
-    if ($("conn-teams-note") && o.teams?.note) {
-      $("conn-teams-note").textContent = "Microsoft Teams: " + o.teams.note;
+    if ($("conn-teams-note") && teams.note) {
+      $("conn-teams-note").textContent = teams.note;
+    }
+    if ($("conn-teams-manual")) {
+      $("conn-teams-manual").textContent = teams.manual_path
+        ? `Manual: ${teams.manual_path}` +
+          (teams.messaging_endpoint
+            ? ` · Messaging: ${teams.messaging_endpoint}`
+            : "")
+        : teams.messaging_endpoint
+          ? `Messaging endpoint: ${teams.messaging_endpoint}`
+          : "";
+    }
+    if ($("conn-sso-note") && o.sso?.note) {
+      $("conn-sso-note").textContent = "Google/SSO: " + o.sso.note;
     }
   } catch (e) {
     if (statusEl) {
       statusEl.innerHTML = `<span class="pill mid">install status: ${esc(e.message || "n/a")}</span>`;
     }
+  }
+}
+
+async function saveTomorrowFocus(clear) {
+  const tenant = syncTenantFields(activeTenant());
+  const noteEl = $("ck-tomorrow-note");
+  try {
+    let items = [];
+    if (!clear) {
+      const uniq = window.__ckTomorrowUniq || [];
+      items = uniq.slice(0, 12).map((t) => ({
+        kind: t.kind,
+        text: t.text,
+        why: t.why,
+      }));
+    }
+    await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/tomorrow_focus`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items,
+        note: clear ? "Cleared" : "Pinned from cockpit",
+      }),
+    });
+    if (noteEl) {
+      noteEl.textContent = clear
+        ? "Pins cleared."
+        : `Pinned ${items.length} item(s) for tenant ${tenant}.`;
+    }
+    await refreshCockpit();
+  } catch (e) {
+    if (noteEl) noteEl.textContent = "Save failed: " + (e.message || e);
+  }
+}
+
+async function reloadRoles() {
+  const tenant = syncTenantFields(activeTenant());
+  const msg = $("roles-msg");
+  try {
+    const r = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/roles`);
+    const champs = r.roles?.champions || [];
+    if ($("roles-champions")) $("roles-champions").value = champs.join(", ");
+    if (msg) {
+      msg.textContent = `default_role=${r.roles?.default_role || "champion"} · champions=${champs.length}`;
+    }
+  } catch (e) {
+    if (msg) msg.textContent = "Load failed: " + (e.message || e);
+  }
+}
+
+async function saveRoles() {
+  const tenant = syncTenantFields(activeTenant());
+  const msg = $("roles-msg");
+  const raw = ($("roles-champions")?.value || "").trim();
+  const champions = raw
+    ? raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  try {
+    await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/roles`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        champions,
+        default_role: champions.length ? "member" : "champion",
+      }),
+    });
+    if (msg) msg.textContent = `Saved ${champions.length} champion(s).`;
+  } catch (e) {
+    if (msg) msg.textContent = "Save failed: " + (e.message || e);
   }
 }
 
@@ -2265,8 +2388,23 @@ $("btn-edit").addEventListener("click", () => act("edit"));
 if ($("btn-slack-oauth")) {
   $("btn-slack-oauth").addEventListener("click", () => startOAuth("slack"));
 }
+if ($("btn-teams-connect")) {
+  $("btn-teams-connect").addEventListener("click", () => startOAuth("teams"));
+}
 if ($("btn-gh-app")) {
   $("btn-gh-app").addEventListener("click", () => startOAuth("github"));
+}
+if ($("ck-tomorrow-save")) {
+  $("ck-tomorrow-save").addEventListener("click", () => saveTomorrowFocus(false));
+}
+if ($("ck-tomorrow-clear")) {
+  $("ck-tomorrow-clear").addEventListener("click", () => saveTomorrowFocus(true));
+}
+if ($("btn-roles-save")) {
+  $("btn-roles-save").addEventListener("click", () => saveRoles());
+}
+if ($("btn-roles-reload")) {
+  $("btn-roles-reload").addEventListener("click", () => reloadRoles());
 }
 if ($("btn-team-refresh")) {
   $("btn-team-refresh").addEventListener("click", refreshTeam);

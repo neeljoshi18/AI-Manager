@@ -29,7 +29,8 @@ use twin_core::model::*;
 use twin_core::store::{InMemoryTwinStore, TwinStore};
 use twin_core::TwinError;
 use twin_delivery::{
-    DeliveryPolicy, DeliveryService, EgressSlackClient, MockSlackClient, SlackClient,
+    DeliveryAdapterKind, DeliveryClient, DeliveryPolicy, DeliveryService, EgressSlackClient,
+    EgressTeamsClient, MockSlackClient, MockTeamsClient,
 };
 
 #[derive(Default)]
@@ -61,11 +62,14 @@ struct AppState {
     compiler: Arc<LedgerCompiler>,
     /// Fixture source when embedded — allows inject for tests via admin route.
     fixture: Option<Arc<FixtureGraphSource>>,
-    slack: Arc<dyn SlackClient>,
+    /// Active chat delivery adapter (Slack, Teams, or mock).
+    slack: Arc<dyn DeliveryClient>,
     policy: DeliveryPolicy,
     mode: String,
-    /// "mock" | "egress"
+    /// "mock" | "egress" | "teams"
     slack_mode: String,
+    /// "slack" | "teams" | "mock"
+    delivery_adapter: String,
     metrics: Arc<Metrics>,
     cfg: TwinConfig,
     /// Last demo simulation snapshot per tenant (for console).
@@ -473,9 +477,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/v3/oauth/slack/start", get(oauth_slack_start))
         .route("/v3/oauth/slack/callback", get(oauth_slack_callback))
         .route("/v3/oauth/github/start", get(oauth_github_start))
+        .route("/v3/oauth/teams/start", get(oauth_teams_start))
         .route(
             "/v3/tenants/{tenant_id}/twins",
             get(list_twins_route).post(upsert_twin),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/roles",
+            get(get_roles).put(put_roles),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/tomorrow_focus",
+            get(get_tomorrow_focus).put(put_tomorrow_focus),
         )
         .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}",
@@ -551,6 +564,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v3/slack/interactions", post(slack_interactions))
         .route("/v3/slack/events", post(slack_events))
+        .route("/v3/teams/messages", post(teams_messages))
         .route(
             "/v3/tenants/{tenant_id}/fixtures",
             post(set_fixture),
@@ -629,21 +643,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         // Fixture (demo inject) wins; otherwise live V2 graph-api ACL reads
         let overlay = OverlayGraphSource::new(fixture.clone(), &cfg.v2_base_url);
         let compiler = Arc::new(LedgerCompiler::new(store.clone(), overlay));
-        // Mock Slack by default in embedded; USE_EGRESS_SLACK=true for real proxy DMs
-        let force_egress = std::env::var("USE_EGRESS_SLACK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let (slack, slack_mode): (Arc<dyn SlackClient>, String) = if force_egress {
-            let egress = twin_core::EgressClient::new(twin_core::EgressConfig {
-                proxy_url: cfg.egress_proxy_url.clone(),
-                enforce: cfg.egress_enforce,
-            })?;
-            info!("Slack delivery via egress proxy (USE_EGRESS_SLACK=true)");
-            (Arc::new(EgressSlackClient::new(egress)), "egress".into())
-        } else {
-            info!("Slack delivery: mock (set USE_EGRESS_SLACK=true for real DMs)");
-            (MockSlackClient::new(), "mock".into())
-        };
+        let (slack, slack_mode, delivery_adapter) = build_delivery_client(&cfg)?;
         return Ok(AppState {
             store,
             embedded_store: Some(mem),
@@ -654,6 +654,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
             policy,
             mode: "embedded".into(),
             slack_mode,
+            delivery_adapter,
             metrics,
             cfg,
             last_demo,
@@ -680,19 +681,15 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         HttpV2GraphSource::new(&cfg.v2_base_url)
     };
     let compiler = Arc::new(LedgerCompiler::new(store.clone(), source));
-    let (slack, slack_mode): (Arc<dyn SlackClient>, String) =
-        if std::env::var("FORCE_MOCK_SLACK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-        {
-            (MockSlackClient::new(), "mock".into())
-        } else {
-            let egress = twin_core::EgressClient::new(twin_core::EgressConfig {
-                proxy_url: cfg.egress_proxy_url.clone(),
-                enforce: cfg.egress_enforce,
-            })?;
-            (Arc::new(EgressSlackClient::new(egress)), "egress".into())
-        };
+    let (slack, slack_mode, delivery_adapter) = if std::env::var("FORCE_MOCK_SLACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let mock: Arc<dyn DeliveryClient> = MockSlackClient::new();
+        (mock, "mock".into(), "mock".into())
+    } else {
+        build_delivery_client(&cfg)?
+    };
     Ok(AppState {
         store,
         embedded_store: None,
@@ -703,12 +700,70 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         policy,
         mode: "production".into(),
         slack_mode,
+        delivery_adapter,
         metrics,
         cfg,
         last_demo,
         last_notify,
         last_pulse,
     })
+}
+
+/// Select Slack (default) or Teams delivery adapter. Slack path unchanged unless DELIVERY_ADAPTER=teams.
+fn build_delivery_client(
+    cfg: &TwinConfig,
+) -> anyhow::Result<(Arc<dyn DeliveryClient>, String, String)> {
+    let kind = DeliveryAdapterKind::from_env();
+    let force_egress_slack = std::env::var("USE_EGRESS_SLACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let force_egress_teams = std::env::var("USE_EGRESS_TEAMS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    match kind {
+        DeliveryAdapterKind::Teams => {
+            if force_egress_teams || force_egress_slack {
+                let egress = twin_core::EgressClient::new(twin_core::EgressConfig {
+                    proxy_url: cfg.egress_proxy_url.clone(),
+                    enforce: cfg.egress_enforce,
+                })?;
+                info!("Teams delivery via egress proxy (DELIVERY_ADAPTER=teams)");
+                Ok((
+                    Arc::new(EgressTeamsClient::new(egress)),
+                    "teams".into(),
+                    "teams".into(),
+                ))
+            } else {
+                info!("Teams delivery: mock (set USE_EGRESS_TEAMS=true + vault TEAMS_BOT_TOKEN)");
+                let mock: Arc<dyn DeliveryClient> = MockTeamsClient::new();
+                Ok((mock, "mock".into(), "teams".into()))
+            }
+        }
+        DeliveryAdapterKind::Mock => {
+            info!("delivery adapter: mock");
+            let mock: Arc<dyn DeliveryClient> = MockSlackClient::new();
+            Ok((mock, "mock".into(), "mock".into()))
+        }
+        DeliveryAdapterKind::Slack => {
+            if force_egress_slack {
+                let egress = twin_core::EgressClient::new(twin_core::EgressConfig {
+                    proxy_url: cfg.egress_proxy_url.clone(),
+                    enforce: cfg.egress_enforce,
+                })?;
+                info!("Slack delivery via egress proxy (USE_EGRESS_SLACK=true)");
+                Ok((
+                    Arc::new(EgressSlackClient::new(egress)),
+                    "egress".into(),
+                    "slack".into(),
+                ))
+            } else {
+                info!("Slack delivery: mock (set USE_EGRESS_SLACK=true for real DMs)");
+                let mock: Arc<dyn DeliveryClient> = MockSlackClient::new();
+                Ok((mock, "mock".into(), "slack".into()))
+            }
+        }
+    }
 }
 
 async fn ensure_v2_membership(st: &AppState, tenant: &str, user_ids: &[String]) {
@@ -1198,6 +1253,7 @@ async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
         "slack_oauth_ready": slack_oauth_ready,
         "github_app_ready": github_app_ready,
         "slack_mode": st.slack_mode,
+        "delivery_adapter": st.delivery_adapter,
         "pilot": {
             "tenant": seed_tenant,
             "multi_person_ready": multi_ready,
@@ -1262,11 +1318,90 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
             "manual_path": "Install GitHub App on org/repos; set WEBHOOK_SECRET_ten_github in vault",
             "note": "Webhooks hit V1; graph fills via bridge even without OAuth button.",
         },
-        "teams": {
+        "teams": teams_oauth_status_json(&st, &public),
+        "sso": {
             "status": "roadmap",
-            "note": "Microsoft Teams delivery adapter is next-session work (same Approve/Edit/Don't send).",
+            "providers": ["google"],
+            "note": "Google/SSO is identity plane only (seats + roles). Still Connect chat + GitHub for data/delivery. Ships with multi-tenant packaging.",
         },
+        "delivery_adapter": st.delivery_adapter,
+        "delivery_mode": st.slack_mode,
     }))
+}
+
+fn teams_oauth_status_json(st: &AppState, public: &str) -> serde_json::Value {
+    let app_id = env_present("TEAMS_APP_ID");
+    let vault_hint = oauth_vault_path().is_some();
+    let ready = app_id && (st.delivery_adapter == "teams" || env_present("TEAMS_APP_ID"));
+    // "configured" when public app id present; real send needs vault TEAMS_BOT_TOKEN + USE_EGRESS_TEAMS
+    let status = if st.delivery_adapter == "teams" && st.slack_mode == "teams" {
+        "ready"
+    } else if app_id {
+        "configured"
+    } else {
+        "manual"
+    };
+    json!({
+        "status": status,
+        "app_id_present": app_id,
+        "adapter_active": st.delivery_adapter == "teams",
+        "egress_mode": st.slack_mode,
+        "vault_write_path_set": vault_hint,
+        "messaging_endpoint": format!("{}/v3/teams/messages", public.trim_end_matches('/')),
+        "manifest": "deploy/oauth/teams-app-manifest.json",
+        "manual_path": "vertical-security/secrets/dev_secrets.json → TEAMS_BOT_TOKEN (egress only)",
+        "env": {
+            "TEAMS_APP_ID": "public bot app id",
+            "TEAMS_TENANT_ID": "optional Azure AD tenant",
+            "TEAMS_SERVICE_URL": "optional Bot Framework service URL",
+            "DELIVERY_ADAPTER": "teams to select adapter (default slack)",
+            "USE_EGRESS_TEAMS": "true for real connector posts",
+        },
+        "note": if status == "ready" {
+            "Teams adapter active — digests use Adaptive Cards (Approve / Edit / Don't send). Map teams_user_id on Team members."
+        } else if app_id {
+            "TEAMS_APP_ID present. Put TEAMS_BOT_TOKEN in vault, set DELIVERY_ADAPTER=teams + USE_EGRESS_TEAMS=true, restart egress."
+        } else {
+            "Microsoft Teams: same digests + Approve loop. Set TEAMS_APP_ID + vault TEAMS_BOT_TOKEN, or keep Slack as default."
+        },
+        "ready": ready && st.delivery_adapter == "teams",
+    })
+}
+
+async fn oauth_teams_start() -> impl IntoResponse {
+    let public = std::env::var("PUBLIC_BASE_URL").unwrap_or_default();
+    let app_id = std::env::var("TEAMS_APP_ID").unwrap_or_default();
+    if app_id.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "ready": false,
+                "error": "teams_not_configured",
+                "message": "Set TEAMS_APP_ID (public) and vault TEAMS_BOT_TOKEN. Install the Teams app from deploy/oauth/teams-app-manifest.json in Azure Bot / Teams Developer Portal.",
+                "manual_path": "vertical-security/secrets/dev_secrets.json → TEAMS_BOT_TOKEN",
+                "manifest": "deploy/oauth/teams-app-manifest.json",
+                "messaging_endpoint": format!("{}/v3/teams/messages", public.trim_end_matches('/')),
+            })),
+        )
+            .into_response();
+    }
+    // Teams admin consent / Azure portal — no single universal OAuth URL like Slack.
+    let admin_url = format!(
+        "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/appId/{}",
+        urlencoding_slack(&app_id)
+    );
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ready": true,
+            "app_id": app_id,
+            "install_url": admin_url,
+            "messaging_endpoint": format!("{}/v3/teams/messages", public.trim_end_matches('/')),
+            "manifest": "deploy/oauth/teams-app-manifest.json",
+            "note": "Create Azure Bot with this app id; set messaging endpoint above; put Bot Framework token in vault as TEAMS_BOT_TOKEN; DELIVERY_ADAPTER=teams + USE_EGRESS_TEAMS=true; map teams_user_id on members. Restart egress after vault write.",
+        })),
+    )
+        .into_response()
 }
 
 fn oauth_vault_path() -> Option<PathBuf> {
@@ -1611,6 +1746,7 @@ async fn demo_status(State(st): State<AppState>) -> impl IntoResponse {
         "egress": egress,
         "mode": st.mode,
         "slack_mode": st.slack_mode,
+        "delivery_adapter": st.delivery_adapter,
         "demo": "/demo/",
         "app": "/app/",
         "v1_base_url": v1_base,
@@ -1854,6 +1990,7 @@ async fn demo_simulate(
         "acl_empty": outcome.acl_empty,
         "event_id": event_id,
         "slack_mode": st.slack_mode,
+        "delivery_adapter": st.delivery_adapter,
         "graph_source": source_path,
         "demo": true,
     });
@@ -1968,6 +2105,16 @@ async fn get_team(
         .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
     {
         let slack = map_by.get(&t.subject_id);
+        let teams_user_id = t
+            .config_json
+            .get("teams_user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let role = t
+            .config_json
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("champion");
         let aliases = t
             .config_json
             .get("provider_aliases")
@@ -2012,6 +2159,7 @@ async fn get_team(
                 "has_content": !emptyish && bullet_items > 0,
             })
         });
+        let chat_mapped = slack.is_some() || !teams_user_id.is_empty();
         members.push(json!({
             "twin_id": t.twin_id,
             "subject_id": t.subject_id,
@@ -2019,7 +2167,10 @@ async fn get_team(
             "enabled": t.enabled,
             "channel_id": t.channel_id,
             "slack_user_id": slack.map(|s| s.slack_user_id.clone()),
+            "teams_user_id": if teams_user_id.is_empty() { serde_json::Value::Null } else { json!(teams_user_id) },
+            "role": role,
             "slack_mapped": slack.is_some(),
+            "chat_mapped": chat_mapped,
             "provider_aliases": aliases,
             "shadow_until": t.shadow_until,
             "last_digest": last_digest,
@@ -2029,10 +2180,11 @@ async fn get_team(
     // they were creating empty "ghost" rows and inflated multi-person noise.
     let mapped = members
         .iter()
-        .filter(|m| m.get("slack_mapped").and_then(|v| v.as_bool()) == Some(true))
+        .filter(|m| m.get("chat_mapped").and_then(|v| v.as_bool()) == Some(true)
+            || m.get("slack_mapped").and_then(|v| v.as_bool()) == Some(true))
         .count();
-    // Unique Slack user IDs among *enabled person twins* (not alias-only map rows).
-    // Same human mapped thrice under one Slack must not count as multi-person.
+    // Unique chat destinations among *enabled person twins* (Slack or Teams).
+    // Same human mapped thrice under one chat id must not count as multi-person.
     let mut uniq_slack: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut enabled_person_twins = 0usize;
     for m in &members {
@@ -2042,7 +2194,12 @@ async fn get_team(
             enabled_person_twins += 1;
             if let Some(s) = m.get("slack_user_id").and_then(|v| v.as_str()) {
                 if !s.is_empty() {
-                    uniq_slack.insert(s.to_string());
+                    uniq_slack.insert(format!("slack:{s}"));
+                }
+            }
+            if let Some(s) = m.get("teams_user_id").and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    uniq_slack.insert(format!("teams:{s}"));
                 }
             }
         }
@@ -2090,12 +2247,18 @@ async fn get_team(
 struct TeamMemberBody {
     subject_id: String,
     display_name: Option<String>,
-    slack_user_id: String,
+    /// Slack user id (optional when mapping Teams-only member).
+    #[serde(default)]
+    slack_user_id: Option<String>,
+    /// Teams / AAD user id for Teams adapter delivery.
+    teams_user_id: Option<String>,
     channel_id: Option<String>,
     /// GitHub login / provider ids that should resolve to this Slack user (bridge map).
     provider_aliases: Option<Vec<String>>,
     enabled: Option<bool>,
     skip_shadow: Option<bool>,
+    /// champion | member (stored on twin.config_json.role)
+    role: Option<String>,
 }
 
 /// Upsert one team member (person twin + Slack map + optional provider aliases).
@@ -2107,8 +2270,22 @@ async fn upsert_team_member(
     if body.subject_id.trim().is_empty() {
         return Err(ApiError::bad("subject_id required"));
     }
-    if body.slack_user_id.trim().is_empty() {
-        return Err(ApiError::bad("slack_user_id required"));
+    let slack_uid = body
+        .slack_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let teams_uid = body
+        .teams_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    if slack_uid.is_none() && teams_uid.is_none() {
+        return Err(ApiError::bad(
+            "slack_user_id or teams_user_id required (chat delivery destination)",
+        ));
     }
     let now = Utc::now();
     let twin_id = person_twin_id(&body.subject_id);
@@ -2121,6 +2298,23 @@ async fn upsert_team_member(
         .as_ref()
         .map(|t| t.config_json.clone())
         .unwrap_or_else(|| json!({}));
+    if let Some(tid) = &teams_uid {
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("teams_user_id".into(), json!(tid));
+        } else {
+            config = json!({ "teams_user_id": tid });
+        }
+    }
+    if let Some(role) = body.role.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let role = if role.eq_ignore_ascii_case("champion") {
+            "champion"
+        } else {
+            "member"
+        };
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("role".into(), json!(role));
+        }
+    }
     // Merge aliases (never clobber historical gu_* from prior prune/seed).
     if let Some(aliases) = &body.provider_aliases {
         let mut merged: Vec<String> = config
@@ -2188,40 +2382,44 @@ async fn upsert_team_member(
         .upsert_twin(twin.clone())
         .await
         .map_err(ApiError::from)?;
-    st.store
-        .put_slack_map(SlackUserMap {
-            tenant_id: tenant_id.clone(),
-            global_user_id: body.subject_id.clone(),
-            slack_user_id: body.slack_user_id.clone(),
-            slack_team_id: String::new(),
-        })
-        .await
-        .map_err(ApiError::from)?;
-    // Alias keys also map for bridge (login / numeric id)
-    if let Some(aliases) = &body.provider_aliases {
-        for a in aliases {
-            let a = a.trim();
-            if a.is_empty() {
-                continue;
+    if let Some(ref slack_user_id) = slack_uid {
+        st.store
+            .put_slack_map(SlackUserMap {
+                tenant_id: tenant_id.clone(),
+                global_user_id: body.subject_id.clone(),
+                slack_user_id: slack_user_id.clone(),
+                slack_team_id: String::new(),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        // Alias keys also map for bridge (login / numeric id)
+        if let Some(aliases) = &body.provider_aliases {
+            for a in aliases {
+                let a = a.trim();
+                if a.is_empty() {
+                    continue;
+                }
+                let _ = st
+                    .store
+                    .put_slack_map(SlackUserMap {
+                        tenant_id: tenant_id.clone(),
+                        global_user_id: a.to_string(),
+                        slack_user_id: slack_user_id.clone(),
+                        slack_team_id: String::new(),
+                    })
+                    .await;
             }
-            let _ = st
-                .store
-                .put_slack_map(SlackUserMap {
-                    tenant_id: tenant_id.clone(),
-                    global_user_id: a.to_string(),
-                    slack_user_id: body.slack_user_id.clone(),
-                    slack_team_id: String::new(),
-                })
-                .await;
         }
+        let _ = prune_duplicate_slack_twins(st.store.as_ref(), &tenant_id).await;
     }
-    let _ = prune_duplicate_slack_twins(st.store.as_ref(), &tenant_id).await;
     persist_embedded(&st);
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "twin": twin,
-            "slack_user_id": body.slack_user_id,
+            "slack_user_id": slack_uid,
+            "teams_user_id": teams_uid,
+            "role": twin.config_json.get("role"),
             "provider_aliases": body.provider_aliases.unwrap_or_default(),
         })),
     ))
@@ -3916,6 +4114,184 @@ async fn slack_events(Json(body): Json<serde_json::Value>) -> impl IntoResponse 
         return Json(json!({ "challenge": body.get("challenge") }));
     }
     Json(json!({ "ok": true }))
+}
+
+/// Bot Framework messaging endpoint — Adaptive Card Action.Submit → Approve / Edit / Don't send.
+async fn teams_messages(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Activity type invoke (Adaptive Card submit) or message
+    let activity_type = body.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if activity_type == "invoke"
+        || body
+            .pointer("/value/action")
+            .and_then(|v| v.as_str())
+            .is_some()
+    {
+        let action = body
+            .pointer("/value/action")
+            .or_else(|| body.pointer("/value/data/action"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let draft_id = body
+            .pointer("/value/draft_id")
+            .or_else(|| body.pointer("/value/data/draft_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let tenant_id = body
+            .pointer("/channelData/tenant/id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into())
+            });
+        if !draft_id.is_empty() {
+            match action {
+                "veto" => {
+                    let _ = twin_delivery::veto_draft(st.store.clone(), &tenant_id, draft_id).await;
+                    st.metrics.veto_total.fetch_add(1, Ordering::Relaxed);
+                }
+                "publish" => {
+                    if let Ok(Some(d)) = st.store.get_draft(&tenant_id, draft_id).await {
+                        if let Ok(Some(twin)) = st.store.get_twin(&tenant_id, &d.twin_id).await {
+                            let service = DeliveryService::new(
+                                st.store.clone(),
+                                st.slack.clone(),
+                                st.policy.clone(),
+                            );
+                            let _ = service.explicit_publish(&twin, &tenant_id, draft_id).await;
+                        }
+                    }
+                }
+                "edit" => {
+                    // Edit requires new text from the card form; acknowledge for product UI path.
+                    tracing::info!(%draft_id, "teams edit action — use product UI My status for freeform edit");
+                }
+                _ => {}
+            }
+        }
+        // Bot Framework expects 200 + body for invoke
+        return Ok(Json(json!({
+            "statusCode": 200,
+            "type": "application/vnd.microsoft.card.adaptive",
+            "value": {
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [{ "type": "TextBlock", "text": format!("Recorded: {action}"), "wrap": true }]
+            }
+        })));
+    }
+    // ConversationUpdate / ping — ok
+    Ok(Json(json!({ "ok": true })))
+}
+
+// ─── Roles (champion vs member) ─────────────────────────────────────────────
+
+fn default_roles_json() -> serde_json::Value {
+    json!({
+        "champions": [],
+        "default_role": "champion",
+        "note": "Pilot: all seats act as champion until SSO. Set champions[] subject_ids for member-gated cockpit writes."
+    })
+}
+
+async fn get_roles(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> impl IntoResponse {
+    let roles = st
+        .embedded_store
+        .as_ref()
+        .and_then(|s| s.get_tenant_kv(&tenant_id, "roles"))
+        .unwrap_or_else(default_roles_json);
+    Json(json!({
+        "tenant_id": tenant_id,
+        "roles": roles,
+        "delivery_adapter": st.delivery_adapter,
+    }))
+}
+
+#[derive(Deserialize)]
+struct RolesBody {
+    champions: Option<Vec<String>>,
+    default_role: Option<String>,
+}
+
+async fn put_roles(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(body): Json<RolesBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let champions = body.champions.unwrap_or_default();
+    let default_role = body
+        .default_role
+        .unwrap_or_else(|| "champion".into());
+    let default_role = if default_role.eq_ignore_ascii_case("member") {
+        "member"
+    } else {
+        "champion"
+    };
+    let value = json!({
+        "champions": champions,
+        "default_role": default_role,
+        "updated_at": Utc::now().to_rfc3339(),
+    });
+    if let Some(store) = &st.embedded_store {
+        store.put_tenant_kv(&tenant_id, "roles", value.clone());
+        persist_embedded(&st);
+    } else {
+        return Err(ApiError::bad(
+            "roles persist requires embedded twin store (staging)",
+        ));
+    }
+    Ok(Json(json!({ "ok": true, "tenant_id": tenant_id, "roles": value })))
+}
+
+// ─── Tomorrow focus (persist assignments) ───────────────────────────────────
+
+async fn get_tomorrow_focus(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> impl IntoResponse {
+    let focus = st
+        .embedded_store
+        .as_ref()
+        .and_then(|s| s.get_tenant_kv(&tenant_id, "tomorrow_focus"))
+        .unwrap_or_else(|| {
+            json!({
+                "items": [],
+                "note": "Empty — cockpit suggestions can be pinned here."
+            })
+        });
+    Json(json!({ "tenant_id": tenant_id, "focus": focus }))
+}
+
+#[derive(Deserialize)]
+struct TomorrowFocusBody {
+    items: Vec<serde_json::Value>,
+    note: Option<String>,
+}
+
+async fn put_tomorrow_focus(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(body): Json<TomorrowFocusBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let value = json!({
+        "items": body.items,
+        "note": body.note.unwrap_or_else(|| "Pinned by champion".into()),
+        "updated_at": Utc::now().to_rfc3339(),
+    });
+    if let Some(store) = &st.embedded_store {
+        store.put_tenant_kv(&tenant_id, "tomorrow_focus", value.clone());
+        persist_embedded(&st);
+    } else {
+        return Err(ApiError::bad(
+            "tomorrow_focus persist requires embedded twin store (staging)",
+        ));
+    }
+    Ok(Json(json!({ "ok": true, "tenant_id": tenant_id, "focus": value })))
 }
 
 fn urlencoding_decode(s: &str) -> String {

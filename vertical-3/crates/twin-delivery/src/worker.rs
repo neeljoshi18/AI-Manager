@@ -1,5 +1,6 @@
+use crate::delivery::{DeliveryClient, DeliveryPostResult};
 use crate::policy::DeliveryPolicy;
-use crate::slack::{SlackClient, SlackPostResult};
+use crate::resolve_chat_user_id;
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 use twin_core::ids::body_hash;
@@ -30,30 +31,35 @@ pub struct DeliveryStartResult {
 
 pub struct DeliveryService {
     store: Arc<dyn TwinStore>,
-    slack: Arc<dyn SlackClient>,
+    delivery: Arc<dyn DeliveryClient>,
     policy: DeliveryPolicy,
 }
 
 impl DeliveryService {
     pub fn new(
         store: Arc<dyn TwinStore>,
-        slack: Arc<dyn SlackClient>,
+        delivery: Arc<dyn DeliveryClient>,
         policy: DeliveryPolicy,
     ) -> Self {
         Self {
             store,
-            slack,
+            delivery,
             policy,
         }
     }
 
-    pub fn slack(&self) -> Arc<dyn SlackClient> {
-        self.slack.clone()
+    pub fn delivery(&self) -> Arc<dyn DeliveryClient> {
+        self.delivery.clone()
+    }
+
+    /// Backward-compatible alias for the active delivery adapter.
+    pub fn slack(&self) -> Arc<dyn DeliveryClient> {
+        self.delivery.clone()
     }
 
     /// Create draft after compile and optionally DM / auto-queue publish.
     ///
-    /// `allow_notify`: when false, store draft/state only — no Slack DM (used for
+    /// `allow_notify`: when false, store draft/state only — no chat DM (used for
     /// continuous recompiles between scheduled status windows).
     pub async fn start_after_compile(
         &self,
@@ -172,22 +178,21 @@ impl DeliveryService {
 
             let mut dm_sent = false;
             if will_dm && matches!(status, DraftStatus::Pending | DraftStatus::ForceHuman) {
-                let slack_user = self
-                    .store
-                    .get_slack_map(&twin.tenant_id, &twin.subject_id)
-                    .await?
-                    .map(|m| m.slack_user_id)
-                    .unwrap_or_else(|| format!("U_{}", twin.subject_id));
+                let chat_user = resolve_chat_user_id(
+                    self.store.as_ref(),
+                    twin,
+                    self.delivery.adapter_kind(),
+                )
+                .await?;
                 let deadline_s = existing
                     .veto_deadline
                     .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
                     .unwrap_or_else(|| "none".into());
-                let dm_text = format!(
-                    "{draft_text}\n\n*Approve* · *Edit* · *Don't send*\n\
-                     We'll only ping again if this status story changes.\n\
-                     Window until {deadline_s}."
-                );
-                match self.slack.post_dm(&slack_user, &dm_text).await {
+                match self
+                    .delivery
+                    .post_draft_dm(&chat_user, &existing.draft_id, draft_text, &deadline_s)
+                    .await
+                {
                     Ok(dm) => {
                         existing.slack_dm_channel = dm.channel;
                         existing.slack_dm_ts = dm.ts;
@@ -287,7 +292,7 @@ impl DeliveryService {
             updated_at: now,
         };
 
-        // Shadow or quiet / suppressed: no Slack calls
+        // Shadow or quiet / suppressed: no chat delivery calls
         if status == DraftStatus::Shadow || !will_dm {
             self.store.put_draft(draft.clone()).await?;
             // Remember fingerprint when we suppress unchanged so we stay quiet
@@ -310,15 +315,17 @@ impl DeliveryService {
             && snap.confidence_rollup == ConfidenceTier::High
             && twin.high_auto_publish
         {
-            if let Some(map) = self
-                .store
-                .get_slack_map(&twin.tenant_id, &twin.subject_id)
-                .await?
+            if let Ok(chat_user) = resolve_chat_user_id(
+                self.store.as_ref(),
+                twin,
+                self.delivery.adapter_kind(),
+            )
+            .await
             {
                 if let Ok(dm) = self
-                    .slack
+                    .delivery
                     .post_dm(
-                        &map.slack_user_id,
+                        &chat_user,
                         &format!("Auto-publishing high confidence status:\n{draft_text}"),
                     )
                     .await
@@ -344,22 +351,21 @@ impl DeliveryService {
         // Medium / High(no auto) / Blocker: DM when policy allows
         let mut dm_sent = false;
         if matches!(status, DraftStatus::Pending | DraftStatus::ForceHuman) {
-            let slack_user = self
-                .store
-                .get_slack_map(&twin.tenant_id, &twin.subject_id)
-                .await?
-                .map(|m| m.slack_user_id)
-                .unwrap_or_else(|| format!("U_{}", twin.subject_id));
+            let chat_user = resolve_chat_user_id(
+                self.store.as_ref(),
+                twin,
+                self.delivery.adapter_kind(),
+            )
+            .await?;
 
             let deadline_s = veto_deadline
                 .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
                 .unwrap_or_else(|| "none".into());
-            let dm_text = format!(
-                "{draft_text}\n\n*Approve* · *Edit* · *Don't send*\n\
-                 We'll only ping again if this status story changes.\n\
-                 Window until {deadline_s}."
-            );
-            match self.slack.post_dm(&slack_user, &dm_text).await {
+            match self
+                .delivery
+                .post_draft_dm(&chat_user, &draft_id, draft_text, &deadline_s)
+                .await
+            {
                 Ok(dm) => {
                     draft.slack_dm_channel = dm.channel;
                     draft.slack_dm_ts = dm.ts;
@@ -533,7 +539,7 @@ impl DeliveryService {
             twin.channel_id.clone()
         };
 
-        let post: SlackPostResult = match self.slack.post_channel(&channel, &body).await {
+        let post: DeliveryPostResult = match self.delivery.post_channel(&channel, &body).await {
             Ok(p) => p,
             Err(e) => {
                 draft.status = DraftStatus::PublishFailed;

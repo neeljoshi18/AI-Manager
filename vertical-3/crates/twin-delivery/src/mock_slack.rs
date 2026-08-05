@@ -1,3 +1,4 @@
+use crate::delivery::{DeliveryAdapterKind, DeliveryClient, DeliveryPostResult};
 use crate::slack::{SlackClient, SlackPostResult};
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -68,6 +69,25 @@ impl Default for MockSlackClient {
 #[async_trait]
 impl SlackClient for MockSlackClient {
     async fn post_dm(&self, slack_user_id: &str, text: &str) -> TwinResult<SlackPostResult> {
+        DeliveryClient::post_dm(self, slack_user_id, text).await
+    }
+
+    async fn post_channel(&self, channel_id: &str, text: &str) -> TwinResult<SlackPostResult> {
+        DeliveryClient::post_channel(self, channel_id, text).await
+    }
+
+    fn call_count(&self) -> u64 {
+        DeliveryClient::call_count(self)
+    }
+}
+
+#[async_trait]
+impl DeliveryClient for MockSlackClient {
+    fn adapter_kind(&self) -> DeliveryAdapterKind {
+        DeliveryAdapterKind::Mock
+    }
+
+    async fn post_dm(&self, slack_user_id: &str, text: &str) -> TwinResult<DeliveryPostResult> {
         let n = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let ts = format!("dm.{n}");
         self.calls.lock().push(SlackCall {
@@ -75,13 +95,13 @@ impl SlackClient for MockSlackClient {
             target: slack_user_id.into(),
             text: text.into(),
         });
-        Ok(SlackPostResult {
+        Ok(DeliveryPostResult {
             channel: format!("D{slack_user_id}"),
             ts,
         })
     }
 
-    async fn post_channel(&self, channel_id: &str, text: &str) -> TwinResult<SlackPostResult> {
+    async fn post_channel(&self, channel_id: &str, text: &str) -> TwinResult<DeliveryPostResult> {
         if *self.fail_channel.lock() {
             return Err(twin_core::TwinError::Egress("mock channel fail".into()));
         }
@@ -92,7 +112,7 @@ impl SlackClient for MockSlackClient {
             target: channel_id.into(),
             text: text.into(),
         });
-        Ok(SlackPostResult {
+        Ok(DeliveryPostResult {
             channel: channel_id.into(),
             ts,
         })

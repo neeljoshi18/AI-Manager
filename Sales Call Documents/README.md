@@ -22,7 +22,7 @@ Markdown sources sit beside each PDF for easy edits.
 |----------|----------|
 | What do ICs see vs managers? | **01** |
 | Ideal self-serve Connect buttons + Google? | **02** + **03** |
-| We use Microsoft Teams, not Slack | **03** (same loop, Teams adapter roadmap — not live demo yet) |
+| We use Microsoft Teams, not Slack | **03** (same loop; Teams adapter shipped — white-glove / vault token; Slack still default pilot) |
 | How do 10 people get added? | **04** (paths A–D; start with 2) |
 | WhatsApp / other chat? | **03** — adapter architecture; after Slack+Teams |
 

@@ -76,6 +76,16 @@ pub struct TwinPersistSnapshot {
     pub slack_maps: Vec<SlackUserMap>,
     pub drafts: Vec<DraftDelivery>,
     pub ledgers: Vec<LedgerSnapshot>,
+    /// Tenant-scoped JSON blobs (roles, tomorrow focus, SSO scaffold, …).
+    #[serde(default)]
+    pub tenant_kv: Vec<TenantKvEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TenantKvEntry {
+    pub tenant_id: String,
+    pub key: String,
+    pub value: serde_json::Value,
 }
 
 pub struct InMemoryTwinStore {
@@ -90,6 +100,8 @@ pub struct InMemoryTwinStore {
     /// ledger_id uniqueness for publish
     publish_by_ledger: DashMap<(String, String), String>,
     compile_runs: DashMap<(String, String), CompileRun>,
+    /// (tenant_id, key) → JSON value (roles, tomorrow_focus, …)
+    tenant_kv: DashMap<(String, String), serde_json::Value>,
     lock: RwLock<()>,
 }
 
@@ -105,8 +117,22 @@ impl InMemoryTwinStore {
             publishes: DashMap::new(),
             publish_by_ledger: DashMap::new(),
             compile_runs: DashMap::new(),
+            tenant_kv: DashMap::new(),
             lock: RwLock::new(()),
         })
+    }
+
+    /// Get tenant-scoped JSON blob (embedded).
+    pub fn get_tenant_kv(&self, tenant_id: &str, key: &str) -> Option<serde_json::Value> {
+        self.tenant_kv
+            .get(&(tenant_id.to_string(), key.to_string()))
+            .map(|v| v.clone())
+    }
+
+    /// Put tenant-scoped JSON blob (embedded).
+    pub fn put_tenant_kv(&self, tenant_id: &str, key: &str, value: serde_json::Value) {
+        self.tenant_kv
+            .insert((tenant_id.to_string(), key.to_string()), value);
     }
 
     /// Export durable pilot state (team map + digests) for embedded restarts.
@@ -117,13 +143,23 @@ impl InMemoryTwinStore {
         let drafts: Vec<DraftDelivery> = self.drafts.iter().map(|e| e.value().clone()).collect();
         let ledgers: Vec<LedgerSnapshot> =
             self.ledgers.iter().map(|e| e.value().clone()).collect();
+        let tenant_kv: Vec<TenantKvEntry> = self
+            .tenant_kv
+            .iter()
+            .map(|e| TenantKvEntry {
+                tenant_id: e.key().0.clone(),
+                key: e.key().1.clone(),
+                value: e.value().clone(),
+            })
+            .collect();
         TwinPersistSnapshot {
-            version: 1,
+            version: 2,
             saved_at: Some(Utc::now().to_rfc3339()),
             twins,
             slack_maps,
             drafts,
             ledgers,
+            tenant_kv,
         }
     }
 
@@ -157,6 +193,10 @@ impl InMemoryTwinStore {
                 (snap_l.tenant_id.clone(), snap_l.ledger_id.clone()),
                 snap_l,
             );
+        }
+        for kv in snap.tenant_kv {
+            self.tenant_kv
+                .insert((kv.tenant_id, kv.key), kv.value);
         }
     }
 
@@ -221,6 +261,7 @@ impl Default for InMemoryTwinStore {
             publishes: DashMap::new(),
             publish_by_ledger: DashMap::new(),
             compile_runs: DashMap::new(),
+            tenant_kv: DashMap::new(),
             lock: RwLock::new(()),
         }
     }

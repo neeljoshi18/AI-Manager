@@ -52,7 +52,44 @@ Paste bot token into `vertical-security/secrets/dev_secrets.json` as `SLACK_BOT_
 - GitHub App ID / private key / webhook secret
 - Host choice + public DNS for webhook delivery
 
+## Microsoft Teams (delivery adapter)
+
+| Item | Value |
+|------|--------|
+| Manifest | `teams-app-manifest.json` |
+| Token storage | **Only** vault key `TEAMS_BOT_TOKEN` (Bot Framework bearer) — ADR-012 |
+| Messaging endpoint | `https://$DOMAIN/v3/teams/messages` |
+| Map | Team member `teams_user_id` (AAD / Teams user id) on twin config |
+| Actions | Adaptive Cards: **Approve · Edit · Don't send** (same as Slack) |
+| Select adapter | `DELIVERY_ADAPTER=teams` + `USE_EGRESS_TEAMS=true` (default remains Slack) |
+
+### Human steps when secrets are ready
+
+1. Create Azure Bot + Teams app (use `teams-app-manifest.json` as a starting point; replace app ids).
+2. Set Bot messaging endpoint to `https://$DOMAIN/v3/teams/messages`.
+3. Put Bot Framework connector token in vault as `TEAMS_BOT_TOKEN` (never on twin-api env).
+4. Set public env: `TEAMS_APP_ID`, optional `TEAMS_TENANT_ID` / `TEAMS_SERVICE_URL`.
+5. Set `DELIVERY_ADAPTER=teams` and `USE_EGRESS_TEAMS=true` in compose / `.env.staging`.
+6. Restart **egress** then **twin-api** so vault + adapter load.
+7. Map members with `teams_user_id` (Team API / bulk paste path can extend later).
+
+### Manual path (always works)
+
+Paste connector token into `vertical-security/secrets/dev_secrets.json` as `TEAMS_BOT_TOKEN` and restart egress.
+
+### Blocked on human
+
+- Azure Bot App ID + password / connector token  
+- Teams admin consent for the org  
+
+**Do not break Slack:** leave `DELIVERY_ADAPTER=slack` (default) for existing pilots.
+
+## Google / SSO (identity plane — later)
+
+SSO grants seats + **champion vs member** roles only. It does **not** replace Connect Slack/Teams or GitHub. Ship with multi-tenant packaging.
+
 ## Product UI
 
-Connections page shows disabled **Install GitHub App** / **Connect Slack OAuth** until these credentials exist.
+Connections page: **Install GitHub App** / **Connect Slack** / **Connect Teams** / roles panel.  
+SSO shows as roadmap until multi-tenant packaging.  
 Manual path remains: vault token + webhook → V1.

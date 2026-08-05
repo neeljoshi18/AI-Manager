@@ -43,18 +43,18 @@ GitHub ingest → V1 events → bridge → V2 graph → V3 digests
 - Map: GitHub identity → Slack user id  
 - **Demoable** on staging  
 
-### Microsoft Teams (roadmap — same product)
+### Microsoft Teams (adapter shipped — same product)
 
 **Sales line:** *“If you’re on Teams, same loop—connect Teams instead of Slack. Digests in Teams; Approve / Edit / Don't send.”*
 
 | Item | Detail |
 |------|--------|
-| App | Azure Bot + Teams app manifest |
+| App | Azure Bot + Teams app manifest (`deploy/oauth/teams-app-manifest.json`) |
 | Identity | Azure AD user / UPN |
-| Map | GitHub → Teams/AAD id |
+| Map | GitHub → Teams/AAD id (`teams_user_id` on member) |
 | UI | Adaptive Cards for actions |
-| Status | **Not live** on staging yet |
-| Order | After Slack path is airtight; shared delivery interface |
+| Status | **Adapter in product** — enable with vault `TEAMS_BOT_TOKEN` + `DELIVERY_ADAPTER=teams` (Slack remains default pilot) |
+| Order | Shared delivery interface live; Slack default so existing pilots unbroken |
 
 ### Horizon (only if asked)
 

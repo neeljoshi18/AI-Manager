@@ -26,3 +26,5 @@ uuid = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 tower = { workspace = true }
+sqlx = { workspace = true }
+async-trait = { workspace = true }

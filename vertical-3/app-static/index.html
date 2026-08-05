@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260804d" />
+  <link rel="stylesheet" href="/app/styles.css?v=20260805a" />
+  <script>window.__APP_JS_V="20260805a";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -220,6 +221,10 @@
                 Hide demo
                 <input type="checkbox" id="graph-hide-demo" checked />
               </label>
+              <label class="inline-label" title="Show Don't send + pending digests (approved always shown)">
+                Show unapproved digests
+                <input type="checkbox" id="graph-show-unapproved" />
+              </label>
               <button id="btn-graph-story" class="primary" type="button">Enrich story</button>
               <button id="btn-graph-refresh" class="ghost" type="button">Refresh</button>
               <button id="btn-graph-fit" class="ghost" type="button">Fit</button>
@@ -319,10 +324,12 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <h3>Items &amp; evidence</h3>
           <ul id="st-items" class="item-list"></ul>
           <p class="muted small" id="st-actions-help">
-            <strong>Approve</strong> = share this status.
-            <strong>Edit</strong> = fix the words first.
-            <strong>Don't send</strong> = reject this draft (never posts).
-            Notify Policy v1: only Slack again if the story changes or a new blocker appears (max 1 status DM / person / UTC day).
+            <strong>Approve</strong> = share this status digest to chat (team channel if bot is a member; else DM).
+            Recorded in twin store + event log; shows as <em>StatusDigest / approved</em> on Graph.
+            <strong>Don't send</strong> = reject (never posts) but keep metadata — enable Graph → “Show unapproved digests”.
+            <strong>GitHub work</strong> (commits/PRs) always lives on the graph regardless of Approve.
+            Slack DM: type <code>approve</code> or <code>don't send</code> as a reply.
+            If the button seems dead, open a person from Team first (need a loaded draft_id).
           </p>
           <div class="actions">
             <button id="btn-publish" class="ok">Approve</button>
@@ -491,6 +498,15 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <p class="muted small">From <code>/metrics</code>. Learning-window scorecard uses these. Suppressed ≫ sent means anti-spam is working.</p>
         </div>
         <div class="card">
+          <h2>Live event trail</h2>
+          <p class="muted small">Approve / Don't send / compile — embedded log now; Neon Postgres when <code>OBSERVE_DATABASE_URL</code> is set.</p>
+          <div class="actions-inline">
+            <button type="button" id="btn-events-refresh" class="primary">Refresh events</button>
+          </div>
+          <p class="muted small" id="events-meta"></p>
+          <pre id="events-log" class="box small" style="max-height:320px;overflow:auto;">{}</pre>
+        </div>
+        <div class="card">
           <h2>What we don’t build</h2>
           <ul class="pitch">
             <li>Glean-style document search / vectors</li>
@@ -512,6 +528,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260804d"></script>
+  <script src="/app/app.js?v=20260805a"></script>
 </body>
 </html>

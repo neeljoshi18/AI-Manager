@@ -414,27 +414,60 @@ async function simulate() {
 
 async function act(kind) {
   if (!state.draftId) {
-    alert("No draft yet — open a person from Today/Team digests, or Compile all digests first");
+    alert(
+      "No draft loaded.\n\nOpen a person from Cockpit / Team digests first, or click Compile digests.\n" +
+        "If status is already “shared”, compile again for a new window before Approving."
+    );
     return;
   }
   const base = `/v3/tenants/${encodeURIComponent(state.tenant)}/drafts/${encodeURIComponent(state.draftId)}`;
   const labels = { publish: "Approve", veto: "Don't send", edit: "Edit" };
   const label = labels[kind] || kind;
+  const help = $("st-actions-help");
+  if (help) help.textContent = `${label}…`;
   try {
     if (kind === "edit") {
       const text = prompt("Edited status text:", $("st-text").textContent);
-      if (text == null) return;
+      if (text == null) {
+        if (help) help.textContent = "";
+        return;
+      }
       await jfetch(base + "/edit", { method: "POST", body: JSON.stringify({ text }) });
     } else {
-      await jfetch(base + "/" + kind, { method: "POST", body: "{}" });
+      const body = await jfetch(base + "/" + kind, { method: "POST", body: "{}" });
+      const outcome = body.outcome || body.draft?.status || "";
+      const where = body.where_it_went || body.publish?.channel_id || "";
+      const note = body.note || "";
+      if (kind === "publish") {
+        alert(
+          (outcome === "already_published"
+            ? "Already approved earlier.\n\n"
+            : "Approved.\n\n") +
+            (note ? note + "\n\n" : "") +
+            (where ? "Where it went: " + where + "\n\n" : "") +
+            "What this means:\n" +
+            "• Digest status → published (twin store + event log)\n" +
+            "• Shared to Slack channel if bot is a member, else DM fallback\n" +
+            "• Work graph (commits/PRs) always from GitHub — not gated by Approve\n" +
+            "• Graph shows a StatusDigest “approved” node (refresh Graph)\n" +
+            "• Live trail: Connections/Settings events or GET /v3/tenants/…/events"
+        );
+      } else if (kind === "veto") {
+        alert(
+          "Don't send recorded.\n\n" +
+            (note ? note + "\n\n" : "") +
+            "Draft never posts to the team channel.\n" +
+            "It stays as metadata. On Graph, check “Show unapproved digests” to see don't-send nodes."
+        );
+      }
     }
     // Reload same draft after action
     await openDraftById(state.tenant, state.draftId, state.ledgerId);
-    if (kind === "publish") {
+    if (help) {
       const st = state.latest?.draft?.status || "";
-      if (st === "published" || st === "Published") {
-        /* ok */
-      }
+      help.innerHTML =
+        `<strong>Last action:</strong> ${esc(label)} → draft is <code>${esc(st)}</code>. ` +
+        `Approve shares status; Don't send keeps it as hidden metadata until you show unapproved on Graph.`;
     }
   } catch (e) {
     const msg = String(e.message || e);
@@ -454,6 +487,7 @@ async function act(kind) {
     } else {
       alert(label + " failed: " + msg);
     }
+    if (help) help.textContent = label + " failed: " + msg;
   }
 }
 
@@ -1623,8 +1657,9 @@ async function refreshGraph(forceLayout) {
       statsEl.innerHTML = `<span class="pill mid">loading map…</span>`;
     }
     const includeDemo = $("graph-hide-demo")?.checked === false;
+    const showUnapproved = $("graph-show-unapproved")?.checked === true;
     const data = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=600&edge_limit=1500&include_demo=${includeDemo ? "true" : "false"}`
+      `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=600&edge_limit=1500&include_demo=${includeDemo ? "true" : "false"}&show_unapproved=${showUnapproved ? "true" : "false"}`
     );
     graphState.raw = data;
     graphState.lastFetch = Date.now();
@@ -1755,6 +1790,7 @@ function mergeGraphData(data, forceLayout) {
       fy: null,
       pinSoft: null,
       meta: n,
+      decision: n.decision || n.intent_type || "",
       visual,
       _seedI: i,
     };
@@ -1821,11 +1857,21 @@ function applyHierarchicalSeed(nodes, edges) {
       n.visual !== false
   );
   const intents = nodes.filter((n) => n.type === "Intent" && n.visual !== false);
+  const digests = nodes.filter((n) => n.type === "StatusDigest" && n.visual !== false);
   const commits = nodes.filter((n) => n.type === "Commit" && n.visual !== false);
   const other = nodes.filter(
     (n) =>
       n.visual !== false &&
-      !["Person", "Repo", "PullRequest", "Issue", "Ticket", "Intent", "Commit"].includes(n.type)
+      ![
+        "Person",
+        "Repo",
+        "PullRequest",
+        "Issue",
+        "Ticket",
+        "Intent",
+        "Commit",
+        "StatusDigest",
+      ].includes(n.type)
   );
 
   // Author map for commits via AUTHORED
@@ -1887,6 +1933,15 @@ function applyHierarchicalSeed(nodes, edges) {
     it.x = x;
     it.y = y;
     it.pinSoft = { x, y, k: 0.04 };
+  });
+
+  digests.forEach((dg, i) => {
+    const person = people[i % Math.max(1, people.length)];
+    const x = (person?.x ?? (i - (digests.length - 1) / 2) * 100) + 70;
+    const y = (person?.y ?? -180) - 70;
+    dg.x = x;
+    dg.y = y;
+    dg.pinSoft = { x, y, k: 0.05 };
   });
 
   // Commits: fan under each author (or under first person)
@@ -2449,6 +2504,21 @@ function drawNodeShape(ctx, n, selected) {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
+  } else if (n.type === "StatusDigest") {
+    // Diamond for digest decision (local coords after translate)
+    const d = n.meta?.decision || n.decision || n.intent_type || "";
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r, 0);
+    ctx.closePath();
+    ctx.fillStyle =
+      d === "approved" ? "#dcfce7" : d === "dont_send" ? "#fee2e2" : "#fef9c3";
+    ctx.fill();
+    ctx.strokeStyle = d === "approved" ? "#16a34a" : d === "dont_send" ? "#dc2626" : "#ca8a04";
+    ctx.lineWidth = selected ? 2.5 : 1.5;
+    ctx.stroke();
   } else if (n.type === "Intent") {
     ctx.setLineDash([3 / graphState.scale, 2 / graphState.scale]);
     ctx.strokeRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
@@ -2518,6 +2588,25 @@ if ($("btn-roles-save")) {
 }
 if ($("btn-roles-reload")) {
   $("btn-roles-reload").addEventListener("click", () => reloadRoles());
+}
+async function refreshEvents() {
+  const tenant = syncTenantFields(activeTenant());
+  const el = $("events-log");
+  const meta = $("events-meta");
+  try {
+    const e = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/events?limit=80`
+    );
+    if (meta) {
+      meta.textContent = `count=${e.count} · external_db=${e.external_db} · ${e.note || ""}`;
+    }
+    if (el) el.textContent = JSON.stringify(e.events || [], null, 2);
+  } catch (err) {
+    if (meta) meta.textContent = "events: " + (err.message || err);
+  }
+}
+if ($("btn-events-refresh")) {
+  $("btn-events-refresh").addEventListener("click", () => refreshEvents());
 }
 if ($("btn-team-refresh")) {
   $("btn-team-refresh").addEventListener("click", refreshTeam);
@@ -2716,6 +2805,9 @@ if ($("btn-graph-story")) {
 }
 if ($("graph-hide-demo")) {
   $("graph-hide-demo").addEventListener("change", () => refreshGraph(true));
+}
+if ($("graph-show-unapproved")) {
+  $("graph-show-unapproved").addEventListener("change", () => refreshGraph(true));
 }
 if ($("graph-recent-commits")) {
   $("graph-recent-commits").addEventListener("change", () => refreshGraph(true));

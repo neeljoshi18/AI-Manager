@@ -33,6 +33,9 @@ use twin_delivery::{
     EgressTeamsClient, MockSlackClient, MockTeamsClient,
 };
 
+mod observe;
+use observe::EventObserver;
+
 #[derive(Default)]
 struct Metrics {
     compile_ok: AtomicU64,
@@ -78,6 +81,8 @@ struct AppState {
     last_notify: Arc<Mutex<std::collections::HashMap<(String, String), chrono::DateTime<Utc>>>>,
     /// Cached team pulse (conflicts + intent counts) per tenant from thin monitor.
     last_pulse: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
+    /// Live event log (embedded + optional Neon Postgres).
+    observer: EventObserver,
 }
 
 fn twin_persist_path_from_env() -> Option<PathBuf> {
@@ -491,6 +496,10 @@ async fn main() -> anyhow::Result<()> {
             get(get_tomorrow_focus).put(put_tomorrow_focus),
         )
         .route(
+            "/v3/tenants/{tenant_id}/events",
+            get(list_events),
+        )
+        .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}",
             get(get_twin),
         )
@@ -644,6 +653,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         let overlay = OverlayGraphSource::new(fixture.clone(), &cfg.v2_base_url);
         let compiler = Arc::new(LedgerCompiler::new(store.clone(), overlay));
         let (slack, slack_mode, delivery_adapter) = build_delivery_client(&cfg)?;
+        let observer = EventObserver::from_env(Some(mem.clone())).await;
         return Ok(AppState {
             store,
             embedded_store: Some(mem),
@@ -660,6 +670,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
             last_demo,
             last_notify: last_notify.clone(),
             last_pulse: last_pulse.clone(),
+            observer,
         });
     }
 
@@ -706,6 +717,7 @@ async fn build_state(cfg: TwinConfig) -> anyhow::Result<AppState> {
         last_demo,
         last_notify,
         last_pulse,
+        observer: EventObserver::from_env(None).await,
     })
 }
 
@@ -3190,6 +3202,8 @@ struct GraphSnapshotQ {
     edge_limit: Option<usize>,
     /// Pass-through to V2; default hide intent_demo seed (alice/bob).
     include_demo: Option<bool>,
+    /// Overlay don't-send + pending digests (approved always overlaid when present).
+    show_unapproved: Option<bool>,
 }
 
 
@@ -3426,6 +3440,7 @@ async fn get_graph_snapshot(
     let node_limit = q.node_limit.unwrap_or(400);
     let edge_limit = q.edge_limit.unwrap_or(800);
     let include_demo = q.include_demo.unwrap_or(false);
+    let show_unapproved = q.show_unapproved.unwrap_or(false);
     let v2 = st.cfg.v2_base_url.trim_end_matches('/');
     let v2_up = probe(&format!("{v2}/healthz")).await;
 
@@ -3641,6 +3656,132 @@ async fn get_graph_snapshot(
                 }
             }
         }
+
+        // Overlay status digests (twin store) onto graph — after nodes borrow ends.
+        // Approved always; pending/don't-send when show_unapproved.
+        // Work (commits/PRs) always from GitHub V2 — not gated by Approve.
+        let mut digest_nodes: Vec<serde_json::Value> = Vec::new();
+        let mut digest_edges: Vec<serde_json::Value> = Vec::new();
+        let mut digest_meta = Vec::new();
+        let person_nodes: Vec<(String, String, String)> = obj
+            .get("nodes")
+            .and_then(|n| n.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|n| n.get("type").and_then(|t| t.as_str()) == Some("Person"))
+                    .filter_map(|n| {
+                        Some((
+                            n.get("id")?.as_str()?.to_string(),
+                            n.get("label")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            n.get("resource_id")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for t in twins
+            .iter()
+            .filter(|t| t.twin_kind == TwinKind::Person && t.enabled)
+        {
+            let drafts = st
+                .store
+                .list_drafts_for_twin(&tenant_id, &t.twin_id)
+                .await
+                .unwrap_or_default();
+            let Some(d) = drafts.into_iter().next() else {
+                continue;
+            };
+            let st_s = d.status.as_str();
+            let is_approved = st_s == "published";
+            let is_veto = st_s == "vetoed";
+            let is_open = matches!(
+                st_s,
+                "pending" | "edited" | "force_human" | "publish_queued" | "publish_failed"
+            );
+            if !is_approved && !show_unapproved {
+                digest_meta.push(json!({
+                    "twin_id": t.twin_id,
+                    "subject_id": t.subject_id,
+                    "display_name": t.display_name,
+                    "draft_id": d.draft_id,
+                    "status": st_s,
+                    "hidden": true,
+                }));
+                continue;
+            }
+            if !is_approved && !is_veto && !is_open {
+                continue;
+            }
+            let decision = if is_approved {
+                "approved"
+            } else if is_veto {
+                "dont_send"
+            } else {
+                "unapproved"
+            };
+            let nid = format!("digest:{}", d.draft_id);
+            let preview: String = d.draft_text.chars().take(80).collect();
+            digest_nodes.push(json!({
+                "id": nid,
+                "type": "StatusDigest",
+                "label": format!("{decision}: {}", t.display_name),
+                "resource_id": d.draft_id,
+                "title": preview,
+                "intent_type": decision,
+                "decision": decision,
+                "draft_status": st_s,
+                "is_private": is_veto,
+                "from_digest_overlay": true,
+            }));
+            let person_id = format!("person:{}", t.subject_id);
+            let from_id = person_nodes
+                .iter()
+                .find(|(_, lab, res)| {
+                    res == &t.subject_id
+                        || lab.eq_ignore_ascii_case(&t.display_name)
+                        || lab.eq_ignore_ascii_case(&t.subject_id)
+                })
+                .map(|(id, _, _)| id.clone())
+                .unwrap_or(person_id);
+            digest_edges.push(json!({
+                "id": format!("edge:decided:{}", d.draft_id),
+                "from": from_id,
+                "to": nid,
+                "type": "STATUS_DECISION",
+                "from_digest_overlay": true,
+            }));
+            digest_meta.push(json!({
+                "twin_id": t.twin_id,
+                "subject_id": t.subject_id,
+                "display_name": t.display_name,
+                "draft_id": d.draft_id,
+                "status": st_s,
+                "decision": decision,
+                "hidden": false,
+            }));
+        }
+        if let Some(nodes) = obj.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+            nodes.extend(digest_nodes);
+        }
+        if let Some(edges) = obj.get_mut("edges").and_then(|e| e.as_array_mut()) {
+            edges.extend(digest_edges);
+        } else if !digest_edges.is_empty() {
+            obj.insert("edges".into(), json!(digest_edges));
+        }
+        obj.insert("digest_overlay".into(), json!(digest_meta));
+        obj.insert("show_unapproved".into(), json!(show_unapproved));
+        obj.insert(
+            "digest_note".into(),
+            json!(
+                "GitHub work always on graph. StatusDigest nodes = Approve / Don't send outcomes from twin store. Check “Show unapproved” for don't-send + pending."
+            ),
+        );
     }
     Ok(Json(snap))
 }
@@ -3958,7 +4099,25 @@ async fn veto_draft(
         .await
         .map_err(ApiError::from)?;
     st.metrics.veto_total.fetch_add(1, Ordering::Relaxed);
-    Ok(Json(draft))
+    st.observer
+        .log(
+            &tenant_id,
+            "dont_send",
+            &draft.twin_id,
+            json!({
+                "draft_id": draft_id,
+                "ledger_id": draft.ledger_id,
+                "status": draft.status.as_str(),
+                "source": "product_ui",
+            }),
+        )
+        .await;
+    persist_embedded(&st);
+    Ok(Json(json!({
+        "draft": draft,
+        "outcome": "dont_send",
+        "note": "Draft rejected — never posted to channel. Still stored as metadata; enable “Show unapproved digests” on Graph to see it.",
+    })))
 }
 
 async fn publish_draft(
@@ -3977,20 +4136,82 @@ async fn publish_draft(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found("twin"))?;
+    // Already published → clear success (UI used to look like “nothing happened”)
+    if draft0.status == DraftStatus::Published {
+        let existing = st
+            .store
+            .get_publish_by_ledger(&tenant_id, &draft0.ledger_id)
+            .await
+            .map_err(ApiError::from)?;
+        st.observer
+            .log(
+                &tenant_id,
+                "approve_already",
+                &twin.subject_id,
+                json!({
+                    "draft_id": draft_id,
+                    "ledger_id": draft0.ledger_id,
+                    "publish": existing,
+                    "source": "product_ui",
+                }),
+            )
+            .await;
+        return Ok(Json(json!({
+            "draft": draft0,
+            "publish": existing,
+            "outcome": "already_published",
+            "note": "Already approved. Status was shared (channel or DM fallback). Compile digests for a new window to approve again.",
+            "where_it_went": existing.as_ref().map(|p| p.channel_id.clone()).unwrap_or_default(),
+        })));
+    }
+
     let service = DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
     match service.explicit_publish(&twin, &tenant_id, &draft_id).await {
         Ok((draft, pub_rec)) => {
             if pub_rec.is_some() {
                 st.metrics.publish_ok.fetch_add(1, Ordering::Relaxed);
             }
-            Ok(Json(json!({ "draft": draft, "publish": pub_rec })))
+            let where_to = pub_rec
+                .as_ref()
+                .map(|p| p.channel_id.clone())
+                .unwrap_or_else(|| "(no channel record)".into());
+            st.observer
+                .log(
+                    &tenant_id,
+                    "approve",
+                    &twin.subject_id,
+                    json!({
+                        "draft_id": draft_id,
+                        "ledger_id": draft.ledger_id,
+                        "status": draft.status.as_str(),
+                        "where": where_to,
+                        "publish": pub_rec,
+                        "source": "product_ui",
+                    }),
+                )
+                .await;
+            persist_embedded(&st);
+            Ok(Json(json!({
+                "draft": draft,
+                "publish": pub_rec,
+                "outcome": "published",
+                "note": "Approved. Shared to chat (team channel if bot is a member; else DM fallback). Work graph still comes from GitHub — digests show as Status overlay nodes.",
+                "where_it_went": where_to,
+            })))
         }
         Err(e) => {
             st.metrics.publish_fail.fetch_add(1, Ordering::Relaxed);
             if matches!(e, TwinError::Egress(_)) {
                 st.metrics.egress_fail.fetch_add(1, Ordering::Relaxed);
-                // Human-readable path for My status Approve when Slack egress is down
                 let detail = e.to_string();
+                st.observer
+                    .log(
+                        &tenant_id,
+                        "approve_failed",
+                        &twin.subject_id,
+                        json!({ "draft_id": draft_id, "error": detail }),
+                    )
+                    .await;
                 return Err(ApiError {
                     status: StatusCode::BAD_GATEWAY,
                     message: format!(
@@ -4088,26 +4309,44 @@ async fn slack_interactions(
         .pointer("/actions/0/value")
         .and_then(|x| x.as_str())
         .unwrap_or("");
-    let tenant_id = v
-        .pointer("/team/id")
-        .and_then(|x| x.as_str())
-        .unwrap_or("ten_unknown");
+    // Never use Slack team id as product tenant — pilot tenant from env.
+    let tenant_id = std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into());
 
     if draft_id.is_empty() {
         return Ok(Json(json!({ "ok": true, "note": "no draft" })));
     }
 
     match action {
-        "veto" => {
-            let _ = twin_delivery::veto_draft(st.store.clone(), tenant_id, draft_id).await;
+        "veto" | "dont_send" | "don't_send" => {
+            let _ = twin_delivery::veto_draft(st.store.clone(), &tenant_id, draft_id).await;
             st.metrics.veto_total.fetch_add(1, Ordering::Relaxed);
+            st.observer
+                .log(
+                    &tenant_id,
+                    "dont_send",
+                    draft_id,
+                    json!({ "source": "slack_interaction", "action": action }),
+                )
+                .await;
+            persist_embedded(&st);
         }
-        "publish" => {
-            if let Ok(Some(d)) = st.store.get_draft(tenant_id, draft_id).await {
-                if let Ok(Some(twin)) = st.store.get_twin(tenant_id, &d.twin_id).await {
+        "publish" | "approve" => {
+            if let Ok(Some(d)) = st.store.get_draft(&tenant_id, draft_id).await {
+                if let Ok(Some(twin)) = st.store.get_twin(&tenant_id, &d.twin_id).await {
                     let service =
                         DeliveryService::new(st.store.clone(), st.slack.clone(), st.policy.clone());
-                    let _ = service.explicit_publish(&twin, tenant_id, draft_id).await;
+                    let _ = service
+                        .explicit_publish(&twin, &tenant_id, draft_id)
+                        .await;
+                    st.observer
+                        .log(
+                            &tenant_id,
+                            "approve",
+                            &twin.subject_id,
+                            json!({ "source": "slack_interaction", "draft_id": draft_id }),
+                        )
+                        .await;
+                    persist_embedded(&st);
                 }
             }
         }
@@ -4116,12 +4355,137 @@ async fn slack_interactions(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn slack_events(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+async fn slack_events(
+    State(st): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
     // URL verification challenge
     if body.get("type").and_then(|t| t.as_str()) == Some("url_verification") {
         return Json(json!({ "challenge": body.get("challenge") }));
     }
+    // Plain-text DM: user types "approve" / "don't send" (no Block Kit buttons required)
+    if body.get("type").and_then(|t| t.as_str()) == Some("event_callback") {
+        let ev = body.get("event").cloned().unwrap_or(json!({}));
+        let et = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let subtype = ev.get("subtype").and_then(|t| t.as_str()).unwrap_or("");
+        // Ignore bot messages
+        if et == "message" && subtype.is_empty() && ev.get("bot_id").is_none() {
+            let text = ev
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            let slack_uid = ev
+                .get("user")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let tenant_id =
+                std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into());
+            let action = if text == "approve"
+                || text == "a"
+                || text.starts_with("approve ")
+                || text == "✅"
+            {
+                Some("approve")
+            } else if text == "don't send"
+                || text == "dont send"
+                || text == "veto"
+                || text == "reject"
+                || text == "no"
+            {
+                Some("dont_send")
+            } else {
+                None
+            };
+            if let Some(act) = action {
+                if let Ok(maps) = st.store.list_slack_maps(&tenant_id).await {
+                    if let Some(m) = maps.iter().find(|m| m.slack_user_id == slack_uid) {
+                        // Find person twin for this subject
+                        let twin_id = person_twin_id(&m.global_user_id);
+                        if let Ok(Some(twin)) = st.store.get_twin(&tenant_id, &twin_id).await {
+                            if let Ok(drafts) =
+                                st.store.list_drafts_for_twin(&tenant_id, &twin.twin_id).await
+                            {
+                                if let Some(d) = drafts.into_iter().next() {
+                                    match act {
+                                        "dont_send" => {
+                                            let _ = twin_delivery::veto_draft(
+                                                st.store.clone(),
+                                                &tenant_id,
+                                                &d.draft_id,
+                                            )
+                                            .await;
+                                            st.metrics.veto_total.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        "approve" => {
+                                            let service = DeliveryService::new(
+                                                st.store.clone(),
+                                                st.slack.clone(),
+                                                st.policy.clone(),
+                                            );
+                                            let _ = service
+                                                .explicit_publish(
+                                                    &twin,
+                                                    &tenant_id,
+                                                    &d.draft_id,
+                                                )
+                                                .await;
+                                        }
+                                        _ => {}
+                                    }
+                                    st.observer
+                                        .log(
+                                            &tenant_id,
+                                            act,
+                                            &twin.subject_id,
+                                            json!({
+                                                "source": "slack_text",
+                                                "text": text,
+                                                "draft_id": d.draft_id,
+                                                "slack_user": slack_uid,
+                                            }),
+                                        )
+                                        .await;
+                                    persist_embedded(&st);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     Json(json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+struct EventsQ {
+    limit: Option<usize>,
+}
+
+async fn list_events(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<EventsQ>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(100).min(500);
+    let mut events = st.observer.list_embedded(&tenant_id, limit);
+    if let Some(pg) = st.observer.list_pg(&tenant_id, limit as i64).await {
+        // Prefer Postgres when connected (authoritative external view)
+        events = pg;
+    }
+    Json(json!({
+        "tenant_id": tenant_id,
+        "external_db": st.observer.external_connected(),
+        "count": events.len(),
+        "events": events,
+        "note": if st.observer.external_connected() {
+            "Events from OBSERVE_DATABASE_URL (Neon). SELECT * FROM twin_events ORDER BY at DESC;"
+        } else {
+            "Embedded event log only. Set OBSERVE_DATABASE_URL to a Neon Postgres URL for external live SQL."
+        },
+    }))
 }
 
 /// Bot Framework messaging endpoint — Adaptive Card Action.Submit → Approve / Edit / Don't send.

@@ -100,15 +100,19 @@ jobs:
           echo "== rebuild twin-api (UI/API polish) =="
           $COMPOSE build twin-api
           $COMPOSE up -d --no-deps twin-api
-          for s in v1 v2 egress autoheal twin-api bridge; do
+          # Always recreate V1 — it often hangs under load after restarts (preserve volume).
+          echo "== force-recreate v1 (preserve volume) =="
+          $COMPOSE up -d --force-recreate --no-deps v1 || true
+          sleep 8
+          for s in v2 egress autoheal twin-api bridge; do
             echo "== restart $s =="
             $COMPOSE restart "$s" || true
           done
           sleep 6
-          if ! curl -sf --max-time 3 http://127.0.0.1:18080/healthz >/dev/null; then
-            echo "v1 force-recreate (preserve volume)"
+          if ! curl -sf --max-time 5 http://127.0.0.1:18080/healthz >/dev/null; then
+            echo "v1 still down — second recreate"
             $COMPOSE up -d --force-recreate --no-deps v1
-            sleep 10
+            sleep 12
           fi
           if ! curl -sf --max-time 3 http://127.0.0.1:18082/healthz >/dev/null; then
             echo "v2 force-recreate"

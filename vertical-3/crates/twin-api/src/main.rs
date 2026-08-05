@@ -1061,8 +1061,9 @@ async fn healthz() -> impl IntoResponse {
 }
 
 async fn probe(url: &str) -> bool {
+    // 5s: small VPS + busy V1 must not false-fail the flywheel status surface
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .ok();
     let Some(c) = client else {
@@ -1077,7 +1078,7 @@ async fn probe(url: &str) -> bool {
 
 async fn probe_json(url: &str) -> Option<serde_json::Value> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .ok()?;
     let res = client.get(url).send().await.ok()?;

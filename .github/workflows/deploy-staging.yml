@@ -97,14 +97,15 @@ jobs:
           export DOCKER_BUILDKIT=1
           COMPOSE="docker compose -f deploy/docker-compose.app.yml --env-file deploy/.env.staging"
           $COMPOSE --profile tls up -d || $COMPOSE up -d
-          echo "== rebuild twin-api (UI/API polish) =="
-          $COMPOSE build twin-api
-          $COMPOSE up -d --no-deps twin-api
-          # Always recreate V1 — it often hangs under load after restarts (preserve volume).
+          # Data flywheel: rebuild ingest + bridge + twin (preserve named volumes)
+          echo "== rebuild v1 + bridge + twin-api =="
+          $COMPOSE build v1 bridge twin-api
+          $COMPOSE up -d --no-deps v1 bridge twin-api
+          # Always force-recreate V1 — soft restart leaves wedged accept loops
           echo "== force-recreate v1 (preserve volume) =="
           $COMPOSE up -d --force-recreate --no-deps v1 || true
-          sleep 8
-          for s in v2 egress autoheal twin-api bridge; do
+          sleep 10
+          for s in v2 egress autoheal; do
             echo "== restart $s =="
             $COMPOSE restart "$s" || true
           done
@@ -124,12 +125,13 @@ jobs:
             $COMPOSE up -d --force-recreate --no-deps egress
             sleep 6
           fi
-          $COMPOSE restart twin-api bridge || true
-          sleep 4
+          $COMPOSE up -d --no-deps --force-recreate bridge twin-api || true
+          sleep 8
           echo "== health =="
           curl -sf --max-time 5 http://127.0.0.1:18090/healthz && echo " egress ok" || echo " EGRESS DOWN"
           curl -sf --max-time 5 http://127.0.0.1:18082/healthz && echo " v2 ok" || echo " V2 DOWN"
           curl -sf --max-time 5 http://127.0.0.1:18080/healthz && echo " v1 ok" || echo " V1 DOWN"
+          curl -sf --max-time 5 http://127.0.0.1:18080/v1/healthz && echo " v1 public-path ok" || echo " V1 /v1/healthz DOWN"
           curl -sf --max-time 5 http://127.0.0.1:18083/healthz && echo " twin ok" || echo " TWIN DOWN"
           $COMPOSE --profile tls ps || true
           REMOTE

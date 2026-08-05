@@ -546,6 +546,33 @@ async function refreshCockpit() {
         `<span class="pill mid">${esc((ready.note || ready.error || "").toString().slice(0, 100))}</span>`,
       ].join(" ");
     }
+    // Data flywheel strip (sales: continuous ingest → insight)
+    if ($("ck-flywheel")) {
+      try {
+        const st = await jfetch("/v3/demo/status");
+        const commits =
+          (ins && ins.graph && ins.graph.commit_nodes) ||
+          (ins && ins.activity && ins.activity.authored_edges) ||
+          0;
+        const gNodes = st.graph_nodes || (graph && (graph.nodes || []).length) || 0;
+        const v1up = st.v1 === true;
+        const v2up = st.v2 === true;
+        $("ck-flywheel").innerHTML = [
+          `<span class="pill ${v1up ? "up" : "down"}">ingest V1: ${v1up ? "up" : "down"}</span>`,
+          `<span class="pill ${v2up ? "up" : "down"}">graph V2: ${v2up ? "up" : "down"}</span>`,
+          `<span class="pill ${commits >= 20 ? "up" : commits > 0 ? "mid" : "down"}">commits mapped: ${commits}</span>`,
+          `<span class="pill mid">graph nodes: ${gNodes}</span>`,
+          `<span class="pill ${st.egress ? "up" : "down"}">egress: ${st.egress ? "up" : "down"}</span>`,
+        ].join(" ");
+        if ($("ck-flywheel-note")) {
+          $("ck-flywheel-note").textContent = v1up
+            ? `Flywheel live — commits keep filling the graph (poller + webhooks). Pitch: “status writes itself from work; champion sees heat & conflicts without standups.”`
+            : `Ingest V1 is down — recover stack so the flywheel does not stall. Graph may still show prior data.`;
+        }
+      } catch (_) {
+        /* non-fatal */
+      }
+    }
 
     const members = team.members || [];
     const mapped = members.filter((m) => m.slack_mapped).length;

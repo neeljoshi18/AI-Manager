@@ -86,7 +86,10 @@ async fn main() -> anyhow::Result<()> {
     // routes so a single binary is enough for local demos (shared in-memory store).
     let app = Router::new()
         .route("/healthz", get(healthz))
+        // Public edge (Caddy) proxies /v1/* without strip — same handler for both paths.
+        .route("/v1/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/v1/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
         .route("/v1/tenants", post(upsert_tenant))
         .route("/v1/tenants/{tenant_id}/webhooks/{provider}", post(ingest_webhook))

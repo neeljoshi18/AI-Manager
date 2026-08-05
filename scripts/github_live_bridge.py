@@ -67,17 +67,26 @@ GITHUB_REPOS = [
     for r in os.environ.get("GITHUB_REPOS", os.environ.get("GITHUB_REPO", "neeljoshi18/AI-Manager")).split(",")
     if r.strip()
 ]
-COMMIT_POLL_SECS = float(os.environ.get("COMMIT_POLL_SECS", "90"))
+# Discover all repos the token can list (owner/collaborator/org) — data flywheel.
+GITHUB_REPOS_AUTO = os.environ.get("GITHUB_REPOS_AUTO", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+GITHUB_REPOS_AUTO_MAX = int(os.environ.get("GITHUB_REPOS_AUTO_MAX", "40"))
+COMMIT_POLL_SECS = float(os.environ.get("COMMIT_POLL_SECS", "60"))
 # Steady-state pages (100 commits each). Boot uses COMMIT_BOOT_PAGES for bulk backfill.
-COMMIT_POLL_PAGES = int(os.environ.get("COMMIT_POLL_PAGES", "5"))
-COMMIT_BOOT_PAGES = int(os.environ.get("COMMIT_BOOT_PAGES", "15"))  # up to 1500 commits first bulk
-COMMIT_BOOT_CAP = int(os.environ.get("COMMIT_BOOT_CAP", "80"))  # max project per boot tick
-COMMIT_TICK_CAP = int(os.environ.get("COMMIT_TICK_CAP", "24"))  # steady tick cap
+COMMIT_POLL_PAGES = int(os.environ.get("COMMIT_POLL_PAGES", "3"))
+COMMIT_BOOT_PAGES = int(os.environ.get("COMMIT_BOOT_PAGES", "10"))
+COMMIT_BOOT_CAP = int(os.environ.get("COMMIT_BOOT_CAP", "100"))  # max project per boot tick
+COMMIT_TICK_CAP = int(os.environ.get("COMMIT_TICK_CAP", "40"))  # steady tick cap
 COMMIT_SEEN_FILE = os.environ.get(
     "COMMIT_SEEN_FILE", f"/var/lib/ai-manager/bridge_commits_seen_{TENANT}.txt"
 )
 _LAST_COMMIT_POLL = 0.0
 _COMMIT_BOOT_DONE = False
+_LAST_REPO_DISCOVER = 0.0
+REPO_DISCOVER_SECS = float(os.environ.get("GITHUB_REPOS_DISCOVER_SECS", "1800"))  # 30m
 
 
 def parse_slack_map(raw: str) -> dict[str, str]:
@@ -538,6 +547,60 @@ def synthetic_push_event(
     }
 
 
+def discover_github_repos() -> list[str]:
+    """List repos visible to the token (owner + collaborator + org membership)."""
+    global GITHUB_REPOS, _LAST_REPO_DISCOVER
+    now = time.time()
+    if not GITHUB_REPOS_AUTO:
+        return GITHUB_REPOS
+    if (now - _LAST_REPO_DISCOVER) < REPO_DISCOVER_SECS and len(GITHUB_REPOS) > 1:
+        return GITHUB_REPOS
+    _LAST_REPO_DISCOVER = now
+    if not GITHUB_TOKEN:
+        return GITHUB_REPOS
+    found: list[str] = []
+    seen: set[str] = set()
+    # Start with explicit env list
+    for r in GITHUB_REPOS:
+        if r not in seen:
+            seen.add(r)
+            found.append(r)
+    try:
+        for page in range(1, 5):  # up to 400 repos
+            url = (
+                "https://api.github.com/user/repos"
+                f"?per_page=100&page={page}&affiliation=owner,collaborator,organization_member"
+                "&sort=pushed"
+            )
+            batch = gh_get(url, timeout=30)
+            if not isinstance(batch, list) or not batch:
+                break
+            for repo in batch:
+                full = str(repo.get("full_name") or "").strip()
+                if not full or full in seen:
+                    continue
+                # Skip forks unless already explicitly listed
+                if repo.get("fork") and full not in GITHUB_REPOS:
+                    continue
+                seen.add(full)
+                found.append(full)
+                if len(found) >= GITHUB_REPOS_AUTO_MAX:
+                    break
+            if len(found) >= GITHUB_REPOS_AUTO_MAX or len(batch) < 100:
+                break
+    except Exception as e:
+        print(f"repo discover fail (keeping GITHUB_REPOS={GITHUB_REPOS}): {e}", flush=True)
+        return GITHUB_REPOS
+    if found:
+        GITHUB_REPOS = found
+        print(
+            f"repo discover: {len(GITHUB_REPOS)} repos → {GITHUB_REPOS[:8]}"
+            f"{'…' if len(GITHUB_REPOS) > 8 else ''}",
+            flush=True,
+        )
+    return GITHUB_REPOS
+
+
 def verify_github_token() -> dict:
     """Probe GitHub auth; prefer long-lived PAT. Returns {ok, login, remaining, note}."""
     out = {"ok": False, "login": "", "remaining": None, "note": ""}
@@ -560,11 +623,15 @@ def verify_github_token() -> dict:
         out["remaining"] = core.get("remaining")
     except Exception:
         pass
+    discover_github_repos()
     # private repo reachability
     for repo in GITHUB_REPOS[:1]:
         try:
             gh_get(f"https://api.github.com/repos/{repo}", timeout=15)
-            out["note"] = f"ok login={out['login']} repo={repo} remaining={out['remaining']}"
+            out["note"] = (
+                f"ok login={out['login']} repos={len(GITHUB_REPOS)} "
+                f"sample={repo} remaining={out['remaining']}"
+            )
         except Exception as e:
             out["ok"] = False
             out["note"] = f"token cannot read {repo}: {e}"
@@ -583,6 +650,8 @@ def poll_github_commits(seen_events: set[str], force: bool = False, boot: bool =
     _LAST_COMMIT_POLL = now
     if not v2_healthy():
         return 0
+    # Refresh repo list periodically so new repos on the account join the flywheel.
+    discover_github_repos()
     pages = COMMIT_BOOT_PAGES if boot or not _COMMIT_BOOT_DONE else COMMIT_POLL_PAGES
     cap = COMMIT_BOOT_CAP if boot or not _COMMIT_BOOT_DONE else max(COMMIT_TICK_CAP, MAX_PER_TICK * 4)
     commit_seen = load_commit_seen()

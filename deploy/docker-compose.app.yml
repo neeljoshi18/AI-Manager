@@ -68,12 +68,15 @@ services:
     depends_on:
       - egress
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/healthz"]
-      interval: 10s
+      # Fail closed for autoheal: short curl so a wedged accept loop is marked unhealthy
+      test: ["CMD", "curl", "-sf", "--max-time", "2", "http://127.0.0.1:18080/healthz"]
+      interval: 8s
       timeout: 3s
-      retries: 12
-      start_period: 15s
+      retries: 4
+      start_period: 20s
     restart: unless-stopped
+    # Prefer process restart over silent hang (data flywheel)
+    stop_grace_period: 15s
 
   v2:
     build:
@@ -211,12 +214,16 @@ services:
       GITHUB_PAT: ${GITHUB_PAT:-${BRIDGE_GITHUB_TOKEN:-}}
       BRIDGE_GITHUB_TOKEN: ${BRIDGE_GITHUB_TOKEN:-${GITHUB_PAT:-}}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-${GITHUB_PAT:-${GH_TOKEN:-}}}
+      # Comma list and/or auto-discover every repo the token can see (owner + collab).
       GITHUB_REPOS: ${GITHUB_REPOS:-neeljoshi18/AI-Manager}
-      COMMIT_POLL_SECS: ${COMMIT_POLL_SECS:-90}
-      COMMIT_POLL_PAGES: ${COMMIT_POLL_PAGES:-5}
-      COMMIT_BOOT_PAGES: ${COMMIT_BOOT_PAGES:-15}
-      COMMIT_BOOT_CAP: ${COMMIT_BOOT_CAP:-80}
-      COMMIT_TICK_CAP: ${COMMIT_TICK_CAP:-24}
+      GITHUB_REPOS_AUTO: ${GITHUB_REPOS_AUTO:-true}
+      GITHUB_REPOS_AUTO_MAX: ${GITHUB_REPOS_AUTO_MAX:-40}
+      # Tighter poll = denser flywheel on pilot (still capped per tick for 2vCPU).
+      COMMIT_POLL_SECS: ${COMMIT_POLL_SECS:-60}
+      COMMIT_POLL_PAGES: ${COMMIT_POLL_PAGES:-3}
+      COMMIT_BOOT_PAGES: ${COMMIT_BOOT_PAGES:-10}
+      COMMIT_BOOT_CAP: ${COMMIT_BOOT_CAP:-100}
+      COMMIT_TICK_CAP: ${COMMIT_TICK_CAP:-40}
       COMMIT_SEEN_FILE: /var/lib/ai-manager/bridge_commits_seen.txt
     volumes:
       - bridge_state:/var/lib/ai-manager

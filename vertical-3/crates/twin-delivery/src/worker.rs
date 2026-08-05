@@ -539,9 +539,61 @@ impl DeliveryService {
             twin.channel_id.clone()
         };
 
+        // Channel post; if bot not in channel, fall back to IC DM so Approve still works in pilot.
         let post: DeliveryPostResult = match self.delivery.post_channel(&channel, &body).await {
             Ok(p) => p,
             Err(e) => {
+                let msg = e.to_string();
+                let not_in_channel = msg.contains("not_in_channel")
+                    || msg.contains("channel_not_found")
+                    || msg.contains("is_archived")
+                    || channel == "C_TEAM"
+                    || channel.is_empty();
+                if not_in_channel {
+                    tracing::warn!(
+                        %channel,
+                        error = %msg,
+                        "channel publish failed; approving via DM fallback"
+                    );
+                    let chat_user = resolve_chat_user_id(
+                        self.store.as_ref(),
+                        twin,
+                        self.delivery.adapter_kind(),
+                    )
+                    .await
+                    .unwrap_or_else(|_| format!("U_{}", twin.subject_id));
+                    let dm_body = format!(
+                        "✅ *Approved* (channel share skipped — invite the bot to `{channel}` for team posts).\n\n{body}"
+                    );
+                    match self.delivery.post_dm(&chat_user, &dm_body).await {
+                        Ok(dm) => {
+                            // Record as published with dm channel id so Approve succeeds.
+                            let rec = PublishRecord {
+                                tenant_id: draft.tenant_id.clone(),
+                                publish_id: format!("pub_{}", Uuid::new_v4()),
+                                ledger_id: draft.ledger_id.clone(),
+                                draft_id: draft.draft_id.clone(),
+                                channel_id: format!("dm_fallback:{}", dm.channel),
+                                slack_ts: dm.ts,
+                                body_hash: hash.clone(),
+                                published_at: Utc::now(),
+                            };
+                            let _ = self.store.put_publish_if_absent(rec.clone()).await?;
+                            draft.status = DraftStatus::Published;
+                            draft.updated_at = Utc::now();
+                            self.store.update_draft(draft.clone()).await?;
+                            return Ok(Some(rec));
+                        }
+                        Err(e2) => {
+                            draft.status = DraftStatus::PublishFailed;
+                            draft.updated_at = Utc::now();
+                            self.store.update_draft(draft.clone()).await?;
+                            return Err(TwinError::Egress(format!(
+                                "channel post failed ({msg}); DM fallback also failed ({e2}). Invite bot to channel {channel} or check vault token."
+                            )));
+                        }
+                    }
+                }
                 draft.status = DraftStatus::PublishFailed;
                 draft.updated_at = Utc::now();
                 self.store.update_draft(draft.clone()).await?;

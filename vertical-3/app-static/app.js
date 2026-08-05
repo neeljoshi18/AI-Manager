@@ -438,7 +438,14 @@ async function act(kind) {
     }
   } catch (e) {
     const msg = String(e.message || e);
-    if (kind === "publish" && /egress|502|BAD_GATEWAY|proxy/i.test(msg)) {
+    if (kind === "publish" && /not_in_channel|channel_not_found|invite the bot/i.test(msg)) {
+      alert(
+        "Approve: bot is not in the team Slack channel.\n\n" +
+          "In Slack: invite @AI Manager (or your bot) to the team status channel, then retry.\n" +
+          "Or use the latest build which falls back to a DM confirmation.\n\n" +
+          msg
+      );
+    } else if (kind === "publish" && /egress|502|BAD_GATEWAY|proxy/i.test(msg)) {
       alert(
         "Approve failed — Slack delivery proxy is down or the bot token is missing.\n\n" +
           "Ops: recover egress (vault SLACK_BOT_TOKEN) and retry Approve.\n\n" +

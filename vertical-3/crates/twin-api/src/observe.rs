@@ -402,7 +402,10 @@ impl EventObserver {
         }))
     }
 
-    /// Upsert V2 graph snapshot nodes+edges into Neon; delete orphans for tenant.
+    /// Replace V2 graph snapshot nodes+edges in Neon for a tenant (bulk, one txn).
+    ///
+    /// Strategy: DELETE tenant rows → bulk INSERT via UNNEST (few round-trips).
+    /// Row-by-row upserts were too slow for Neon free-tier RTT (~500+ nodes).
     ///
     /// Nodes use `id`. Edges use stable `id` when present, else
     /// `{type}:{from}->{to}:{valid_from}` (empty segments allowed).
@@ -418,9 +421,9 @@ impl EventObserver {
             .ok_or_else(|| "OBSERVE_DATABASE_URL not connected".to_string())?;
 
         let now = Utc::now().to_rfc3339();
-        let mut node_ids: Vec<String> = Vec::with_capacity(nodes.len());
-        let mut edge_ids: Vec<String> = Vec::with_capacity(edges.len());
 
+        // Collect rows in memory first (dedupe by id).
+        let mut node_map: HashMap<String, (String, String, String, String)> = HashMap::new();
         for n in nodes {
             let node_id = n
                 .get("id")
@@ -446,36 +449,12 @@ impl EventObserver {
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
-            let props = node_props_json(n);
-            let props_s = props.to_string();
-            sqlx::query(
-                r#"
-                INSERT INTO graph_nodes (
-                  tenant_id, node_id, node_type, label, resource_id, props, synced_at
-                ) VALUES (
-                  $1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz
-                )
-                ON CONFLICT (tenant_id, node_id) DO UPDATE SET
-                  node_type = EXCLUDED.node_type,
-                  label = EXCLUDED.label,
-                  resource_id = EXCLUDED.resource_id,
-                  props = EXCLUDED.props,
-                  synced_at = EXCLUDED.synced_at
-                "#,
-            )
-            .bind(tenant_id)
-            .bind(&node_id)
-            .bind(&node_type)
-            .bind(&label)
-            .bind(&resource_id)
-            .bind(&props_s)
-            .bind(&now)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("graph_nodes upsert: {e}"))?;
-            node_ids.push(node_id);
+            let props_s = node_props_json(n).to_string();
+            node_map.insert(node_id, (node_type, label, resource_id, props_s));
         }
 
+        let mut edge_map: HashMap<String, (String, String, String, Option<String>, String)> =
+            HashMap::new();
         for e in edges {
             let edge_type = e
                 .get("type")
@@ -512,71 +491,110 @@ impl EventObserver {
             if edge_id.is_empty() {
                 continue;
             }
-            let props = edge_props_json(e);
-            let props_s = props.to_string();
+            let props_s = edge_props_json(e).to_string();
+            edge_map.insert(edge_id, (edge_type, from_id, to_id, valid_from, props_s));
+        }
+
+        let mut node_ids: Vec<String> = Vec::with_capacity(node_map.len());
+        let mut node_types: Vec<String> = Vec::with_capacity(node_map.len());
+        let mut node_labels: Vec<String> = Vec::with_capacity(node_map.len());
+        let mut node_resources: Vec<String> = Vec::with_capacity(node_map.len());
+        let mut node_props: Vec<String> = Vec::with_capacity(node_map.len());
+        for (id, (ty, lab, res, props)) in node_map {
+            node_ids.push(id);
+            node_types.push(ty);
+            node_labels.push(lab);
+            node_resources.push(res);
+            node_props.push(props);
+        }
+
+        let mut edge_ids: Vec<String> = Vec::with_capacity(edge_map.len());
+        let mut edge_types: Vec<String> = Vec::with_capacity(edge_map.len());
+        let mut edge_froms: Vec<String> = Vec::with_capacity(edge_map.len());
+        let mut edge_tos: Vec<String> = Vec::with_capacity(edge_map.len());
+        let mut edge_vfs: Vec<Option<String>> = Vec::with_capacity(edge_map.len());
+        let mut edge_props: Vec<String> = Vec::with_capacity(edge_map.len());
+        for (id, (ty, from, to, vf, props)) in edge_map {
+            edge_ids.push(id);
+            edge_types.push(ty);
+            edge_froms.push(from);
+            edge_tos.push(to);
+            edge_vfs.push(vf);
+            edge_props.push(props);
+        }
+
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| format!("graph export begin: {e}"))?;
+
+        sqlx::query("DELETE FROM graph_nodes WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("graph_nodes clear: {e}"))?;
+        sqlx::query("DELETE FROM graph_edges WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("graph_edges clear: {e}"))?;
+
+        // Chunk bulk inserts so payloads stay reasonable (~200 rows / round-trip).
+        const CHUNK: usize = 200;
+        for start in (0..node_ids.len()).step_by(CHUNK) {
+            let end = (start + CHUNK).min(node_ids.len());
+            sqlx::query(
+                r#"
+                INSERT INTO graph_nodes (
+                  tenant_id, node_id, node_type, label, resource_id, props, synced_at
+                )
+                SELECT $1, n, t, l, r, p::jsonb, $2::timestamptz
+                FROM UNNEST(
+                  $3::text[], $4::text[], $5::text[], $6::text[], $7::text[]
+                ) AS u(n, t, l, r, p)
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(&now)
+            .bind(&node_ids[start..end])
+            .bind(&node_types[start..end])
+            .bind(&node_labels[start..end])
+            .bind(&node_resources[start..end])
+            .bind(&node_props[start..end])
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("graph_nodes bulk insert: {e}"))?;
+        }
+
+        for start in (0..edge_ids.len()).step_by(CHUNK) {
+            let end = (start + CHUNK).min(edge_ids.len());
             sqlx::query(
                 r#"
                 INSERT INTO graph_edges (
                   tenant_id, edge_id, edge_type, from_id, to_id, valid_from, props, synced_at
-                ) VALUES (
-                  $1, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz
                 )
-                ON CONFLICT (tenant_id, edge_id) DO UPDATE SET
-                  edge_type = EXCLUDED.edge_type,
-                  from_id = EXCLUDED.from_id,
-                  to_id = EXCLUDED.to_id,
-                  valid_from = EXCLUDED.valid_from,
-                  props = EXCLUDED.props,
-                  synced_at = EXCLUDED.synced_at
+                SELECT $1, eid, et, fr, tto, vf, p::jsonb, $2::timestamptz
+                FROM UNNEST(
+                  $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[]
+                ) AS u(eid, et, fr, tto, vf, p)
                 "#,
             )
             .bind(tenant_id)
-            .bind(&edge_id)
-            .bind(&edge_type)
-            .bind(&from_id)
-            .bind(&to_id)
-            .bind(&valid_from)
-            .bind(&props_s)
             .bind(&now)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("graph_edges upsert: {e}"))?;
-            edge_ids.push(edge_id);
-        }
-
-        // Prefer accuracy: drop rows not in this snapshot for the tenant.
-        if node_ids.is_empty() {
-            sqlx::query("DELETE FROM graph_nodes WHERE tenant_id = $1")
-                .bind(tenant_id)
-                .execute(pool)
-                .await
-                .map_err(|e| format!("graph_nodes orphan clear: {e}"))?;
-        } else {
-            sqlx::query(
-                "DELETE FROM graph_nodes WHERE tenant_id = $1 AND NOT (node_id = ANY($2))",
+            .bind(&edge_ids[start..end])
+            .bind(&edge_types[start..end])
+            .bind(&edge_froms[start..end])
+            .bind(&edge_tos[start..end])
+            .bind(
+                &edge_vfs[start..end]
+                    .iter()
+                    .map(|v| v.clone().unwrap_or_default())
+                    .collect::<Vec<_>>(),
             )
-            .bind(tenant_id)
-            .bind(&node_ids)
-            .execute(pool)
+            .bind(&edge_props[start..end])
+            .execute(&mut *tx)
             .await
-            .map_err(|e| format!("graph_nodes orphan delete: {e}"))?;
-        }
-
-        if edge_ids.is_empty() {
-            sqlx::query("DELETE FROM graph_edges WHERE tenant_id = $1")
-                .bind(tenant_id)
-                .execute(pool)
-                .await
-                .map_err(|e| format!("graph_edges orphan clear: {e}"))?;
-        } else {
-            sqlx::query(
-                "DELETE FROM graph_edges WHERE tenant_id = $1 AND NOT (edge_id = ANY($2))",
-            )
-            .bind(tenant_id)
-            .bind(&edge_ids)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("graph_edges orphan delete: {e}"))?;
+            .map_err(|e| format!("graph_edges bulk insert: {e}"))?;
         }
 
         let n_nodes = node_ids.len() as i32;
@@ -596,9 +614,13 @@ impl EventObserver {
         .bind(n_nodes)
         .bind(n_edges)
         .bind(&now)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| format!("graph_export_meta: {e}"))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| format!("graph export commit: {e}"))?;
 
         Ok(json!({
             "ok": true,
@@ -606,7 +628,7 @@ impl EventObserver {
             "synced_at": now,
             "nodes": n_nodes,
             "edges": n_edges,
-            "mode": "upsert_delete_orphans",
+            "mode": "replace_bulk",
             "source": "v2_snapshot",
             "tables": ["graph_nodes", "graph_edges", "graph_export_meta"],
         }))

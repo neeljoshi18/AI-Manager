@@ -500,8 +500,13 @@ async fn main() -> anyhow::Result<()> {
             // Short initial delay so V2 can finish booting with twin-api
             tokio::time::sleep(std::time::Duration::from_secs(45)).await;
             loop {
-                if let Err(e) = export_graph_to_neon(&st, None).await {
-                    tracing::warn!(error = %e, "graph neon export tick failed");
+                // try_lock: skip tick if on-demand export holds the gate
+                match export_graph_to_neon_inner(&st, None, false).await {
+                    Ok(_) => {}
+                    Err(e) if e.contains("already in progress") => {
+                        tracing::debug!(error = %e, "graph neon export tick skipped");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "graph neon export tick failed"),
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
             }
@@ -4723,15 +4728,40 @@ async fn sync_graph_to_db(
     }
 }
 
+/// Single-flight gate: bulk export must not stack (Neon pool + twin dual-write).
+fn graph_export_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Shared path for on-demand + periodic V2 → Neon graph export.
 /// `tenant_override` None → DEFAULT_TENANT_ID / SEED_TEAM_TENANT / ten_github.
+/// `wait_for_lock`: true for HTTP (wait); false for background tick (skip if busy).
 async fn export_graph_to_neon(
     st: &AppState,
     tenant_override: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    export_graph_to_neon_inner(st, tenant_override, true).await
+}
+
+async fn export_graph_to_neon_inner(
+    st: &AppState,
+    tenant_override: Option<&str>,
+    wait_for_lock: bool,
+) -> Result<serde_json::Value, String> {
     if !st.observer.external_connected() {
         return Err("OBSERVE_DATABASE_URL not connected".into());
     }
+    let _guard = if wait_for_lock {
+        graph_export_gate().lock().await
+    } else {
+        match graph_export_gate().try_lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return Err("graph export already in progress (skipped tick)".into());
+            }
+        }
+    };
     let tenant_id = tenant_override
         .map(|s| s.to_string())
         .unwrap_or_else(|| {

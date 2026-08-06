@@ -118,11 +118,9 @@ fn mirror_to_neon(st: &AppState) {
     tokio::spawn(async move {
         match obs.sync_store(&tenant, store.as_ref()).await {
             Ok(body) => {
-                tracing::debug!(
-                    twins = body.get("twins"),
-                    drafts = body.get("drafts"),
-                    "neon continuous mirror ok"
-                );
+                let twins = body.get("twins").and_then(|v| v.as_u64()).unwrap_or(0);
+                let drafts = body.get("drafts").and_then(|v| v.as_u64()).unwrap_or(0);
+                tracing::debug!(twins, drafts, "neon continuous mirror ok");
             }
             Err(e) => tracing::warn!(error = %e, "neon continuous mirror failed"),
         }

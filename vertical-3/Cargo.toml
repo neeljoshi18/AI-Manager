@@ -34,7 +34,8 @@ sha2 = "0.10"
 hex = "0.4"
 dotenvy = "0.15"
 clap = { version = "4.5", features = ["derive", "env"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+# tls-rustls required for Neon / cloud Postgres (sslmode=require)
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 twin-core = { path = "crates/twin-core" }

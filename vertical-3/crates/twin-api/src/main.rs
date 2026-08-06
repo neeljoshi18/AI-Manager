@@ -500,6 +500,11 @@ async fn main() -> anyhow::Result<()> {
             get(list_events),
         )
         .route(
+            "/v3/tenants/{tenant_id}/sync_to_db",
+            post(sync_to_db),
+        )
+        .route("/v3/observe/status", get(observe_status))
+        .route(
             "/v3/tenants/{tenant_id}/twins/{twin_id}",
             get(get_twin),
         )
@@ -4485,6 +4490,55 @@ async fn list_events(
             "Events from OBSERVE_DATABASE_URL (Neon). SELECT * FROM twin_events ORDER BY at DESC;"
         } else {
             "Embedded event log only. Set OBSERVE_DATABASE_URL to a Neon Postgres URL for external live SQL."
+        },
+    }))
+}
+
+/// Mirror embedded twin state (Docker volume JSON) → Neon tables.
+async fn sync_to_db(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !st.observer.external_connected() {
+        return Err(ApiError::bad(
+            "OBSERVE_DATABASE_URL not set or connect failed. Add Neon URL to deploy/.env.staging and restart twin-api.",
+        ));
+    }
+    let Some(store) = st.embedded_store.as_ref() else {
+        return Err(ApiError::bad(
+            "sync_to_db requires embedded twin store (staging mode)",
+        ));
+    };
+    match st.observer.sync_store(&tenant_id, store.as_ref()).await {
+        Ok(body) => {
+            persist_embedded(&st);
+            Ok(Json(body))
+        }
+        Err(e) => Err(ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("sync_to_db failed: {e}"),
+        }),
+    }
+}
+
+async fn observe_status(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "external_db": st.observer.external_connected(),
+        "env_url_set": std::env::var("OBSERVE_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL")).map(|s| !s.trim().is_empty()).unwrap_or(false),
+        "tables": [
+            "twin_events",
+            "twin_snapshot_json",
+            "twin_twins",
+            "twin_slack_maps",
+            "twin_drafts",
+            "twin_tenant_kv"
+        ],
+        "sync_endpoint": "POST /v3/tenants/{tenant_id}/sync_to_db",
+        "events_endpoint": "GET /v3/tenants/{tenant_id}/events",
+        "note": if st.observer.external_connected() {
+            "Neon connected. POST sync_to_db to mirror Docker twin volume into Postgres."
+        } else {
+            "Not connected. Set OBSERVE_DATABASE_URL on droplet deploy/.env.staging and restart twin-api."
         },
     }))
 }

@@ -2621,19 +2621,46 @@ async function refreshEvents() {
   const el = $("events-log");
   const meta = $("events-meta");
   try {
-    const e = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/events?limit=80`
-    );
+    const [e, obs] = await Promise.all([
+      jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/events?limit=80`),
+      jfetch("/v3/observe/status").catch(() => ({})),
+    ]);
     if (meta) {
-      meta.textContent = `count=${e.count} · external_db=${e.external_db} · ${e.note || ""}`;
+      meta.textContent = `count=${e.count} · external_db=${e.external_db} · env_set=${obs.env_url_set} · ${e.note || ""}`;
     }
     if (el) el.textContent = JSON.stringify(e.events || [], null, 2);
   } catch (err) {
     if (meta) meta.textContent = "events: " + (err.message || err);
   }
 }
+async function syncTwinToDb() {
+  const tenant = syncTenantFields(activeTenant());
+  const meta = $("events-meta");
+  try {
+    if (meta) meta.textContent = "Syncing Docker twin state → Neon…";
+    const body = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/sync_to_db`,
+      { method: "POST", body: "{}" }
+    );
+    if (meta) {
+      meta.textContent = `synced twins=${body.twins} maps=${body.slack_maps} drafts=${body.drafts} kv=${body.tenant_kv} @ ${body.synced_at}`;
+    }
+    alert(
+      "Mirrored to Neon:\n" +
+        JSON.stringify(body, null, 2) +
+        "\n\nIn Neon SQL:\nSELECT * FROM twin_twins;\nSELECT * FROM twin_drafts;\nSELECT * FROM twin_events ORDER BY at DESC LIMIT 20;"
+    );
+    await refreshEvents();
+  } catch (err) {
+    alert("Sync failed: " + (err.message || err));
+    if (meta) meta.textContent = "sync failed: " + (err.message || err);
+  }
+}
 if ($("btn-events-refresh")) {
   $("btn-events-refresh").addEventListener("click", () => refreshEvents());
+}
+if ($("btn-sync-db")) {
+  $("btn-sync-db").addEventListener("click", () => syncTwinToDb());
 }
 async function refreshStackHealth() {
   const pills = $("stack-health-pills");

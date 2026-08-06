@@ -88,9 +88,24 @@ jobs:
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER }}
+          OBSERVE_DATABASE_URL: ${{ secrets.OBSERVE_DATABASE_URL }}
         run: |
           set -euo pipefail
           HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
+          # Inject Neon URL if secret present (before twin-api boots)
+          if [ -n "${OBSERVE_DATABASE_URL:-}" ]; then
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<OBSEOF
+          set -euo pipefail
+          ENVF="\$HOME/ai-manager/deploy/.env.staging"
+          touch "\$ENVF"
+          if grep -q '^OBSERVE_DATABASE_URL=' "\$ENVF" 2>/dev/null; then
+            sed -i.bak "s|^OBSERVE_DATABASE_URL=.*|OBSERVE_DATABASE_URL=${OBSERVE_DATABASE_URL}|" "\$ENVF"
+          else
+            echo "OBSERVE_DATABASE_URL=${OBSERVE_DATABASE_URL}" >> "\$ENVF"
+          fi
+          echo "OBSERVE_DATABASE_URL present in env file"
+          OBSEOF
+          fi
           ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<'REMOTE'
           set -euo pipefail
           cd "$HOME/ai-manager"
@@ -145,6 +160,7 @@ jobs:
           SKIP_BUILD: ${{ github.event.inputs.skip_build || 'false' }}
           # Optional long-lived PAT for private-repo commit poller (data currency)
           BRIDGE_GITHUB_TOKEN: ${{ secrets.BRIDGE_GITHUB_TOKEN }}
+          OBSERVE_DATABASE_URL: ${{ secrets.OBSERVE_DATABASE_URL }}
         run: |
           set -euo pipefail
           HOST="${STAGING_USER:-neel}@${STAGING_HOST:-206.189.129.31}"
@@ -166,6 +182,20 @@ jobs:
             fi
           done
           TOKENEOF
+          fi
+          # Neon / Postgres observe URL (never echo)
+          if [ -n "${OBSERVE_DATABASE_URL:-}" ]; then
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<OBSEOF
+          set -euo pipefail
+          ENVF="\$HOME/ai-manager/deploy/.env.staging"
+          touch "\$ENVF"
+          if grep -q '^OBSERVE_DATABASE_URL=' "\$ENVF" 2>/dev/null; then
+            sed -i.bak "s|^OBSERVE_DATABASE_URL=.*|OBSERVE_DATABASE_URL=${OBSERVE_DATABASE_URL}|" "\$ENVF"
+          else
+            echo "OBSERVE_DATABASE_URL=${OBSERVE_DATABASE_URL}" >> "\$ENVF"
+          fi
+          echo "OBSERVE_DATABASE_URL written (value redacted)"
+          OBSEOF
           fi
           ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" bash -s <<REMOTE
           set -euo pipefail

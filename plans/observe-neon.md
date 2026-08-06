@@ -52,3 +52,13 @@ curl -s https://status.neel.world/v3/tenants/ten_github/events | jq .
 ## Without Neon
 
 Embedded log still works (twin state JSON / in-memory). External DB is optional gas for you as operator.
+
+## Full twin mirror (2026-08-06)
+
+Tables: `twin_events`, `twin_snapshot_json`, `twin_twins`, `twin_slack_maps`, `twin_drafts`, `twin_tenant_kv`.
+
+- `GET /v3/observe/status`
+- `POST /v3/tenants/{tenant}/sync_to_db` — Docker volume → Neon
+- UI: Settings → **Mirror twin state → Neon**
+
+Prefer GitHub secret `OBSERVE_DATABASE_URL` (see `plans/2026-08-06_neon-you-do-this.md`).

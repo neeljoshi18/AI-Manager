@@ -53,12 +53,21 @@ curl -s https://status.neel.world/v3/tenants/ten_github/events | jq .
 
 Embedded log still works (twin state JSON / in-memory). External DB is optional gas for you as operator.
 
-## Full twin mirror (2026-08-06)
+## Full twin mirror (2026-08-06) + continuous dual-write
 
 Tables: `twin_events`, `twin_snapshot_json`, `twin_twins`, `twin_slack_maps`, `twin_drafts`, `twin_tenant_kv`.
 
-- `GET /v3/observe/status`
-- `POST /v3/tenants/{tenant}/sync_to_db` — Docker volume → Neon
-- UI: Settings → **Mirror twin state → Neon**
+- `GET /v3/observe/status` — `external_db` + `continuous_mirror`
+- `POST /v3/tenants/{tenant}/sync_to_db` — optional bulk **upsert** (not required daily)
+- Every `persist_embedded` dual-writes twin state to Neon when connected
+- UI: Settings → **Force full re-sync → Neon** (optional)
 
 Prefer GitHub secret `OBSERVE_DATABASE_URL` (see `plans/2026-08-06_neon-you-do-this.md`).
+
+### What is / is not migrated from Docker
+
+| In Neon (continuous) | Still on droplet volumes only |
+|----------------------|-------------------------------|
+| Twins, Slack maps, digests, kv, events, twin snapshot JSON | V1 event journal, V2 graph JSON, bridge cursors, vault secrets |
+
+Full “stateless containers, everything in Neon” = later multi-tenant packaging. Graph UI already shows work data without Neon.

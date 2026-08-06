@@ -1,15 +1,16 @@
 //! Live observability + twin state mirror to external Postgres (Neon free tier).
 //!
 //! When `OBSERVE_DATABASE_URL` (or `DATABASE_URL`) is set:
-//! - Events (approve / don't-send / …) land in `twin_events`
-//! - Full twin snapshot mirrors into relational tables + `twin_snapshot_json`
-//! so you can SQL everything that used to live only in the Docker volume JSON.
+//! - Events land in `twin_events` continuously
+//! - Twins / maps / drafts / kv dual-write on every product mutation + debounced full sync
+//! so Neon stays current without manual "Mirror" clicks.
 
 use chrono::Utc;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
-use twin_core::store::InMemoryTwinStore;
 use twin_core::model::{DraftDelivery, SlackUserMap, Twin};
+use twin_core::store::InMemoryTwinStore;
 
 const KV_KEY: &str = "event_log";
 const MAX_EMBEDDED: usize = 500;
@@ -54,10 +55,6 @@ impl EventObserver {
 
     pub fn external_connected(&self) -> bool {
         self.pg.is_some()
-    }
-
-    pub fn pool(&self) -> Option<&sqlx::PgPool> {
-        self.pg.as_ref()
     }
 
     pub async fn log(&self, tenant_id: &str, kind: &str, subject: &str, detail: Value) {
@@ -148,7 +145,146 @@ impl EventObserver {
         )
     }
 
-    /// Full mirror of embedded twin state → Neon (twins, maps, drafts, kv, snapshot blob).
+    /// Continuous dual-write: one twin row (upsert).
+    pub async fn write_twin(&self, t: &Twin) {
+        let Some(pool) = &self.pg else {
+            return;
+        };
+        let cfg = t.config_json.to_string();
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO twin_twins (
+              tenant_id, twin_id, twin_kind, subject_id, display_name,
+              timezone, channel_id, enabled, high_auto_publish, config_json,
+              shadow_until, created_at, updated_at
+            ) VALUES (
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13
+            )
+            ON CONFLICT (tenant_id, twin_id) DO UPDATE SET
+              twin_kind = EXCLUDED.twin_kind,
+              subject_id = EXCLUDED.subject_id,
+              display_name = EXCLUDED.display_name,
+              timezone = EXCLUDED.timezone,
+              channel_id = EXCLUDED.channel_id,
+              enabled = EXCLUDED.enabled,
+              high_auto_publish = EXCLUDED.high_auto_publish,
+              config_json = EXCLUDED.config_json,
+              shadow_until = EXCLUDED.shadow_until,
+              updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&t.tenant_id)
+        .bind(&t.twin_id)
+        .bind(t.twin_kind.as_str())
+        .bind(&t.subject_id)
+        .bind(&t.display_name)
+        .bind(&t.timezone)
+        .bind(&t.channel_id)
+        .bind(t.enabled)
+        .bind(t.high_auto_publish)
+        .bind(&cfg)
+        .bind(t.shadow_until.map(|d| d.to_rfc3339()))
+        .bind(t.created_at.to_rfc3339())
+        .bind(t.updated_at.to_rfc3339())
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(error = %e, twin = %t.twin_id, "neon dual-write twin failed");
+        }
+    }
+
+    pub async fn write_map(&self, m: &SlackUserMap) {
+        let Some(pool) = &self.pg else {
+            return;
+        };
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO twin_slack_maps (tenant_id, global_user_id, slack_user_id, slack_team_id)
+            VALUES ($1,$2,$3,$4)
+            ON CONFLICT (tenant_id, global_user_id) DO UPDATE SET
+              slack_user_id = EXCLUDED.slack_user_id,
+              slack_team_id = EXCLUDED.slack_team_id
+            "#,
+        )
+        .bind(&m.tenant_id)
+        .bind(&m.global_user_id)
+        .bind(&m.slack_user_id)
+        .bind(&m.slack_team_id)
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(error = %e, "neon dual-write map failed");
+        }
+    }
+
+    pub async fn write_draft(&self, d: &DraftDelivery) {
+        let Some(pool) = &self.pg else {
+            return;
+        };
+        let edited = d.edited_text.clone().unwrap_or_default();
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO twin_drafts (
+              tenant_id, draft_id, ledger_id, twin_id, status,
+              draft_text, edited_text, slack_dm_channel, slack_dm_ts,
+              veto_deadline, created_at, updated_at
+            ) VALUES (
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+            )
+            ON CONFLICT (tenant_id, draft_id) DO UPDATE SET
+              ledger_id = EXCLUDED.ledger_id,
+              twin_id = EXCLUDED.twin_id,
+              status = EXCLUDED.status,
+              draft_text = EXCLUDED.draft_text,
+              edited_text = EXCLUDED.edited_text,
+              slack_dm_channel = EXCLUDED.slack_dm_channel,
+              slack_dm_ts = EXCLUDED.slack_dm_ts,
+              veto_deadline = EXCLUDED.veto_deadline,
+              updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&d.tenant_id)
+        .bind(&d.draft_id)
+        .bind(&d.ledger_id)
+        .bind(&d.twin_id)
+        .bind(d.status.as_str())
+        .bind(&d.draft_text)
+        .bind(&edited)
+        .bind(&d.slack_dm_channel)
+        .bind(&d.slack_dm_ts)
+        .bind(d.veto_deadline.map(|x| x.to_rfc3339()))
+        .bind(d.created_at.to_rfc3339())
+        .bind(d.updated_at.to_rfc3339())
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(error = %e, draft = %d.draft_id, "neon dual-write draft failed");
+        }
+    }
+
+    pub async fn write_kv(&self, tenant_id: &str, key: &str, value: &Value) {
+        let Some(pool) = &self.pg else {
+            return;
+        };
+        let vs = value.to_string();
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO twin_tenant_kv (tenant_id, key, value)
+            VALUES ($1,$2,$3::jsonb)
+            ON CONFLICT (tenant_id, key) DO UPDATE SET value = EXCLUDED.value
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(key)
+        .bind(&vs)
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(error = %e, %key, "neon dual-write kv failed");
+        }
+    }
+
+    /// Full mirror of embedded twin state → Neon (idempotent upserts; safe to re-run).
     pub async fn sync_store(
         &self,
         tenant_id: &str,
@@ -162,7 +298,6 @@ impl EventObserver {
         let snap = store.export_snapshot();
         let now = Utc::now().to_rfc3339();
 
-        // Full JSON backup (source of truth for round-trip)
         let snap_json = serde_json::to_string(&snap).map_err(|e| e.to_string())?;
         sqlx::query(
             r#"
@@ -179,158 +314,51 @@ impl EventObserver {
         .await
         .map_err(|e| e.to_string())?;
 
-        // Relational projections (filter to this tenant for multi-tenant safety)
-        let twins: Vec<Twin> = snap
-            .twins
-            .into_iter()
-            .filter(|t| t.tenant_id == tenant_id)
-            .collect();
-        let maps: Vec<SlackUserMap> = snap
-            .slack_maps
-            .into_iter()
-            .filter(|m| m.tenant_id == tenant_id)
-            .collect();
-        let drafts: Vec<DraftDelivery> = snap
-            .drafts
-            .into_iter()
-            .filter(|d| d.tenant_id == tenant_id)
-            .collect();
-        let kv = snap
-            .tenant_kv
-            .into_iter()
-            .filter(|k| k.tenant_id == tenant_id)
-            .collect::<Vec<_>>();
-
-        // Clear + reinsert tenant rows (simple, correct for pilot)
-        sqlx::query("DELETE FROM twin_twins WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM twin_slack_maps WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM twin_drafts WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM twin_tenant_kv WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let mut n_twins = 0usize;
-        for t in &twins {
-            let cfg = t.config_json.to_string();
-            sqlx::query(
-                r#"
-                INSERT INTO twin_twins (
-                  tenant_id, twin_id, twin_kind, subject_id, display_name,
-                  timezone, channel_id, enabled, high_auto_publish, config_json,
-                  shadow_until, created_at, updated_at
-                ) VALUES (
-                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13
-                )
-                "#,
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.twin_id)
-            .bind(t.twin_kind.as_str())
-            .bind(&t.subject_id)
-            .bind(&t.display_name)
-            .bind(&t.timezone)
-            .bind(&t.channel_id)
-            .bind(t.enabled)
-            .bind(t.high_auto_publish)
-            .bind(&cfg)
-            .bind(t.shadow_until.map(|d| d.to_rfc3339()))
-            .bind(t.created_at.to_rfc3339())
-            .bind(t.updated_at.to_rfc3339())
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            n_twins += 1;
+        // Dedupe by primary key (export can theoretically list dups after merges)
+        let mut twin_map: HashMap<String, Twin> = HashMap::new();
+        for t in snap.twins.into_iter().filter(|t| t.tenant_id == tenant_id) {
+            twin_map.insert(t.twin_id.clone(), t);
+        }
+        let mut map_map: HashMap<String, SlackUserMap> = HashMap::new();
+        for m in snap.slack_maps.into_iter().filter(|m| m.tenant_id == tenant_id) {
+            map_map.insert(m.global_user_id.clone(), m);
+        }
+        let mut draft_map: HashMap<String, DraftDelivery> = HashMap::new();
+        for d in snap.drafts.into_iter().filter(|d| d.tenant_id == tenant_id) {
+            draft_map.insert(d.draft_id.clone(), d);
+        }
+        let mut kv_map: HashMap<String, Value> = HashMap::new();
+        for k in snap.tenant_kv.into_iter().filter(|k| k.tenant_id == tenant_id) {
+            kv_map.insert(k.key.clone(), k.value);
         }
 
-        let mut n_maps = 0usize;
-        for m in &maps {
-            sqlx::query(
-                r#"
-                INSERT INTO twin_slack_maps (tenant_id, global_user_id, slack_user_id, slack_team_id)
-                VALUES ($1,$2,$3,$4)
-                "#,
-            )
-            .bind(&m.tenant_id)
-            .bind(&m.global_user_id)
-            .bind(&m.slack_user_id)
-            .bind(&m.slack_team_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            n_maps += 1;
+        let n_twins = twin_map.len();
+        for t in twin_map.values() {
+            self.write_twin(t).await;
+        }
+        let n_maps = map_map.len();
+        for m in map_map.values() {
+            self.write_map(m).await;
+        }
+        let n_drafts = draft_map.len();
+        for d in draft_map.values() {
+            self.write_draft(d).await;
+        }
+        let n_kv = kv_map.len();
+        for (key, value) in &kv_map {
+            self.write_kv(tenant_id, key, value).await;
         }
 
-        let mut n_drafts = 0usize;
-        for d in &drafts {
-            let edited = d.edited_text.clone().unwrap_or_default();
-            sqlx::query(
-                r#"
-                INSERT INTO twin_drafts (
-                  tenant_id, draft_id, ledger_id, twin_id, status,
-                  draft_text, edited_text, slack_dm_channel, slack_dm_ts,
-                  veto_deadline, created_at, updated_at
-                ) VALUES (
-                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
-                )
-                "#,
-            )
-            .bind(&d.tenant_id)
-            .bind(&d.draft_id)
-            .bind(&d.ledger_id)
-            .bind(&d.twin_id)
-            .bind(d.status.as_str())
-            .bind(&d.draft_text)
-            .bind(&edited)
-            .bind(&d.slack_dm_channel)
-            .bind(&d.slack_dm_ts)
-            .bind(d.veto_deadline.map(|x| x.to_rfc3339()))
-            .bind(d.created_at.to_rfc3339())
-            .bind(d.updated_at.to_rfc3339())
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            n_drafts += 1;
-        }
-
-        let mut n_kv = 0usize;
-        for k in &kv {
-            let vs = k.value.to_string();
-            sqlx::query(
-                r#"
-                INSERT INTO twin_tenant_kv (tenant_id, key, value)
-                VALUES ($1,$2,$3::jsonb)
-                "#,
-            )
-            .bind(&k.tenant_id)
-            .bind(&k.key)
-            .bind(&vs)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-            n_kv += 1;
-        }
-
-        // Copy embedded event log into twin_events if empty-ish (idempotent-ish by detail)
+        // One-shot backfill of embedded event log (append-only; may re-insert — ok for pilot)
         if let Some(arr) = store
             .get_tenant_kv(tenant_id, KV_KEY)
             .and_then(|v| v.as_array().cloned())
         {
-            for e in arr.iter().rev().take(200) {
+            for e in arr.iter().rev().take(50) {
                 let kind = e.get("kind").and_then(|x| x.as_str()).unwrap_or("legacy");
+                if kind == "sync_to_db" || kind == "legacy" {
+                    continue;
+                }
                 let subject = e.get("subject").and_then(|x| x.as_str()).unwrap_or("");
                 let detail = e.get("detail").cloned().unwrap_or(json!({}));
                 let at = e
@@ -353,20 +381,6 @@ impl EventObserver {
             }
         }
 
-        self.log(
-            tenant_id,
-            "sync_to_db",
-            "embedded",
-            json!({
-                "twins": n_twins,
-                "slack_maps": n_maps,
-                "drafts": n_drafts,
-                "tenant_kv": n_kv,
-                "synced_at": now,
-            }),
-        )
-        .await;
-
         Ok(json!({
             "ok": true,
             "tenant_id": tenant_id,
@@ -375,6 +389,8 @@ impl EventObserver {
             "slack_maps": n_maps,
             "drafts": n_drafts,
             "tenant_kv": n_kv,
+            "mode": "upsert",
+            "continuous": true,
             "tables": [
                 "twin_events",
                 "twin_snapshot_json",
@@ -388,7 +404,6 @@ impl EventObserver {
 }
 
 async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    // sqlx may not run multi-statement in one query on all drivers — split.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS twin_events (

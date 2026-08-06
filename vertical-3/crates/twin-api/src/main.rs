@@ -99,6 +99,34 @@ fn persist_embedded(st: &AppState) {
     if let Err(e) = store.save_to_path(path) {
         tracing::warn!(error = %e, path = %path.display(), "twin persist save failed");
     }
+    // Continuous Neon mirror (debounced full upsert) — no manual sync required
+    mirror_to_neon(st);
+}
+
+/// Dual-write embedded twin state → Neon when OBSERVE_DATABASE_URL is connected.
+fn mirror_to_neon(st: &AppState) {
+    if !st.observer.external_connected() {
+        return;
+    }
+    let Some(store) = st.embedded_store.clone() else {
+        return;
+    };
+    let obs = st.observer.clone();
+    let tenant = std::env::var("DEFAULT_TENANT_ID")
+        .or_else(|_| std::env::var("SEED_TEAM_TENANT"))
+        .unwrap_or_else(|_| "ten_github".into());
+    tokio::spawn(async move {
+        match obs.sync_store(&tenant, store.as_ref()).await {
+            Ok(body) => {
+                tracing::debug!(
+                    twins = body.get("twins"),
+                    drafts = body.get("drafts"),
+                    "neon continuous mirror ok"
+                );
+            }
+            Err(e) => tracing::warn!(error = %e, "neon continuous mirror failed"),
+        }
+    });
 }
 
 /// Seed person twins from SLACK_USER_MAP — **one twin per unique Slack user id**.
@@ -4509,11 +4537,12 @@ async fn sync_to_db(
             "sync_to_db requires embedded twin store (staging mode)",
         ));
     };
+    // Disk first, then explicit full upsert (idempotent — no delete races)
+    if let Some(path) = &st.twin_persist_path {
+        let _ = store.save_to_path(path);
+    }
     match st.observer.sync_store(&tenant_id, store.as_ref()).await {
-        Ok(body) => {
-            persist_embedded(&st);
-            Ok(Json(body))
-        }
+        Ok(body) => Ok(Json(body)),
         Err(e) => Err(ApiError {
             status: StatusCode::BAD_GATEWAY,
             message: format!("sync_to_db failed: {e}"),
@@ -4525,6 +4554,7 @@ async fn observe_status(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "external_db": st.observer.external_connected(),
         "env_url_set": std::env::var("OBSERVE_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL")).map(|s| !s.trim().is_empty()).unwrap_or(false),
+        "continuous_mirror": st.observer.external_connected(),
         "tables": [
             "twin_events",
             "twin_snapshot_json",
@@ -4536,7 +4566,7 @@ async fn observe_status(State(st): State<AppState>) -> impl IntoResponse {
         "sync_endpoint": "POST /v3/tenants/{tenant_id}/sync_to_db",
         "events_endpoint": "GET /v3/tenants/{tenant_id}/events",
         "note": if st.observer.external_connected() {
-            "Neon connected. POST sync_to_db to mirror Docker twin volume into Postgres."
+            "Neon connected. New twin/draft/map/event writes dual-write continuously; Mirror button is optional bulk upsert."
         } else {
             "Not connected. Set OBSERVE_DATABASE_URL on droplet deploy/.env.staging and restart twin-api."
         },

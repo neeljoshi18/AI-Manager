@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260806a" />
-  <script>window.__APP_JS_V="20260806a";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260806b" />
+  <script>window.__APP_JS_V="20260806b";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -512,10 +512,10 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="card">
           <h2>Live event trail + Neon DB</h2>
-          <p class="muted small">Approve / Don't send / compile. When <code>OBSERVE_DATABASE_URL</code> is set: live SQL + full twin mirror from Docker volume.</p>
+          <p class="muted small">Approve / Don't send / compile dual-write to Neon continuously when connected. Optional button re-upserts everything (idempotent).</p>
           <div class="actions-inline">
             <button type="button" id="btn-events-refresh" class="primary">Refresh events</button>
-            <button type="button" id="btn-sync-db" class="ghost">Mirror twin state → Neon</button>
+            <button type="button" id="btn-sync-db" class="ghost">Force full re-sync → Neon</button>
           </div>
           <p class="muted small" id="events-meta"></p>
           <pre id="events-log" class="box small" style="max-height:320px;overflow:auto;">{}</pre>
@@ -542,6 +542,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260806a"></script>
+  <script src="/app/app.js?v=20260806b"></script>
 </body>
 </html>

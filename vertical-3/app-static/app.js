@@ -2646,9 +2646,9 @@ async function syncTwinToDb() {
       meta.textContent = `synced twins=${body.twins} maps=${body.slack_maps} drafts=${body.drafts} kv=${body.tenant_kv} @ ${body.synced_at}`;
     }
     alert(
-      "Mirrored to Neon:\n" +
+      "Re-synced to Neon (upsert, no wipe):\n" +
         JSON.stringify(body, null, 2) +
-        "\n\nIn Neon SQL:\nSELECT * FROM twin_twins;\nSELECT * FROM twin_drafts;\nSELECT * FROM twin_events ORDER BY at DESC LIMIT 20;"
+        "\n\nNew product data dual-writes continuously — you usually do not need this button."
     );
     await refreshEvents();
   } catch (err) {

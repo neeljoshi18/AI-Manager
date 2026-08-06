@@ -485,6 +485,29 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Periodic V2 graph → Neon export (SQL insights; does not block request path)
+    if state.observer.external_connected() {
+        let st = state.clone();
+        let interval_secs: u64 = std::env::var("GRAPH_NEON_EXPORT_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(900);
+        tokio::spawn(async move {
+            info!(
+                secs = interval_secs,
+                "graph neon export loop started (periodic + on-demand)"
+            );
+            // Short initial delay so V2 can finish booting with twin-api
+            tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+            loop {
+                if let Err(e) = export_graph_to_neon(&st, None).await {
+                    tracing::warn!(error = %e, "graph neon export tick failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+            }
+        });
+    }
+
     let demo_dir = demo_static_dir();
     let app_dir = app_static_dir();
     info!(?demo_dir, ?app_dir, "static directories");
@@ -528,6 +551,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v3/tenants/{tenant_id}/sync_to_db",
             post(sync_to_db),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/sync_graph_to_db",
+            post(sync_graph_to_db),
         )
         .route("/v3/observe/status", get(observe_status))
         .route(
@@ -1317,6 +1344,23 @@ async fn onboarding_status(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// True if vault JSON has a non-empty value for `key` — never returns the secret itself.
+fn vault_key_present(key: &str) -> bool {
+    let Some(path) = oauth_vault_path() else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// Public install status for Connections / Cockpit (never returns secret values).
 async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
     let public = std::env::var("PUBLIC_BASE_URL").unwrap_or_default();
@@ -1326,6 +1370,7 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
     let vault_writable = oauth_vault_path()
         .map(|p| p.parent().map(|d| d.exists()).unwrap_or(false))
         .unwrap_or(false);
+    let slack_bot_in_vault = vault_key_present("SLACK_BOT_TOKEN");
     let webhook = if public.starts_with("https://") {
         format!("{public}/v1/tenants/{tenant}/webhooks/github")
     } else {
@@ -1337,18 +1382,85 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
     } else {
         None
     };
+    let slack_scopes = vec!["chat:write", "im:write", "users:read"];
+    // Checklist: booleans only — safe for champion UI (no secrets).
+    let install_checklist = json!([
+        {
+            "id": "slack_connect",
+            "label": "Connect Slack (bot install OAuth)",
+            "done": slack_bot_in_vault || slack_oauth,
+            "hint": if slack_bot_in_vault {
+                "Bot token present in vault — restart egress once after first connect"
+            } else if slack_oauth {
+                "OAuth credentials ready — click Connect Slack"
+            } else {
+                "Set SLACK_CLIENT_ID/SECRET or paste SLACK_BOT_TOKEN into vault"
+            },
+        },
+        {
+            "id": "slack_bot_channel",
+            "label": "Invite bot to team channel (optional — DMs still work)",
+            "done": false,
+            "hint": "Channel posts need the bot in the channel; digests fall back to DMs for mapped people",
+        },
+        {
+            "id": "github_install",
+            "label": "Install GitHub App on org/repos",
+            "done": gh_app,
+            "hint": if gh_app {
+                "App env ready — install on org, copy webhook URL into App settings if needed"
+            } else {
+                "Set GITHUB_APP_SLUG / GITHUB_APP_ID, or wire webhooks manually to V1"
+            },
+        },
+        {
+            "id": "map_team",
+            "label": "Map pod under Team (Slack user ids)",
+            "done": false,
+            "hint": "Team → bulk import or add members so digests know who gets which DM",
+        },
+        {
+            "id": "graph_healthy",
+            "label": "Graph healthy + digests compiling",
+            "done": false,
+            "hint": "After GitHub install, wait for V1→bridge→V2; open Cockpit / Graph",
+        },
+    ]);
+    let next_steps = json!({
+        "slack": [
+            "Invite the AI Manager bot to your team channel for channel posts (DMs still work if you skip this)",
+            "Map your eng pod under Team (Slack user ids)",
+            "Open Cockpit for digests and pulse",
+        ],
+        "github": [
+            "Copy the webhook URL into the GitHub App settings if not already set",
+            "Install the App on the org/repos that should feed status",
+            "Wait ~1 min for graph to fill, then open Graph / Cockpit",
+        ],
+        "order": [
+            "Connect Slack (delivery)",
+            "Invite bot to channel (optional; DM fallback works)",
+            "Install GitHub App (work signals)",
+            "Map pod under Team",
+            "Open Cockpit",
+        ],
+    });
     Json(json!({
         "tenant_id": tenant,
         "public_base_url": public,
         "slack": {
             "oauth_credentials": slack_oauth,
+            "bot_token_in_vault": slack_bot_in_vault,
+            "scopes": slack_scopes,
             "egress_mode": st.slack_mode,
             "vault_write_path_set": oauth_vault_path().is_some(),
             "vault_parent_exists": vault_writable,
             "manual_path": "vertical-security/secrets/dev_secrets.json → SLACK_BOT_TOKEN (egress only)",
             "manifest": "deploy/oauth/slack-app-manifest.json",
             "callback": format!("{}/v3/oauth/slack/callback", public.trim_end_matches('/')),
-            "note": if slack_oauth {
+            "note": if slack_bot_in_vault {
+                "Slack bot token in vault. Restart egress once after first connect so delivery reloads. Invite bot to team channel for channel posts — DMs still work without that."
+            } else if slack_oauth {
                 "Connect Slack opens authorize URL; callback writes SLACK_BOT_TOKEN to vault if OAUTH_VAULT_PATH set. Restart egress after first OAuth."
             } else {
                 "Set SLACK_CLIENT_ID + SLACK_CLIENT_SECRET in deploy/.env.staging, or paste bot token into vault manually."
@@ -1360,7 +1472,7 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
             "webhook_url": webhook,
             "manifest": "deploy/oauth/github-app-manifest.yml",
             "manual_path": "Install GitHub App on org/repos; set WEBHOOK_SECRET_ten_github in vault",
-            "note": "Webhooks hit V1; graph fills via bridge even without OAuth button.",
+            "note": "GitHub = work signals. Webhooks hit V1; graph fills via bridge. No LOC rankings.",
         },
         "teams": teams_oauth_status_json(&st, &public),
         "sso": {
@@ -1370,6 +1482,13 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
         },
         "delivery_adapter": st.delivery_adapter,
         "delivery_mode": st.slack_mode,
+        "next_steps": next_steps,
+        "install_checklist": install_checklist,
+        "doctrine": {
+            "slack": "delivery (digests, Approve / Edit / Don't send)",
+            "github": "work signals (PRs, issues, pushes → graph)",
+            "not": "LOC rankings, silent 1:1 wiretaps, document search",
+        },
     }))
 }
 
@@ -1621,30 +1740,37 @@ async fn oauth_slack_callback(Query(q): Query<SlackOAuthCb>) -> impl IntoRespons
         .and_then(|t| t.get("name"))
         .and_then(|v| v.as_str())
         .unwrap_or("workspace");
-    let extra = if let Some(path) = oauth_vault_path() {
+    // Vault write result — never surface token or vault path (ADR-012).
+    // Restart-egress note only when write succeeded (product goal).
+    let vault_msg = if let Some(path) = oauth_vault_path() {
         match upsert_vault_secret(&path, "SLACK_BOT_TOKEN", &token) {
             Ok(()) => {
                 tracing::info!(team = %team, "slack oauth vault updated");
-                format!(
-                    "<p>Saved <code>SLACK_BOT_TOKEN</code> to vault path. <strong>Restart the egress container</strong> so delivery reloads secrets (or redeploy).</p><p class=\"muted\">Path: <code>{}</code></p>",
-                    esc_html(&path.display().to_string())
-                )
+                "<p class=\"ok\">Bot token saved to the egress vault (never on twin-api env). <strong>Restart the egress container once</strong> so delivery reloads secrets.</p>".to_string()
             }
-            Err(e) => format!(
-                "<p class=\"warn\">Token received but vault write failed: {} — paste token into <code>vertical-security/secrets/dev_secrets.json</code> manually.</p>",
-                esc_html(&e)
-            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "slack oauth vault write failed");
+                "<p class=\"warn\">Token received but vault write failed — paste the bot token into the egress vault manually (<code>SLACK_BOT_TOKEN</code>), then restart egress. No token is shown on this page.</p>".to_string()
+            }
         }
     } else {
-        "<p class=\"warn\"><code>OAUTH_VAULT_PATH</code> not set — token not written. Paste bot token into egress vault manually.</p>".to_string()
+        "<p class=\"warn\"><code>OAUTH_VAULT_PATH</code> not set — token not written. Paste the bot token into the egress vault manually, then restart egress.</p>".to_string()
     };
     let _ = q.state; // reserved for CSRF later
     Html(oauth_html(
         "Slack connected",
         &format!(
-            "<p>Workspace <strong>{}</strong> authorized. Digests use Notify Policy v1 (Approve / Edit / Don't send).</p>{}",
-            esc_html(team),
-            extra
+            r#"<p>Workspace <strong>{team}</strong> authorized. Slack is <strong>delivery</strong> — digests with Approve / Edit / Don't send. (GitHub is work signals.)</p>
+{vault_msg}
+<h2 style="font-size:1.05rem;margin-top:1.25rem">Next steps</h2>
+<ol class="steps">
+  <li><strong>Invite the bot</strong> to your team channel if you want channel posts. <span class="muted">Skip this and digests still go as DMs to mapped people.</span></li>
+  <li><strong>Map your pod</strong> under Team (Slack user ids) so each person gets the right digest.</li>
+  <li><strong>Open Cockpit</strong> for digests, pulse, and tomorrow focus.</li>
+</ol>
+<p class="muted">No secrets are shown on this page. Tokens stay in the egress vault only (ADR-012).</p>"#,
+            team = esc_html(team),
+            vault_msg = vault_msg,
         ),
         true,
     ))
@@ -1660,21 +1786,51 @@ fn esc_html(s: &str) -> String {
 
 fn oauth_html(title: &str, body: &str, ok: bool) -> String {
     let color = if ok { "#111" } else { "#7f1d1d" };
+    let connections_href = if ok {
+        "/app/?view=connections&connected=slack"
+    } else {
+        "/app/?view=connections"
+    };
+    let refresh = if ok {
+        format!(
+            r#"<meta http-equiv="refresh" content="4;url={connections_href}"/>"#
+        )
+    } else {
+        String::new()
+    };
+    let redirect_note = if ok {
+        format!(
+            r#"<p class="muted" id="redir-note">Returning to Connections in a few seconds…</p>
+<script>
+setTimeout(function(){{ location.href = "{connections_href}"; }}, 3500);
+</script>"#
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<!DOCTYPE html><html><head><meta charset="utf-8"/><title>{title}</title>
+{refresh}
 <style>
-body{{font-family:ui-sans-serif,system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;color:#111}}
+body{{font-family:ui-sans-serif,system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;color:#111;line-height:1.45}}
 h1{{font-size:1.35rem;color:{color}}}
 .muted{{color:#737373;font-size:0.9rem}}
 .warn{{color:#9a3412}}
+.ok{{color:#14532d}}
+ol.steps{{margin:0.5rem 0 1rem 1.2rem;padding:0}}
+ol.steps li{{margin:0.4rem 0}}
 a.btn{{display:inline-block;margin-top:1rem;padding:0.6rem 1rem;background:#111;color:#fff;text-decoration:none;border-radius:6px}}
+a.btn.secondary{{background:#fff;color:#111;border:1px solid #111;margin-left:0.5rem}}
 code{{font-size:0.85em}}
 </style></head><body>
 <h1>{title}</h1>
 {body}
-<p><a class="btn" href="/app/">Back to app</a>
-<a class="btn" href="/app/" style="background:#fff;color:#111;border:1px solid #111;margin-left:0.5rem">Connections</a></p>
-<p class="muted">AI Manager · tokens never logged · ADR-012 egress vault</p>
+<p>
+  <a class="btn" href="{connections_href}">Open Connections</a>
+  <a class="btn secondary" href="/app/?view=cockpit">Open Cockpit</a>
+</p>
+{redirect_note}
+<p class="muted">AI Manager · tokens never logged · ADR-012 egress vault · Slack = delivery · GitHub = work</p>
 </body></html>"#
     )
 }
@@ -4548,23 +4704,123 @@ async fn sync_to_db(
     }
 }
 
+/// Fetch V2 ACL snapshot and upsert nodes+edges into Neon graph_* tables.
+async fn sync_graph_to_db(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !st.observer.external_connected() {
+        return Err(ApiError::bad(
+            "OBSERVE_DATABASE_URL not set or connect failed. Add Neon URL to deploy/.env.staging and restart twin-api.",
+        ));
+    }
+    match export_graph_to_neon(&st, Some(tenant_id.as_str())).await {
+        Ok(body) => Ok(Json(body)),
+        Err(e) => Err(ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("sync_graph_to_db failed: {e}"),
+        }),
+    }
+}
+
+/// Shared path for on-demand + periodic V2 → Neon graph export.
+/// `tenant_override` None → DEFAULT_TENANT_ID / SEED_TEAM_TENANT / ten_github.
+async fn export_graph_to_neon(
+    st: &AppState,
+    tenant_override: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if !st.observer.external_connected() {
+        return Err("OBSERVE_DATABASE_URL not connected".into());
+    }
+    let tenant_id = tenant_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            std::env::var("DEFAULT_TENANT_ID")
+                .or_else(|_| std::env::var("SEED_TEAM_TENANT"))
+                .unwrap_or_else(|_| "ten_github".into())
+        });
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    if v2.is_empty() {
+        return Err("V2 base URL not configured".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    // Ensure bridge_reader membership (same pattern as dev_insights / get_graph_snapshot)
+    let _ = client
+        .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+        .json(&json!({
+            "global_user_id": "bridge_reader",
+            "groups": ["grp_eng", "grp_default"],
+        }))
+        .send()
+        .await;
+    let url = format!(
+        "{v2}/v2/tenants/{tenant_id}/snapshot?user_id=bridge_reader&node_limit=2000&edge_limit=5000&include_demo=false"
+    );
+    let snap: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("v2 snapshot request: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("v2 snapshot status: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("v2 snapshot json: {e}"))?;
+    let nodes = snap
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let edges = snap
+        .get("edges")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let body = st
+        .observer
+        .sync_graph_snapshot(&tenant_id, &nodes, &edges)
+        .await?;
+    let n = body.get("nodes").and_then(|v| v.as_i64()).unwrap_or(0);
+    let e = body.get("edges").and_then(|v| v.as_i64()).unwrap_or(0);
+    tracing::info!(%tenant_id, nodes = n, edges = e, "graph neon export ok");
+    let _ = st
+        .observer
+        .log(
+            &tenant_id,
+            "sync_graph_to_db",
+            "v2_snapshot",
+            json!({ "nodes": n, "edges": e }),
+        )
+        .await;
+    Ok(body)
+}
+
 async fn observe_status(State(st): State<AppState>) -> impl IntoResponse {
+    let external = st.observer.external_connected();
     Json(json!({
-        "external_db": st.observer.external_connected(),
+        "external_db": external,
         "env_url_set": std::env::var("OBSERVE_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL")).map(|s| !s.trim().is_empty()).unwrap_or(false),
-        "continuous_mirror": st.observer.external_connected(),
+        "continuous_mirror": external,
+        "graph_mirror": external,
         "tables": [
             "twin_events",
             "twin_snapshot_json",
             "twin_twins",
             "twin_slack_maps",
             "twin_drafts",
-            "twin_tenant_kv"
+            "twin_tenant_kv",
+            "graph_nodes",
+            "graph_edges",
+            "graph_export_meta"
         ],
         "sync_endpoint": "POST /v3/tenants/{tenant_id}/sync_to_db",
+        "graph_export_endpoint": "POST /v3/tenants/{tenant_id}/sync_graph_to_db",
         "events_endpoint": "GET /v3/tenants/{tenant_id}/events",
-        "note": if st.observer.external_connected() {
-            "Neon connected. New twin/draft/map/event writes dual-write continuously; Mirror button is optional bulk upsert."
+        "note": if external {
+            "Neon connected. Twin dual-write continuous; V2 graph export is periodic (GRAPH_NEON_EXPORT_INTERVAL_SECS, default 900) + on-demand via sync_graph_to_db. Graph UI remains primary."
         } else {
             "Not connected. Set OBSERVE_DATABASE_URL on droplet deploy/.env.staging and restart twin-api."
         },

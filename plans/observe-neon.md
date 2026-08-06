@@ -57,17 +57,36 @@ Embedded log still works (twin state JSON / in-memory). External DB is optional 
 
 Tables: `twin_events`, `twin_snapshot_json`, `twin_twins`, `twin_slack_maps`, `twin_drafts`, `twin_tenant_kv`.
 
-- `GET /v3/observe/status` — `external_db` + `continuous_mirror`
+- `GET /v3/observe/status` — `external_db` + `continuous_mirror` + `graph_mirror`
 - `POST /v3/tenants/{tenant}/sync_to_db` — optional bulk **upsert** (not required daily)
 - Every `persist_embedded` dual-writes twin state to Neon when connected
 - UI: Settings → **Force full re-sync → Neon** (optional)
 
 Prefer GitHub secret `OBSERVE_DATABASE_URL` (see `plans/2026-08-06_neon-you-do-this.md`).
 
+## V2 graph snapshot → Neon (SQL insights)
+
+Tables: `graph_nodes`, `graph_edges`, `graph_export_meta`.
+
+- `POST /v3/tenants/{tenant}/sync_graph_to_db` — fetch V2 ACL snapshot (`bridge_reader`, node_limit=2000, edge_limit=5000), upsert + delete orphans
+- Background loop when Neon connected: every `GRAPH_NEON_EXPORT_INTERVAL_SECS` (default **900**), default tenant
+- Edge ids: use V2 `id` when present; else `{type}:{from}->{to}:{valid_from}`
+- UI: Settings → **Export graph → Neon** (on-demand counts in events-meta)
+- Graph UI remains primary; Neon is for SQL analytics only
+
+Example:
+
+```sql
+SELECT node_type, count(*) FROM graph_nodes WHERE tenant_id = 'ten_github' GROUP BY 1;
+SELECT edge_type, count(*) FROM graph_edges WHERE tenant_id = 'ten_github' GROUP BY 1;
+SELECT * FROM graph_export_meta;
+```
+
 ### What is / is not migrated from Docker
 
-| In Neon (continuous) | Still on droplet volumes only |
-|----------------------|-------------------------------|
-| Twins, Slack maps, digests, kv, events, twin snapshot JSON | V1 event journal, V2 graph JSON, bridge cursors, vault secrets |
+| In Neon | Still on droplet volumes only |
+|---------|-------------------------------|
+| Twins, Slack maps, digests, kv, events, twin snapshot JSON | V1 event journal (not migrated), bridge cursors, vault secrets |
+| V2 graph nodes/edges (periodic + on-demand export into `graph_*`) | Raw V2 graph JSON on volume (export is a SQL mirror, not live replacement) |
 
 Full “stateless containers, everything in Neon” = later multi-tenant packaging. Graph UI already shows work data without Neon.

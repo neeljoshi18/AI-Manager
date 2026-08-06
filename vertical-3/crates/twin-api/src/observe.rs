@@ -401,6 +401,250 @@ impl EventObserver {
             ],
         }))
     }
+
+    /// Upsert V2 graph snapshot nodes+edges into Neon; delete orphans for tenant.
+    ///
+    /// Nodes use `id`. Edges use stable `id` when present, else
+    /// `{type}:{from}->{to}:{valid_from}` (empty segments allowed).
+    pub async fn sync_graph_snapshot(
+        &self,
+        tenant_id: &str,
+        nodes: &[Value],
+        edges: &[Value],
+    ) -> Result<Value, String> {
+        let pool = self
+            .pg
+            .as_ref()
+            .ok_or_else(|| "OBSERVE_DATABASE_URL not connected".to_string())?;
+
+        let now = Utc::now().to_rfc3339();
+        let mut node_ids: Vec<String> = Vec::with_capacity(nodes.len());
+        let mut edge_ids: Vec<String> = Vec::with_capacity(edges.len());
+
+        for n in nodes {
+            let node_id = n
+                .get("id")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("")
+                .to_string();
+            if node_id.is_empty() {
+                continue;
+            }
+            let node_type = n
+                .get("type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let label = n
+                .get("label")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let resource_id = n
+                .get("resource_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let props = node_props_json(n);
+            let props_s = props.to_string();
+            sqlx::query(
+                r#"
+                INSERT INTO graph_nodes (
+                  tenant_id, node_id, node_type, label, resource_id, props, synced_at
+                ) VALUES (
+                  $1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz
+                )
+                ON CONFLICT (tenant_id, node_id) DO UPDATE SET
+                  node_type = EXCLUDED.node_type,
+                  label = EXCLUDED.label,
+                  resource_id = EXCLUDED.resource_id,
+                  props = EXCLUDED.props,
+                  synced_at = EXCLUDED.synced_at
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(&node_id)
+            .bind(&node_type)
+            .bind(&label)
+            .bind(&resource_id)
+            .bind(&props_s)
+            .bind(&now)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("graph_nodes upsert: {e}"))?;
+            node_ids.push(node_id);
+        }
+
+        for e in edges {
+            let edge_type = e
+                .get("type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let from_id = e
+                .get("from")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let to_id = e
+                .get("to")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let valid_from = e
+                .get("valid_from")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
+            let edge_id = e
+                .get("id")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    synthesize_edge_id(
+                        &edge_type,
+                        &from_id,
+                        &to_id,
+                        valid_from.as_deref().unwrap_or(""),
+                    )
+                });
+            if edge_id.is_empty() {
+                continue;
+            }
+            let props = edge_props_json(e);
+            let props_s = props.to_string();
+            sqlx::query(
+                r#"
+                INSERT INTO graph_edges (
+                  tenant_id, edge_id, edge_type, from_id, to_id, valid_from, props, synced_at
+                ) VALUES (
+                  $1, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz
+                )
+                ON CONFLICT (tenant_id, edge_id) DO UPDATE SET
+                  edge_type = EXCLUDED.edge_type,
+                  from_id = EXCLUDED.from_id,
+                  to_id = EXCLUDED.to_id,
+                  valid_from = EXCLUDED.valid_from,
+                  props = EXCLUDED.props,
+                  synced_at = EXCLUDED.synced_at
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(&edge_id)
+            .bind(&edge_type)
+            .bind(&from_id)
+            .bind(&to_id)
+            .bind(&valid_from)
+            .bind(&props_s)
+            .bind(&now)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("graph_edges upsert: {e}"))?;
+            edge_ids.push(edge_id);
+        }
+
+        // Prefer accuracy: drop rows not in this snapshot for the tenant.
+        if node_ids.is_empty() {
+            sqlx::query("DELETE FROM graph_nodes WHERE tenant_id = $1")
+                .bind(tenant_id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("graph_nodes orphan clear: {e}"))?;
+        } else {
+            sqlx::query(
+                "DELETE FROM graph_nodes WHERE tenant_id = $1 AND NOT (node_id = ANY($2))",
+            )
+            .bind(tenant_id)
+            .bind(&node_ids)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("graph_nodes orphan delete: {e}"))?;
+        }
+
+        if edge_ids.is_empty() {
+            sqlx::query("DELETE FROM graph_edges WHERE tenant_id = $1")
+                .bind(tenant_id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("graph_edges orphan clear: {e}"))?;
+        } else {
+            sqlx::query(
+                "DELETE FROM graph_edges WHERE tenant_id = $1 AND NOT (edge_id = ANY($2))",
+            )
+            .bind(tenant_id)
+            .bind(&edge_ids)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("graph_edges orphan delete: {e}"))?;
+        }
+
+        let n_nodes = node_ids.len() as i32;
+        let n_edges = edge_ids.len() as i32;
+        sqlx::query(
+            r#"
+            INSERT INTO graph_export_meta (tenant_id, node_count, edge_count, synced_at, source)
+            VALUES ($1, $2, $3, $4::timestamptz, 'v2_snapshot')
+            ON CONFLICT (tenant_id) DO UPDATE SET
+              node_count = EXCLUDED.node_count,
+              edge_count = EXCLUDED.edge_count,
+              synced_at = EXCLUDED.synced_at,
+              source = EXCLUDED.source
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(n_nodes)
+        .bind(n_edges)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("graph_export_meta: {e}"))?;
+
+        Ok(json!({
+            "ok": true,
+            "tenant_id": tenant_id,
+            "synced_at": now,
+            "nodes": n_nodes,
+            "edges": n_edges,
+            "mode": "upsert_delete_orphans",
+            "source": "v2_snapshot",
+            "tables": ["graph_nodes", "graph_edges", "graph_export_meta"],
+        }))
+    }
+}
+
+/// Stable edge id when V2 omits `id`: `{type}:{from}->{to}:{valid_from}`.
+fn synthesize_edge_id(edge_type: &str, from: &str, to: &str, valid_from: &str) -> String {
+    format!("{edge_type}:{from}->{to}:{valid_from}")
+}
+
+/// Pack non-column node fields into props JSON (message/title/properties + rest).
+fn node_props_json(n: &Value) -> Value {
+    const SKIP: &[&str] = &["id", "type", "label", "resource_id"];
+    let mut props = serde_json::Map::new();
+    if let Some(obj) = n.as_object() {
+        for (k, v) in obj {
+            if SKIP.contains(&k.as_str()) {
+                continue;
+            }
+            props.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(props)
+}
+
+fn edge_props_json(e: &Value) -> Value {
+    const SKIP: &[&str] = &["id", "type", "from", "to", "valid_from"];
+    let mut props = serde_json::Map::new();
+    if let Some(obj) = e.as_object() {
+        for (k, v) in obj {
+            if SKIP.contains(&k.as_str()) {
+                continue;
+            }
+            props.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(props)
 }
 
 async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
@@ -505,6 +749,66 @@ async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
             key TEXT NOT NULL,
             value JSONB NOT NULL DEFAULT '{}'::jsonb,
             PRIMARY KEY (tenant_id, key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // V2 graph snapshot mirror (SQL insights; Graph UI remains primary)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS graph_nodes (
+            tenant_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            node_type TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            resource_id TEXT NOT NULL DEFAULT '',
+            props JSONB NOT NULL DEFAULT '{}'::jsonb,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (tenant_id, node_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS graph_nodes_tenant_type ON graph_nodes (tenant_id, node_type)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS graph_edges (
+            tenant_id TEXT NOT NULL,
+            edge_id TEXT NOT NULL,
+            edge_type TEXT NOT NULL DEFAULT '',
+            from_id TEXT NOT NULL DEFAULT '',
+            to_id TEXT NOT NULL DEFAULT '',
+            valid_from TEXT,
+            props JSONB NOT NULL DEFAULT '{}'::jsonb,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (tenant_id, edge_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS graph_edges_tenant_type ON graph_edges (tenant_id, edge_type)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS graph_export_meta (
+            tenant_id TEXT PRIMARY KEY,
+            node_count INT NOT NULL DEFAULT 0,
+            edge_count INT NOT NULL DEFAULT 0,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            source TEXT NOT NULL DEFAULT 'v2_snapshot'
         )
         "#,
     )

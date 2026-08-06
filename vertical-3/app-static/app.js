@@ -892,6 +892,37 @@ async function refreshOnboarding() {
   }
 }
 
+/** Show / hide post-install callout on Connections (no secrets). */
+function showPostInstallCallout(kind, detail) {
+  const box = $("conn-post-install");
+  const title = $("conn-post-install-title");
+  const body = $("conn-post-install-body");
+  if (!box || !title || !body) return;
+  box.classList.remove("hidden");
+  if (kind === "slack") {
+    title.textContent = "Slack connected — next steps";
+    const ch = $("channel")?.value?.trim();
+    const chHint = ch
+      ? ` Team channel on the form: <code>${esc(ch)}</code> — invite the bot there for channel posts.`
+      : " Invite the bot to your team channel for channel posts.";
+    body.innerHTML =
+      `1) ${chHint} <em>DM fallback still works</em> for mapped people if the bot is not in a channel.<br/>` +
+      `2) Map your pod under <strong>Team</strong> (Slack user ids).<br/>` +
+      `3) Open <strong>Cockpit</strong>. If digests fail after first connect, restart egress once so it reloads the vault.` +
+      (detail ? `<br/><span class="muted">${esc(detail)}</span>` : "");
+  } else if (kind === "github") {
+    title.textContent = "GitHub App — next steps";
+    body.innerHTML =
+      `1) Confirm webhook URL is set on the App (copy below).<br/>` +
+      `2) Install on org/repos that should feed status.<br/>` +
+      `3) Wait ~1 min, then open <strong>Graph / Cockpit</strong>. GitHub = work signals (not LOC rankings).` +
+      (detail ? `<br/><span class="muted">${esc(detail)}</span>` : "");
+  } else {
+    title.textContent = "Install progress";
+    body.textContent = detail || "Use Refresh status after finishing install in the other tab.";
+  }
+}
+
 async function startOAuth(kind) {
   const path =
     kind === "slack"
@@ -922,8 +953,16 @@ async function startOAuth(kind) {
       if (guideEl) {
         guideEl.innerHTML = `<strong>Setup needed.</strong> ${esc(body.message || "Not configured")}. Manual: <code>${esc(manual)}</code>`;
       }
+      if (body.webhook_url && $("conn-gh-webhook")) {
+        $("conn-gh-webhook").textContent = body.webhook_url;
+      }
       // Still open install URL if present (e.g. GH slug without full env)
-      if (body.install_url) window.open(body.install_url, "_blank", "noopener");
+      if (body.install_url) {
+        const w = window.open(body.install_url, "_blank", "noopener");
+        if (!w && guideEl) {
+          guideEl.innerHTML += ` <a class="primary linkbtn" href="${esc(body.install_url)}" target="_blank" rel="noopener">Open install link (popup blocked)</a>`;
+        }
+      }
       return;
     }
     const url = body.authorize_url || body.install_url;
@@ -931,73 +970,115 @@ async function startOAuth(kind) {
       alert(JSON.stringify(body, null, 2));
       return;
     }
+    // Always surface webhook when GitHub responds
+    if (kind === "github" && body.webhook_url && $("conn-gh-webhook")) {
+      $("conn-gh-webhook").textContent = body.webhook_url;
+    }
     // Pre-flight: what will happen
     if (kind === "slack") {
       if (guideEl) {
         guideEl.innerHTML =
-          `<strong>Connect Slack</strong> — Slack will ask to install the AI Manager bot on your workspace. ` +
-          `After you click Allow, you should see “Slack connected”. Digests use that bot token (vault only). ` +
-          `If DMs fail after first connect, restart egress once so it reloads secrets.`;
+          `<strong>Connect Slack</strong> (delivery) — install the AI Manager bot on your workspace. ` +
+          `After Allow you land on “Slack connected”, then return here. Digests use the bot token (vault only). ` +
+          `Invite the bot to a channel for channel posts; DMs still work without that. ` +
+          `Restart egress once after first connect so it reloads secrets.`;
       }
       const ok = confirm(
-        "Connect Slack\n\n" +
+        "Connect Slack (delivery)\n\n" +
           "1. Slack will open — install the bot on your workspace\n" +
           "2. Approve chat:write / im:write\n" +
-          "3. You’ll land on a “Slack connected” page\n" +
-          "4. Come back here and Refresh status\n\n" +
+          "3. You’ll land on “Slack connected” with next steps\n" +
+          "4. Return here → invite bot to channel (optional) → map Team → Cockpit\n\n" +
           "Continue to Slack?"
       );
       if (!ok) return;
     } else if (kind === "github") {
       if (guideEl) {
         guideEl.innerHTML =
-          `<strong>Install GitHub App</strong> — pick the org/repos that should feed status. ` +
+          `<strong>Install GitHub App</strong> (work signals) — pick the org/repos that should feed status. ` +
           `Webhooks hit <code>${esc(body.webhook_url || "…/webhooks/github")}</code>. ` +
-          `Graph fills via V1→bridge→V2 (needs Graph healthy).`;
+          `Graph fills via V1→bridge→V2. Not LOC rankings.`;
       }
       const ok = confirm(
-        "Install GitHub App\n\n" +
+        "Install GitHub App (work signals)\n\n" +
           "1. GitHub will open the App install page\n" +
           "2. Choose org + repositories for status\n" +
-          "3. Webhooks post to status.neel.world automatically\n" +
-          "4. Return here — open Graph / Cockpit after a minute\n\n" +
+          "3. Webhooks post to the product host automatically\n" +
+          "4. Return here — click “I finished install — refresh”, then Graph / Cockpit\n\n" +
           "Continue to GitHub?"
       );
       if (!ok) return;
     } else if (kind === "teams") {
       if (guideEl) {
         guideEl.innerHTML =
-          `<strong>Connect Teams</strong> — Azure Bot + Adaptive Cards. Needs TEAMS_APP_ID + vault TEAMS_BOT_TOKEN. ` +
+          `<strong>Connect Teams</strong> (secondary — default stays Slack) — Azure Bot + Adaptive Cards. ` +
+          `Needs TEAMS_APP_ID + vault TEAMS_BOT_TOKEN. ` +
           `Messaging endpoint: <code>${esc(body.messaging_endpoint || "")}</code>`;
       }
     }
     const win = window.open(url, "_blank", "noopener");
     if (!win) {
-      alert(
-        "Popup blocked. Allow popups for status.neel.world, or open this URL manually:\n\n" +
+      // Popup blocked: in-page recovery so the path never looks broken
+      if (guideEl) {
+        guideEl.innerHTML =
+          `<strong>Popup blocked.</strong> ` +
+          `<a class="primary linkbtn" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(kind)} install in this tab →</a> ` +
+          `<span class="muted">or allow popups for this host and try again.</span>`;
+      }
+      const go = confirm(
+        "Popup blocked by the browser.\n\n" +
+          "OK = open the install URL in this tab.\n" +
+          "Cancel = copy the URL from the Connections guide.\n\n" +
           url
       );
-      if (guideEl) {
-        guideEl.innerHTML += ` <a href="${esc(url)}" target="_blank" rel="noopener">Open install link</a>`;
+      if (go) {
+        window.location.href = url;
+        return;
       }
-    } else if (guideEl && kind === "slack") {
-      guideEl.innerHTML +=
-        ` <button type="button" class="ghost" id="conn-refresh-after">I finished — refresh status</button>`;
-      $("conn-refresh-after")?.addEventListener("click", () => refreshConnectors());
+      try {
+        await navigator.clipboard.writeText(url);
+        if (guideEl) guideEl.innerHTML += ` <span class="muted">(URL copied)</span>`;
+      } catch {
+        prompt("Copy install URL:", url);
+      }
+    } else {
+      // Other tab opened — keep champion oriented
+      if (kind === "slack") {
+        showPostInstallCallout("slack", "Finish Allow in the Slack tab, then click Refresh status.");
+      } else if (kind === "github") {
+        showPostInstallCallout("github", "Finish install in the GitHub tab, then click Refresh status.");
+      }
+      if (guideEl) {
+        guideEl.innerHTML +=
+          ` <span class="muted">Install opened in another tab. When done, click <strong>I finished install — refresh status</strong>.</span>`;
+      }
     }
   } catch (e) {
     alert("OAuth start failed: " + (e.message || e));
   }
 }
 
-/** Refresh Connectors panel + oauth pills (Connections). */
+/** Refresh Connectors panel + oauth pills + checklist (Connections). */
 async function refreshConnectors() {
   const statusEl = $("conn-oauth-status");
   try {
-    const o = await jfetch("/v3/oauth/status");
+    const [o, demo] = await Promise.all([
+      jfetch("/v3/oauth/status"),
+      jfetch("/v3/demo/status").catch(() => null),
+    ]);
     const slack = o.slack || {};
     const gh = o.github || {};
     const teams = o.teams || {};
+    const checklist = Array.isArray(o.install_checklist) ? o.install_checklist : [];
+    const byId = Object.fromEntries(checklist.map((c) => [c.id, c]));
+    const slackConnected = !!(slack.bot_token_in_vault || slack.oauth_credentials);
+    const ghReady = !!gh.app_env_present;
+    const graphOk =
+      demo &&
+      demo.v2 === true &&
+      (demo.graph_status === "ok" ||
+        demo.graph_status === "healthy" ||
+        (typeof demo.graph_nodes === "number" && demo.graph_nodes > 0));
     const teamsPill =
       teams.status === "ready"
         ? "up"
@@ -1006,22 +1087,38 @@ async function refreshConnectors() {
           : "mid";
     if (statusEl) {
       statusEl.innerHTML = [
-        `<span class="pill ${slack.oauth_credentials ? "up" : "mid"}">Slack OAuth: ${slack.oauth_credentials ? "ready" : "manual vault"}</span>`,
-        `<span class="pill ${gh.app_env_present ? "up" : "mid"}">GitHub App: ${gh.app_env_present ? "ready" : "set slug/id"}</span>`,
+        `<span class="pill ${slack.bot_token_in_vault ? "up" : slack.oauth_credentials ? "mid" : "mid"}">Slack: ${
+          slack.bot_token_in_vault
+            ? "token in vault"
+            : slack.oauth_credentials
+              ? "OAuth ready"
+              : "manual vault"
+        }</span>`,
+        `<span class="pill ${ghReady ? "up" : "mid"}">GitHub App: ${ghReady ? "ready" : "set slug/id"}</span>`,
         `<span class="pill ${teamsPill}">Teams: ${esc(teams.status || "manual")}</span>`,
         `<span class="pill mid">adapter: ${esc(o.delivery_adapter || "slack")}</span>`,
-      ].join(" ");
+        graphOk
+          ? `<span class="pill up">graph: healthy</span>`
+          : demo
+            ? `<span class="pill mid">graph: ${esc(demo.graph_status || "n/a")}</span>`
+            : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
     if ($("conn-github")) {
       $("conn-github").textContent = gh.note || $("conn-github").textContent;
     }
+    // Always show webhook URL when server returns it
     if ($("conn-gh-webhook") && gh.webhook_url) {
       $("conn-gh-webhook").textContent = gh.webhook_url;
     }
     if ($("conn-slack")) {
+      const scopes = Array.isArray(slack.scopes) ? slack.scopes.join(", ") : "";
       $("conn-slack").textContent =
         (slack.note || "Outbound digests via egress vault.") +
-        (slack.egress_mode ? ` Mode: ${slack.egress_mode}.` : "");
+        (slack.egress_mode ? ` Mode: ${slack.egress_mode}.` : "") +
+        (scopes ? ` Scopes: ${scopes}.` : "");
     }
     if ($("conn-slack-manual")) {
       $("conn-slack-manual").textContent = slack.manual_path
@@ -1044,43 +1141,86 @@ async function refreshConnectors() {
     if ($("conn-sso-note") && o.sso?.note) {
       $("conn-sso-note").textContent = "Google/SSO: " + o.sso.note;
     }
-    // Checklist visual (ready = credentials present; not full end-to-end proof)
+    // Checklist visual from oauth_status + soft graph probe
     const mark = (id, ok, text) => {
       const el = $(id);
       if (!el) return;
-      el.textContent = text;
+      el.textContent = (ok ? "✓ " : "○ ") + text;
       el.style.color = ok ? "var(--up, #0a7)" : "";
       el.style.fontWeight = ok ? "600" : "";
     };
+    const slackStep = byId.slack_connect;
     mark(
       "conn-step-slack",
-      !!slack.oauth_credentials,
-      slack.oauth_credentials
-        ? "Connect Slack — OAuth ready (button opens Slack install)"
-        : "Connect Slack — set SLACK_CLIENT_ID/SECRET or paste vault token"
+      !!(slack.bot_token_in_vault || slackStep?.done),
+      slack.bot_token_in_vault
+        ? "Connect Slack — bot token in vault (restart egress once after first connect)"
+        : slack.oauth_credentials
+          ? "Connect Slack — OAuth ready (button opens Slack install)"
+          : "Connect Slack — set SLACK_CLIENT_ID/SECRET or paste vault token"
+    );
+    mark(
+      "conn-step-channel",
+      false,
+      "Invite bot to team channel (optional — DM fallback still works)"
     );
     mark(
       "conn-step-gh",
-      !!gh.app_env_present,
-      gh.app_env_present
-        ? "Install GitHub App — ready (button opens App install)"
-        : "Install GitHub App — set GITHUB_APP_SLUG / ID"
+      ghReady || !!byId.github_install?.done,
+      ghReady
+        ? "Install GitHub App — ready (button opens App install); copy webhook URL"
+        : "Install GitHub App — set GITHUB_APP_SLUG / ID or wire webhooks manually"
     );
     mark(
       "conn-step-map",
-      true,
+      false,
       "Map pod under Team (Slack user ids) — bulk import available"
     );
     mark(
       "conn-step-graph",
-      true,
-      "Graph + digests — needs healthy V2 + bridge after GitHub install"
+      !!graphOk,
+      graphOk
+        ? `Graph healthy (${demo.graph_nodes || 0} nodes) — open Cockpit / digests`
+        : "Graph + digests — needs healthy V2 + bridge after GitHub install"
     );
+    // Soft post-install if vault already has token
+    if (slack.bot_token_in_vault && $("conn-post-install")?.classList.contains("hidden")) {
+      // don't force; only when returning from OAuth (boot handles that)
+    }
   } catch (e) {
     if (statusEl) {
       statusEl.innerHTML = `<span class="pill mid">install status: ${esc(e.message || "n/a")}</span>`;
     }
   }
+}
+
+/** Boot: land on Connections after OAuth return (?view=connections / ?connected=slack). */
+function handleConnectReturn() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const hash = (window.location.hash || "").replace(/^#/, "");
+    const viewParam = params.get("view") || (hash.startsWith("view=") ? hash.slice(5) : null);
+    const connected = params.get("connected");
+    if (viewParam === "connections" || connected === "slack" || connected === "github") {
+      showView("connections");
+      refreshConnectors().then(() => {
+        if (connected === "slack") {
+          showPostInstallCallout("slack");
+        } else if (connected === "github") {
+          showPostInstallCallout("github");
+        }
+      });
+      // Clean query so refresh doesn't re-flash, keep path usable
+      if (window.history?.replaceState) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("connected");
+        // keep view=connections so shareable
+        window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+      }
+      return true;
+    }
+  } catch (_) {}
+  return false;
 }
 
 async function saveTomorrowFocus(clear) {
@@ -2626,7 +2766,8 @@ async function refreshEvents() {
       jfetch("/v3/observe/status").catch(() => ({})),
     ]);
     if (meta) {
-      meta.textContent = `count=${e.count} · external_db=${e.external_db} · env_set=${obs.env_url_set} · ${e.note || ""}`;
+      const gm = obs.graph_mirror ? " · graph_mirror=true" : "";
+      meta.textContent = `count=${e.count} · external_db=${e.external_db} · env_set=${obs.env_url_set}${gm} · ${e.note || ""}`;
     }
     if (el) el.textContent = JSON.stringify(e.events || [], null, 2);
   } catch (err) {
@@ -2656,11 +2797,37 @@ async function syncTwinToDb() {
     if (meta) meta.textContent = "sync failed: " + (err.message || err);
   }
 }
+async function syncGraphToDb() {
+  const tenant = syncTenantFields(activeTenant());
+  const meta = $("events-meta");
+  try {
+    if (meta) meta.textContent = "Exporting V2 graph → Neon…";
+    const body = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/sync_graph_to_db`,
+      { method: "POST", body: "{}" }
+    );
+    if (meta) {
+      meta.textContent = `graph export nodes=${body.nodes} edges=${body.edges} @ ${body.synced_at || ""}`;
+    }
+    alert(
+      "Graph exported to Neon (upsert + orphan delete):\n" +
+        JSON.stringify(body, null, 2) +
+        "\n\nAlso runs periodically when OBSERVE_DATABASE_URL is set. Graph UI remains primary."
+    );
+    await refreshEvents();
+  } catch (err) {
+    alert("Graph export failed: " + (err.message || err));
+    if (meta) meta.textContent = "graph export failed: " + (err.message || err);
+  }
+}
 if ($("btn-events-refresh")) {
   $("btn-events-refresh").addEventListener("click", () => refreshEvents());
 }
 if ($("btn-sync-db")) {
   $("btn-sync-db").addEventListener("click", () => syncTwinToDb());
+}
+if ($("btn-sync-graph-db")) {
+  $("btn-sync-graph-db").addEventListener("click", () => syncGraphToDb());
 }
 async function refreshStackHealth() {
   const pills = $("stack-health-pills");
@@ -2790,10 +2957,18 @@ if ($("btn-seed-story")) {
     }
   });
 }
-// Boot: pilot tenant + champion cockpit default
+// Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)
 syncTenantFields(PILOT_TENANT);
 refreshReadiness();
-if ($("view-cockpit") && !$("view-cockpit").classList.contains("hidden")) {
+if ($("conn-refresh-after")) {
+  $("conn-refresh-after").addEventListener("click", () => {
+    refreshConnectors();
+    refreshOnboarding();
+    refreshHealth();
+  });
+}
+const landedOnConnect = handleConnectReturn();
+if (!landedOnConnect && $("view-cockpit") && !$("view-cockpit").classList.contains("hidden")) {
   refreshCockpit();
 }
 

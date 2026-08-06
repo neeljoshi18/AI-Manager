@@ -421,39 +421,52 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="card">
           <h2>Connectors</h2>
-          <p class="muted small">One-click install for partners. Tokens never sit on twin-api env (ADR-012). Slack delivers digests; GitHub fills the graph.</p>
+          <p class="muted small"><strong>Slack = delivery</strong> (digests, Approve / Edit / Don't send). <strong>GitHub = work</strong> (PRs, issues, pushes → graph). Tokens never sit on twin-api env (ADR-012). No LOC rankings.</p>
           <div class="meta-row" id="conn-oauth-status" style="margin-bottom:0.75rem;"><span class="pill mid">checking install status…</span></div>
           <div class="card" style="background:var(--surface-2, #f6f7f9); margin-bottom:0.75rem; padding:0.75rem 1rem;" id="conn-guide">
-            <strong>What champions do:</strong> Connect Slack (bot for DMs) → Install GitHub App (work signals) → map people under Team → open Cockpit / Graph.
-            ICs mostly only see Slack digests (Approve / Edit / Don't send).
+            <strong>Sales-call path:</strong> Connect Slack → invite bot to channel (optional; DMs still work) → Install GitHub App → map pod under Team → open Cockpit.
+            ICs mostly only see Slack digests.
+          </div>
+          <div id="conn-post-install" class="card hidden" style="background:#ecfdf5; border:1px solid #86efac; margin-bottom:0.75rem; padding:0.75rem 1rem;">
+            <strong id="conn-post-install-title">Post-install</strong>
+            <p class="muted small" id="conn-post-install-body" style="margin:0.35rem 0 0;"></p>
           </div>
           <ol class="muted small" id="conn-checklist" style="margin:0 0 0.75rem 1.1rem;">
             <li id="conn-step-slack">Connect Slack — bot install OAuth (opens Slack)</li>
+            <li id="conn-step-channel">Invite bot to team channel (optional — DM fallback works)</li>
             <li id="conn-step-gh">Install GitHub App — org/repos (opens GitHub)</li>
             <li id="conn-step-map">Map pod under Team (Slack user ids)</li>
             <li id="conn-step-graph">Graph healthy + digests compiling</li>
           </ol>
+          <div class="actions-inline" style="margin-bottom:0.75rem;">
+            <button type="button" class="ghost" id="conn-refresh-after">I finished install — refresh status</button>
+          </div>
           <div class="grid2">
             <div>
-              <p><strong>GitHub</strong></p>
+              <p><strong>GitHub</strong> <span class="muted small">= work signals</span></p>
               <p class="muted small" id="conn-github">Ingest via V1 webhooks. Last event age above when V1 is up.</p>
-              <p class="muted small">Webhook: <code id="conn-gh-webhook">—</code></p>
+              <p class="muted small">Webhook URL (always copyable):</p>
+              <p style="word-break:break-all;"><code id="conn-gh-webhook">—</code></p>
               <div class="actions-inline">
                 <button type="button" class="primary" id="btn-gh-app">Install GitHub App…</button>
                 <button type="button" class="ghost" id="btn-gh-webhook-copy">Copy webhook URL</button>
               </div>
             </div>
             <div>
-              <p><strong>Slack</strong></p>
-              <p class="muted small" id="conn-slack">Outbound DMs via egress vault only (ADR-012). Batched notify (ADR-014).</p>
+              <p><strong>Slack</strong> <span class="muted small">= delivery (default)</span></p>
+              <p class="muted small" id="conn-slack">Outbound digests via egress vault only (ADR-012). Batched notify (ADR-014).</p>
               <div class="actions-inline">
                 <button type="button" class="primary" id="btn-slack-oauth">Connect Slack…</button>
               </div>
               <p class="muted small" id="conn-slack-manual" style="margin-top:0.5rem;"></p>
+              <p class="muted small" id="conn-slack-channel-hint" style="margin-top:0.35rem;">
+                After connect: invite the bot to your team channel for channel posts.
+                Channel id on the form below is used for test status — digests still DM mapped people if the bot is not in a channel.
+              </p>
             </div>
           </div>
           <div style="margin-top:0.75rem;">
-            <p><strong>Microsoft Teams</strong></p>
+            <p><strong>Microsoft Teams</strong> <span class="muted small">secondary (default stays Slack)</span></p>
             <p class="muted small" id="conn-teams-note">Same digests + Adaptive Cards (Approve / Edit / Don't send). Vault: TEAMS_BOT_TOKEN.</p>
             <div class="actions-inline">
               <button type="button" class="primary" id="btn-teams-connect">Connect Teams…</button>
@@ -512,10 +525,11 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="card">
           <h2>Live event trail + Neon DB</h2>
-          <p class="muted small">Approve / Don't send / compile dual-write to Neon continuously when connected. Optional button re-upserts everything (idempotent).</p>
+          <p class="muted small">Approve / Don't send / compile dual-write to Neon continuously when connected. Optional button re-upserts everything (idempotent). Graph export is periodic + on-demand (SQL insights; Graph UI remains primary).</p>
           <div class="actions-inline">
             <button type="button" id="btn-events-refresh" class="primary">Refresh events</button>
             <button type="button" id="btn-sync-db" class="ghost">Force full re-sync → Neon</button>
+            <button type="button" id="btn-sync-graph-db" class="ghost">Export graph → Neon</button>
           </div>
           <p class="muted small" id="events-meta"></p>
           <pre id="events-log" class="box small" style="max-height:320px;overflow:auto;">{}</pre>
@@ -542,6 +556,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260806b"></script>
+  <script src="/app/app.js?v=20260806c"></script>
 </body>
 </html>

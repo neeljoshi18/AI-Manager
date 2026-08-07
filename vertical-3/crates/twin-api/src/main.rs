@@ -35,6 +35,7 @@ use twin_delivery::{
 
 mod observe;
 mod intent_engine;
+mod commitments;
 use observe::EventObserver;
 
 #[derive(Default)]
@@ -619,6 +620,26 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v3/tenants/{tenant_id}/intent/claims/{claim_id}/supersede",
             post(intent_claim_supersede),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/intent/insights",
+            get(intent_insights_plain),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments",
+            get(list_commitments),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments",
+            post(create_commitment),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments/{commitment_id}/done",
+            post(complete_commitment),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments/{commitment_id}/dismiss",
+            post(dismiss_commitment),
         )
         .route(
             "/v3/tenants/{tenant_id}/insights/dev",
@@ -5528,6 +5549,347 @@ async fn intent_claim_supersede(
     })))
 }
 
+// ─── Commitments + plain-English insights ───────────────────────────────────
+
+fn load_commitments(st: &AppState, tenant_id: &str) -> Vec<commitments::Commitment> {
+    st.embedded_store
+        .as_ref()
+        .and_then(|s| s.get_tenant_kv(tenant_id, commitments::COMMITMENTS_KV))
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect()
+}
+
+fn save_commitments(st: &AppState, tenant_id: &str, list: Vec<commitments::Commitment>) {
+    let Some(store) = &st.embedded_store else {
+        return;
+    };
+    let mut arr: Vec<serde_json::Value> = list.into_iter().map(|c| c.to_json()).collect();
+    // Drop UI-only fields that break round-trip? to_json has extra fields — store lean
+    // Re-serialize from struct fields only via intermediate
+    let lean: Vec<serde_json::Value> = arr
+        .drain(..)
+        .map(|v| {
+            // Keep full to_json for API; for storage use Deserialize-compatible shape
+            json!({
+                "id": v.get("id"),
+                "tenant_id": v.get("tenant_id"),
+                "promiser": v.get("promiser"),
+                "promisee": v.get("promisee"),
+                "text": v.get("text"),
+                "status": v.get("status"),
+                "source": v.get("source"),
+                "channel": v.get("channel"),
+                "evidence": v.get("evidence"),
+                "confidence": v.get("confidence"),
+                "created_at": v.get("created_at"),
+                "resolved_at": v.get("resolved_at"),
+                "resolve_evidence": v.get("resolve_evidence"),
+            })
+        })
+        .collect();
+    let mut lean = lean;
+    if lean.len() > commitments::COMMITMENTS_MAX {
+        let drop_n = lean.len() - commitments::COMMITMENTS_MAX;
+        lean.drain(0..drop_n);
+    }
+    store.put_tenant_kv(tenant_id, commitments::COMMITMENTS_KV, serde_json::Value::Array(lean));
+    persist_embedded(st);
+}
+
+fn maybe_handle_commitment_from_slack(
+    st: &AppState,
+    tenant_id: &str,
+    subject: &str,
+    text_raw: &str,
+    channel: &str,
+    ts: &str,
+    is_dm: bool,
+) {
+    let hay = text_raw.to_ascii_lowercase();
+    let mut list = load_commitments(st, tenant_id);
+    // Resolve open commitments first
+    if commitments::is_resolution_phrase(&hay) {
+        let mut changed = false;
+        for c in &mut list {
+            if c.status != "open" {
+                continue;
+            }
+            // Prefer same promiser; else same channel
+            let same_person = c.promiser == subject
+                || c.promiser.contains(subject)
+                || subject.contains(&c.promiser);
+            let same_channel = c
+                .channel
+                .as_ref()
+                .map(|ch| ch == channel)
+                .unwrap_or(false);
+            if (same_person || same_channel)
+                && commitments::message_resolves_commitment(text_raw, &c.text)
+            {
+                c.status = "done".into();
+                c.resolved_at = Some(Utc::now().to_rfc3339());
+                c.resolve_evidence = Some(format!("slack:{ts} {text_raw}"));
+                changed = true;
+            }
+        }
+        if changed {
+            save_commitments(st, tenant_id, list);
+            return;
+        }
+    }
+    // New commitment
+    if let Some((summary, conf, tag)) = commitments::extract_commitment(text_raw) {
+        if conf < 0.72 {
+            return;
+        }
+        let promisee = commitments::guess_promisee(text_raw);
+        let source = if is_dm { "slack_dm" } else { "slack_channel" };
+        let cmt = commitments::build_commitment(
+            tenant_id,
+            subject,
+            promisee,
+            &summary,
+            source,
+            Some(channel),
+            vec![tag, format!("slack_ts:{ts}")],
+            conf,
+        );
+        list.push(cmt);
+        save_commitments(st, tenant_id, list);
+    }
+}
+
+#[derive(Deserialize)]
+struct CommitmentsQ {
+    status: Option<String>,
+    /// Filter: promiser subject contains this (employee "I owe")
+    i_owe: Option<String>,
+    /// Filter: promisee or text mentions (employee "owed to me") — soft
+    owed_to: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn list_commitments(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<CommitmentsQ>,
+) -> impl IntoResponse {
+    let status = q.status.as_deref().unwrap_or("open");
+    let limit = q.limit.unwrap_or(50).min(200);
+    let mut list = load_commitments(&st, &tenant_id);
+    if status != "all" {
+        list.retain(|c| c.status == status);
+    }
+    if let Some(ref who) = q.i_owe {
+        let w = who.to_ascii_lowercase();
+        list.retain(|c| {
+            c.promiser.to_ascii_lowercase().contains(&w)
+                || c.promiser.eq_ignore_ascii_case(who)
+        });
+    }
+    if let Some(ref who) = q.owed_to {
+        let w = who.to_ascii_lowercase();
+        list.retain(|c| {
+            c.promisee
+                .as_ref()
+                .map(|p| p.to_ascii_lowercase().contains(&w))
+                .unwrap_or(false)
+                || c.text.to_ascii_lowercase().contains(&w)
+        });
+    }
+    list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    list.truncate(limit);
+    let open_n = load_commitments(&st, &tenant_id)
+        .iter()
+        .filter(|c| c.status == "open")
+        .count();
+    Json(json!({
+        "tenant_id": tenant_id,
+        "open_count": open_n,
+        "count": list.len(),
+        "commitments": list.iter().map(|c| c.to_json()).collect::<Vec<_>>(),
+        "note": "Commitments = human promises from Slack ('I'll…') or explicit capture. Not Jira tickets. Mark done when finished, or we auto-detect done/shipped/sent in channel.",
+        "employee": {
+            "i_owe": "GET …/commitments?i_owe=neeljoshi18&status=open",
+            "owed_to_me": "GET …/commitments?owed_to=neeljoshi18&status=open",
+        },
+        "champion": "GET …/commitments?status=open — full team open loops",
+    }))
+}
+
+#[derive(Deserialize)]
+struct CommitmentCreateBody {
+    text: String,
+    promiser: Option<String>,
+    promisee: Option<String>,
+    channel: Option<String>,
+}
+
+async fn create_commitment(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(body): Json<CommitmentCreateBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let text = body.text.trim();
+    if text.len() < 4 {
+        return Err(ApiError::bad("text required (what was promised)"));
+    }
+    let promiser = body
+        .promiser
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "unknown".into());
+    // Prefer extract; fall back to raw text as commitment
+    let (summary, conf, tag) = commitments::extract_commitment(text)
+        .unwrap_or_else(|| (text.to_string(), 0.9, "source:explicit".into()));
+    let promisee = body.promisee.or_else(|| commitments::guess_promisee(text));
+    let cmt = commitments::build_commitment(
+        &tenant_id,
+        &promiser,
+        promisee,
+        &summary,
+        "explicit",
+        body.channel.as_deref(),
+        vec![tag, "capture:api".into()],
+        conf.max(0.9),
+    );
+    let mut list = load_commitments(&st, &tenant_id);
+    let id = cmt.id.clone();
+    let summary_log = summary.clone();
+    let json_out = cmt.to_json();
+    list.push(cmt);
+    save_commitments(&st, &tenant_id, list);
+    st.observer
+        .log(
+            &tenant_id,
+            "commitment_create",
+            &promiser,
+            json!({ "id": id, "text": summary_log }),
+        )
+        .await;
+    Ok(Json(json!({ "ok": true, "commitment": json_out })))
+}
+
+async fn complete_commitment(
+    State(st): State<AppState>,
+    Path((tenant_id, commitment_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    set_commitment_status(&st, &tenant_id, &commitment_id, "done").await
+}
+
+async fn dismiss_commitment(
+    State(st): State<AppState>,
+    Path((tenant_id, commitment_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    set_commitment_status(&st, &tenant_id, &commitment_id, "dismissed").await
+}
+
+async fn set_commitment_status(
+    st: &AppState,
+    tenant_id: &str,
+    commitment_id: &str,
+    status: &str,
+) -> Result<impl IntoResponse, ApiError> {
+    let mut list = load_commitments(st, tenant_id);
+    let mut found = false;
+    for c in &mut list {
+        if c.id == commitment_id {
+            c.status = status.into();
+            if status == "done" || status == "dismissed" {
+                c.resolved_at = Some(Utc::now().to_rfc3339());
+                c.resolve_evidence = Some(format!("human:{status}"));
+            }
+            found = true;
+        }
+    }
+    if !found {
+        return Err(ApiError::bad("commitment not found"));
+    }
+    save_commitments(st, tenant_id, list);
+    st.observer
+        .log(
+            tenant_id,
+            "commitment_status",
+            commitment_id,
+            json!({ "status": status }),
+        )
+        .await;
+    Ok(Json(json!({ "ok": true, "id": commitment_id, "status": status })))
+}
+
+async fn intent_insights_plain(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> impl IntoResponse {
+    let claims = collect_intent_ledger(&st, &tenant_id, false, true)
+        .await
+        .into_iter()
+        .map(|c| c.to_json())
+        .collect::<Vec<_>>();
+    let pulse = st
+        .last_pulse
+        .lock()
+        .get(&tenant_id)
+        .cloned()
+        .unwrap_or(json!({}));
+    let conflicts: Vec<serde_json::Value> = pulse
+        .pointer("/conflicts/cards")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(with_is_demo_tag)
+        .filter(|c| c.get("is_demo").and_then(|x| x.as_bool()) != Some(true))
+        .collect();
+    let cmts = load_commitments(&st, &tenant_id);
+    let commit_count = jfetch_commit_count_hint(&st, &tenant_id).await;
+    let people = st
+        .store
+        .list_twins(&tenant_id)
+        .await
+        .ok()
+        .map(|t| {
+            t.iter()
+                .filter(|x| x.twin_kind == TwinKind::Person && x.enabled)
+                .count()
+        });
+    let body = commitments::build_plain_insights(
+        &tenant_id,
+        &claims,
+        &conflicts,
+        &cmts,
+        commit_count,
+        people,
+    );
+    Json(body)
+}
+
+async fn jfetch_commit_count_hint(st: &AppState, tenant_id: &str) -> Option<u64> {
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    if v2.is_empty() {
+        return None;
+    }
+    // Cheap: use demo/status graph or snapshot stats via insights path is heavy — use pulse/graph if present
+    let _ = tenant_id;
+    // From last insights if we had cache — fall back to snapshot node count of type Commit
+    if let Some(snap) = fetch_v2_snapshot(st, tenant_id, 400, 100).await {
+        let n = snap
+            .get("nodes")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter(|n| n.get("type").and_then(|t| t.as_str()) == Some("Commit"))
+                    .count() as u64
+            })
+            .unwrap_or(0);
+        return Some(n);
+    }
+    None
+}
+
 async fn get_person_profile(
     State(st): State<AppState>,
     Path((tenant_id, subject_id)): Path<(String, String)>,
@@ -5993,6 +6355,34 @@ async fn slack_events(
                     }
                 }
             } else if is_channel || is_dm {
+                // Resolve subject once for claims + commitments
+                let maps = st.store.list_slack_maps(&tenant_id).await.unwrap_or_default();
+                let subject = maps
+                    .iter()
+                    .find(|m| m.slack_user_id == slack_uid)
+                    .map(|m| m.global_user_id.clone())
+                    .unwrap_or_else(|| {
+                        if slack_uid.is_empty() {
+                            "unknown".into()
+                        } else {
+                            format!("slack:{slack_uid}")
+                        }
+                    });
+                let channel_label = if is_dm {
+                    "dm".to_string()
+                } else {
+                    channel.to_string()
+                };
+                // ── Commitments: "I'll send…" open loops + "done/shipped" resolve ──
+                maybe_handle_commitment_from_slack(
+                    &st,
+                    &tenant_id,
+                    &subject,
+                    &text_raw,
+                    &channel_label,
+                    ts,
+                    is_dm,
+                );
                 // ── Intent claim capture (channels where bot is member; DM free-text) ──
                 let (itype, conf) = classify_slack_intent_text(&text_raw);
                 let keyword_hit = conf >= 0.7
@@ -6003,24 +6393,7 @@ async fn slack_events(
                     || text.contains("do not merge")
                     || text.contains("don't merge");
                 if keyword_hit {
-                    let maps = st.store.list_slack_maps(&tenant_id).await.unwrap_or_default();
-                    let subject = maps
-                        .iter()
-                        .find(|m| m.slack_user_id == slack_uid)
-                        .map(|m| m.global_user_id.clone())
-                        .unwrap_or_else(|| {
-                            if slack_uid.is_empty() {
-                                "unknown".into()
-                            } else {
-                                format!("slack:{slack_uid}")
-                            }
-                        });
                     let preview = truncate_preview(&text_raw, TEXT_PREVIEW_MAX);
-                    let channel_label = if is_dm {
-                        "dm".to_string()
-                    } else {
-                        channel.to_string()
-                    };
                     let claim = json!({
                         "at": Utc::now().to_rfc3339(),
                         "slack_user": slack_uid,

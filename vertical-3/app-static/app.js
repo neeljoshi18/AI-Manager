@@ -536,7 +536,9 @@ async function refreshCockpit() {
         `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=200&edge_limit=400&include_demo=false`
       ).catch(() => null),
     ]);
-    // Intent engine ledger (non-blocking for rest of cockpit)
+    // Insights + commitments + technical ledger (non-blocking)
+    loadPlainInsights().catch(() => {});
+    loadCommitments("team").catch(() => {});
     loadIntentLedger().catch(() => {});
 
     // Readiness
@@ -3282,6 +3284,167 @@ if ($("ck-intent-capture")) {
 }
 if ($("ck-intent-demo")) {
   $("ck-intent-demo").addEventListener("change", () => loadIntentLedger());
+}
+
+async function loadPlainInsights() {
+  const tenant = syncTenantFields(activeTenant());
+  const head = $("ck-insights-headline");
+  const act = $("ck-insights-act");
+  const watch = $("ck-insights-watch");
+  const wins = $("ck-insights-wins");
+  const how = $("ck-insights-how");
+  try {
+    const ins = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/intent/insights`
+    );
+    if (head) head.textContent = ins.headline || "—";
+    const renderList = (el, items, empty) => {
+      if (!el) return;
+      const arr = items || [];
+      if (!arr.length) {
+        el.innerHTML = `<p class="muted small">${esc(empty)}</p>`;
+        return;
+      }
+      el.innerHTML = `<ul class="item-list">${arr
+        .map((it) => {
+          const prio = it.priority === "high" ? "down" : it.priority === "info" ? "up" : "mid";
+          return `<li><span class="pill ${prio}">${esc(it.kind || "note")}</span> ${esc(it.text || "")}
+            <div class="muted small">${esc(it.action || "")}</div></li>`;
+        })
+        .join("")}</ul>`;
+    };
+    renderList(act, ins.act_on_today, "Nothing urgent right now.");
+    renderList(watch, ins.worth_watching, "Nothing on the watch list.");
+    renderList(wins, ins.good_news, "No trajectory notes yet.");
+    if (how && ins.how_we_read_signals) {
+      how.textContent = ins.how_we_read_signals.simple || "";
+    }
+  } catch (e) {
+    if (head) head.textContent = "Could not load insights: " + (e.message || e);
+  }
+}
+
+let __cmtMode = "team";
+async function loadCommitments(mode) {
+  if (mode) __cmtMode = mode;
+  const tenant = syncTenantFields(activeTenant());
+  const subject = $("ck-profile-subject")?.value?.trim() || "neeljoshi18";
+  let q = "status=open&limit=40";
+  if (__cmtMode === "mine") q += `&i_owe=${encodeURIComponent(subject)}`;
+  if (__cmtMode === "owed") q += `&owed_to=${encodeURIComponent(subject)}`;
+  const list = $("ck-cmt-list");
+  const stats = $("ck-cmt-stats");
+  const note = $("ck-cmt-note");
+  try {
+    const body = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/commitments?${q}`
+    );
+    if (stats) {
+      stats.innerHTML = [
+        `<span class="pill up">open: ${esc(String(body.open_count ?? 0))}</span>`,
+        `<span class="pill mid">shown: ${esc(String(body.count ?? 0))}</span>`,
+        `<span class="pill mid">view: ${esc(__cmtMode)}</span>`,
+      ].join(" ");
+    }
+    const rows = body.commitments || [];
+    if (list) {
+      if (!rows.length) {
+        list.innerHTML = `<li class="muted">No open commitments. Capture from Slack (“I'll…”) or Add commitment.</li>`;
+      } else {
+        list.innerHTML = rows
+          .map((c) => {
+            const id = c.id || "";
+            return `<li>
+              <strong>${esc(c.headline || c.text || "")}</strong>
+              <div class="muted small">${esc(c.promiser || "")}${c.promisee ? " → " + esc(c.promisee) : ""} · ${esc(c.source || "")}</div>
+              <div class="actions-inline" style="margin-top:0.25rem;">
+                <button type="button" class="ghost cmt-done" data-id="${esc(id)}">Mark done</button>
+                <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Dismiss</button>
+              </div>
+            </li>`;
+          })
+          .join("");
+        list.querySelectorAll(".cmt-done").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-id");
+            try {
+              await jfetch(
+                `/v3/tenants/${encodeURIComponent(tenant)}/commitments/${encodeURIComponent(id)}/done`,
+                { method: "POST", body: "{}" }
+              );
+              await loadCommitments();
+              await loadPlainInsights();
+            } catch (e) {
+              alert(e.message || e);
+            }
+          });
+        });
+        list.querySelectorAll(".cmt-dismiss").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-id");
+            try {
+              await jfetch(
+                `/v3/tenants/${encodeURIComponent(tenant)}/commitments/${encodeURIComponent(id)}/dismiss`,
+                { method: "POST", body: "{}" }
+              );
+              await loadCommitments();
+              await loadPlainInsights();
+            } catch (e) {
+              alert(e.message || e);
+            }
+          });
+        });
+      }
+    }
+    if (note) note.textContent = body.note || "";
+  } catch (e) {
+    if (stats) stats.innerHTML = `<span class="pill down">${esc(e.message || e)}</span>`;
+  }
+}
+
+async function addCommitmentUi() {
+  const tenant = syncTenantFields(activeTenant());
+  const text = window.prompt(
+    "What was promised? (plain English)\ne.g. I'll send the security write-up by Friday",
+    ""
+  );
+  if (text == null || !String(text).trim()) return;
+  const promiser =
+    window.prompt("Who promised? (github login / name)", $("ck-profile-subject")?.value || "neeljoshi18") ||
+    "unknown";
+  try {
+    await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/commitments`, {
+      method: "POST",
+      body: JSON.stringify({
+        text: String(text).trim(),
+        promiser: String(promiser).trim(),
+        channel: "champion_ui",
+      }),
+    });
+    await loadCommitments();
+    await loadPlainInsights();
+  } catch (e) {
+    alert("Add failed: " + (e.message || e));
+  }
+}
+
+if ($("ck-insights-refresh")) {
+  $("ck-insights-refresh").addEventListener("click", () => loadPlainInsights());
+}
+if ($("ck-cmt-refresh")) {
+  $("ck-cmt-refresh").addEventListener("click", () => loadCommitments());
+}
+if ($("ck-cmt-add")) {
+  $("ck-cmt-add").addEventListener("click", () => addCommitmentUi());
+}
+if ($("ck-cmt-mine")) {
+  $("ck-cmt-mine").addEventListener("click", () => loadCommitments("mine"));
+}
+if ($("ck-cmt-owed")) {
+  $("ck-cmt-owed").addEventListener("click", () => loadCommitments("owed"));
+}
+if ($("ck-cmt-team")) {
+  $("ck-cmt-team").addEventListener("click", () => loadCommitments("team"));
 }
 
 // Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)

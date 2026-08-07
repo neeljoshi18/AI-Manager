@@ -146,14 +146,49 @@
           <p class="muted small" id="ck-tomorrow-note">Suggestions merge with saved pins (tenant state). Champion role can pin; members see the board.</p>
         </div>
 
-        <div class="card" id="ck-intent-engine-card">
+        <div class="card" id="ck-insights-card">
           <div class="cockpit-card-h">
-            <h2 style="margin:0;">Intent engine</h2>
-            <span class="muted small">In-house claims · closed ontology · evidence required · conflicts first</span>
+            <h2 style="margin:0;">What needs attention</h2>
+            <span class="muted small">Plain English · act on today · no jargon</span>
+          </div>
+          <p class="muted small" id="ck-insights-headline" style="margin:0.4rem 0;font-weight:600;">Loading…</p>
+          <div id="ck-insights-act" class="item-list"></div>
+          <h3 class="graph-side-h" style="margin-top:0.75rem;">Worth watching</h3>
+          <div id="ck-insights-watch" class="item-list"></div>
+          <h3 class="graph-side-h" style="margin-top:0.75rem;">Good news</h3>
+          <div id="ck-insights-wins" class="item-list"></div>
+          <p class="muted small" id="ck-insights-how" style="margin-top:0.6rem;"></p>
+          <button type="button" id="ck-insights-refresh" class="ghost" style="margin-top:0.35rem;">Refresh insights</button>
+        </div>
+
+        <div class="card" id="ck-commitments-card">
+          <div class="cockpit-card-h">
+            <h2 style="margin:0;">Commitments</h2>
+            <span class="muted small">Who promised what · open loops · not Jira tickets</span>
           </div>
           <p class="muted small" style="margin:0.35rem 0 0.5rem;">
-            Typed purpose (SHIP / BLOCKED / FIX / …) — not LOC, not chat archive.
-            Engine proposes; humans ratify. Research: <code>plans/intent-research.md</code>.
+            When someone says “I’ll send…” we track it. When they say done/shipped/sent (or you mark done), it closes.
+            Champion sees the team; employees filter “I owe” vs “owed to me”.
+          </p>
+          <div class="meta-row" id="ck-cmt-stats" style="margin-bottom:0.5rem;"><span class="pill mid">…</span></div>
+          <div class="actions-inline" style="margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">
+            <button type="button" id="ck-cmt-refresh" class="primary">Refresh</button>
+            <button type="button" id="ck-cmt-add" class="ghost">Add commitment…</button>
+            <button type="button" id="ck-cmt-mine" class="ghost">I owe</button>
+            <button type="button" id="ck-cmt-owed" class="ghost">Owed to me</button>
+            <button type="button" id="ck-cmt-team" class="ghost">Team open</button>
+          </div>
+          <ul id="ck-cmt-list" class="item-list"><li class="muted">—</li></ul>
+          <p class="muted small" id="ck-cmt-note"></p>
+        </div>
+
+        <div class="card" id="ck-intent-engine-card">
+          <div class="cockpit-card-h">
+            <h2 style="margin:0;">Intent ledger (technical)</h2>
+            <span class="muted small">Under the hood · SHIP/BLOCKED tags · for debugging</span>
+          </div>
+          <p class="muted small" style="margin:0.35rem 0 0.5rem;">
+            Machine labels stay here. Champions should use <strong>What needs attention</strong> and <strong>Commitments</strong> above.
           </p>
           <div class="meta-row" id="ck-intent-stats" style="margin-bottom:0.5rem;"><span class="pill mid">loading ledger…</span></div>
           <div class="actions-inline" style="margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">

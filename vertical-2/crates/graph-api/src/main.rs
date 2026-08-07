@@ -498,9 +498,12 @@ async fn blockers(
 struct IntentsQ {
     user_id: String,
     limit: Option<usize>,
+    /// When true, include seed/demo intents. Default **false** (product / pilot-real).
+    include_demo: Option<bool>,
 }
 
 /// List Intent nodes visible to user (rules-classified claims).
+/// Each item carries `is_demo` (provenance). Demo-only nodes dropped unless `include_demo=true`.
 async fn list_intents(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
@@ -508,15 +511,44 @@ async fn list_intents(
 ) -> Result<impl IntoResponse, ApiError> {
     let ctx = ctx_for(&st, &tenant_id, &q.user_id).await?;
     let limit = q.limit.unwrap_or(100);
-    let intents = st
+    let include_demo = q.include_demo.unwrap_or(false);
+    // Fetch extra so demo filter still fills limit with organic when possible
+    let fetch = if include_demo {
+        limit
+    } else {
+        (limit.saturating_mul(2)).max(limit).min(500)
+    };
+    let raw = st
         .store
-        .list_nodes_by_type(&ctx, "Intent", limit)
+        .list_nodes_by_type(&ctx, "Intent", fetch)
         .await
         .map_err(ApiError::from)?;
+    let intents: Vec<_> = raw
+        .into_iter()
+        .filter(|n| include_demo || !graph_core::intent::node_is_demo(n))
+        .take(limit)
+        .map(|n| {
+            let is_demo = graph_core::intent::node_is_demo(&n);
+            json!({
+                "tenant_id": n.tenant_id,
+                "node_id": n.node_id,
+                "node_type": n.node_type,
+                "display_name": n.display_name,
+                "resource_id": n.resource_id,
+                "properties": n.properties,
+                "is_private": n.is_private,
+                "allowed_group_ids": n.allowed_group_ids,
+                "acl_version": n.acl_version,
+                "is_demo": is_demo,
+            })
+        })
+        .collect();
     Ok(Json(json!({
         "tenant_id": tenant_id,
         "count": intents.len(),
+        "include_demo": include_demo,
         "intents": intents,
+        "engine": "rules_v0",
     })))
 }
 
@@ -524,9 +556,12 @@ async fn list_intents(
 struct ConflictsQ {
     user_id: String,
     limit: Option<usize>,
+    /// When true, include demo-only conflict cards. Default **false** (product).
+    include_demo: Option<bool>,
 }
 
-/// Conflict detector v0: dual owners, SHIP vs FREEZE, BLOCKS, open BLOCKED intents.
+/// Conflict detector v0: dual owners, SHIP vs FREEZE, BLOCKS, open BLOCKED,
+/// plus organic MergeFriction / StaleReview / CiBlocked.
 async fn list_conflicts(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
@@ -534,6 +569,7 @@ async fn list_conflicts(
 ) -> Result<impl IntoResponse, ApiError> {
     let ctx = ctx_for(&st, &tenant_id, &q.user_id).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let include_demo = q.include_demo.unwrap_or(false);
     // Gather intent + work neighborhood via type lists + BLOCKS edges
     let intents = st
         .store
@@ -570,11 +606,17 @@ async fn list_conflicts(
     let mut edges = blocks;
     edges.extend(about);
     edges.extend(claims);
-    let mut cards = graph_core::intent::detect_conflicts(&tenant_id, &nodes, &edges, chrono::Utc::now());
+    let mut cards =
+        graph_core::intent::detect_conflicts(&tenant_id, &nodes, &edges, chrono::Utc::now());
+    // Drop theater-only cards unless explicitly requested (match graph snapshot pattern).
+    if !include_demo {
+        cards.retain(|c| !c.is_demo);
+    }
     cards.truncate(limit);
     Ok(Json(json!({
         "tenant_id": tenant_id,
         "count": cards.len(),
+        "include_demo": include_demo,
         "conflicts": cards,
         "engine": "rules_v0",
     })))
@@ -694,6 +736,9 @@ async fn seed_intent_demo(
             "about_node_id": pr,
             "owner_node_id": p1,
             "classified_by": "rules_v0",
+            "source": "seed",
+            "is_demo": true,
+            "seed": "intent_demo",
         }),
         is_private: false,
         allowed_group_ids: groups.clone(),
@@ -712,6 +757,9 @@ async fn seed_intent_demo(
             "about_node_id": pr,
             "owner_node_id": p2,
             "classified_by": "rules_v0",
+            "source": "seed",
+            "is_demo": true,
+            "seed": "intent_demo",
         }),
         is_private: false,
         allowed_group_ids: groups.clone(),
@@ -730,6 +778,9 @@ async fn seed_intent_demo(
             "about_node_id": pr,
             "owner_node_id": p1,
             "classified_by": "rules_v0",
+            "source": "seed",
+            "is_demo": true,
+            "seed": "intent_demo",
         }),
         is_private: false,
         allowed_group_ids: groups.clone(),
@@ -1187,6 +1238,9 @@ async fn seed_graph_story(
             "seed": "graph_story",
             "about_node_id": pr_nid,
             "owner_node_id": p1_id,
+            "classified_by": "rules_v0",
+            "source": "seed",
+            "is_demo": true,
         }),
         is_private: true,
         allowed_group_ids: groups.clone(),
@@ -1204,6 +1258,9 @@ async fn seed_graph_story(
             "seed": "graph_story",
             "about_node_id": pr_nid,
             "owner_node_id": p2_id,
+            "classified_by": "rules_v0",
+            "source": "seed",
+            "is_demo": true,
         }),
         is_private: true,
         allowed_group_ids: groups.clone(),
@@ -1221,6 +1278,9 @@ async fn seed_graph_story(
             "seed": "graph_story",
             "about_node_id": pr_nid,
             "owner_node_id": p1_id,
+            "classified_by": "rules_v0",
+            "source": "seed",
+            "is_demo": true,
         }),
         is_private: true,
         allowed_group_ids: groups.clone(),

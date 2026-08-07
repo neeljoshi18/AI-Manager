@@ -145,6 +145,23 @@
           </div>
           <p class="muted small" id="ck-tomorrow-note">Suggestions merge with saved pins (tenant state). Champion role can pin; members see the board.</p>
         </div>
+
+        <div class="card" id="ck-person-profile-card">
+          <div class="cockpit-card-h">
+            <h2 style="margin:0;">Person profile</h2>
+            <span class="muted small">Developer-evaluator view · facts + claims + follow-through · no rankings</span>
+          </div>
+          <div class="actions-inline" style="margin-top:0.35rem;flex-wrap:wrap;gap:0.4rem;">
+            <label class="muted small" for="ck-profile-subject">Subject</label>
+            <input type="text" id="ck-profile-subject" value="neeljoshi18" placeholder="github login / gu_* / twin id" style="min-width:12rem;" />
+            <button type="button" id="ck-profile-load" class="primary">Load profile</button>
+            <button type="button" id="ck-profile-follow" class="ghost">Follow-through only</button>
+          </div>
+          <p class="muted small" id="ck-profile-msg" style="margin:0.4rem 0 0;">
+            Channel intent claims appear only when the bot is invited to a team channel — not a private 1:1 wiretap.
+          </p>
+          <div id="ck-profile-body" class="profile-body" style="margin-top:0.75rem;"></div>
+        </div>
       </section>
 
       <!-- TODAY -->
@@ -553,9 +570,21 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <a class="primary linkbtn" href="/demo/">Open lab console →</a>
           <pre id="lab-raw" class="box small">{}</pre>
         </div>
+        <div class="card" style="margin-top:0.75rem;">
+          <h2>Person profile (shadow)</h2>
+          <p class="muted small">
+            Same API as Cockpit. Channel intents only when bot is in-channel; no silent private DM read.
+          </p>
+          <div class="actions-inline" style="flex-wrap:wrap;gap:0.4rem;">
+            <input type="text" id="lab-profile-subject" value="neeljoshi18" placeholder="subject" style="min-width:12rem;" />
+            <button type="button" id="lab-profile-load" class="primary">Fetch profile JSON</button>
+          </div>
+          <p class="muted small" id="lab-profile-msg"></p>
+          <pre id="lab-profile-raw" class="box small" style="max-height:420px;overflow:auto;">{}</pre>
+        </div>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260806c"></script>
+  <script src="/app/app.js?v=20260807a"></script>
 </body>
 </html>

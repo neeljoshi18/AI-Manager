@@ -595,6 +595,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/v3/tenants/{tenant_id}/conflicts", get(get_conflicts_proxy))
         .route("/v3/tenants/{tenant_id}/graph", get(get_graph_snapshot))
         .route(
+            "/v3/tenants/{tenant_id}/people/{subject_id}/profile",
+            get(get_person_profile),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/people/{subject_id}/follow_through",
+            get(get_follow_through),
+        )
+        .route(
             "/v3/tenants/{tenant_id}/insights/dev",
             get(dev_insights),
         )
@@ -1038,21 +1046,25 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
             .iter()
             .filter(|c| !json_looks_like_demo_seed(c))
             .cloned()
+            .map(with_is_demo_tag)
             .collect();
         let demo_conflicts: Vec<serde_json::Value> = all_conflict_cards
             .iter()
             .filter(|c| json_looks_like_demo_seed(c))
             .cloned()
+            .map(with_is_demo_tag)
             .collect();
         let live_intents: Vec<serde_json::Value> = all_intent_sample
             .iter()
             .filter(|i| !json_looks_like_demo_seed(i))
             .cloned()
+            .map(with_is_demo_tag)
             .collect();
         let demo_intents: Vec<serde_json::Value> = all_intent_sample
             .iter()
             .filter(|i| json_looks_like_demo_seed(i))
             .cloned()
+            .map(with_is_demo_tag)
             .collect();
         let conflict_count = live_conflicts.len() as u64;
         if conflict_count > 0 {
@@ -1081,7 +1093,7 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
                 "demo_count": demo_conflicts.len(),
                 "demo_cards": demo_conflicts,
                 "engine": "rules_v0",
-                "note": "Primary cards exclude intent_demo seed; demo_* fields keep Load intent demo visible",
+                "note": "Primary cards exclude intent_demo seed; demo_* fields keep Load intent demo visible; is_demo tags on cards",
             },
             "ingest": {
                 "v1_up": v1_health.is_some(),
@@ -1103,6 +1115,25 @@ fn json_looks_like_demo_seed(v: &serde_json::Value) -> bool {
         || blob.contains("intent_demo")
         || blob.contains("seed:intent_demo")
         || blob.contains("\"seed\":\"intent_demo\"")
+        || blob.contains("\"is_demo\":true")
+        || blob.contains("\"seed\":\"graph_story\"")
+}
+
+/// Tag a conflict/intent JSON value with `is_demo` for product consumers.
+fn with_is_demo_tag(mut v: serde_json::Value) -> serde_json::Value {
+    let is_demo = json_looks_like_demo_seed(&v)
+        || v.get("is_demo").and_then(|x| x.as_bool()).unwrap_or(false)
+        || v.pointer("/properties/seed")
+            .and_then(|x| x.as_str())
+            .map(|s| s.contains("demo") || s.contains("seed"))
+            .unwrap_or(false)
+        || v.pointer("/properties/is_demo")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("is_demo".into(), json!(is_demo));
+    }
+    v
 }
 
 fn urlencoding_simple(s: &str) -> String {
@@ -4548,6 +4579,977 @@ async fn slack_interactions(
     Ok(Json(json!({ "ok": true })))
 }
 
+// ─── Person profile + follow-through + Slack channel intent claims ─────────
+
+const SLACK_INTENT_CLAIMS_KV: &str = "slack_intent_claims";
+const SLACK_INTENT_CLAIMS_MAX: usize = 100;
+const TEXT_PREVIEW_MAX: usize = 280;
+
+/// Lightweight intent classifier mirroring vertical-2 graph-core rules (duplicated; no V2 dep).
+/// Returns (intent_type, confidence).
+fn classify_slack_intent_text(text: &str) -> (String, f32) {
+    let hay = text.to_ascii_lowercase();
+    let patterns: &[(&str, &str, f32)] = &[
+        ("blocked by", "BLOCKED", 0.9),
+        ("blocked on", "BLOCKED", 0.9),
+        ("waiting on", "BLOCKED", 0.8),
+        ("blocked:", "BLOCKED", 0.85),
+        ("[blocked]", "BLOCKED", 0.9),
+        ("i'm blocked", "BLOCKED", 0.9),
+        ("im blocked", "BLOCKED", 0.9),
+        ("code freeze", "FREEZE", 0.9),
+        ("do not merge", "FREEZE", 0.9),
+        ("don't merge", "FREEZE", 0.9),
+        ("donotmerge", "FREEZE", 0.9),
+        ("hold merge", "FREEZE", 0.8),
+        ("freeze ", "FREEZE", 0.75),
+        ("freeze:", "FREEZE", 0.8),
+        ("hotfix", "FIX", 0.85),
+        ("bugfix", "FIX", 0.85),
+        ("fix:", "FIX", 0.8),
+        ("fix ", "FIX", 0.7),
+        ("working on", "SHIP", 0.72),
+        ("ready to ship", "SHIP", 0.9),
+        ("ship ", "SHIP", 0.75),
+        ("shipping ", "SHIP", 0.75),
+        ("release ", "SHIP", 0.75),
+        ("deploy ", "SHIP", 0.7),
+        ("launch ", "SHIP", 0.7),
+        ("merge to main", "SHIP", 0.75),
+        ("feat:", "SHIP", 0.65),
+        ("feature:", "SHIP", 0.65),
+        ("spike:", "EXPLORE", 0.85),
+        ("spike ", "EXPLORE", 0.8),
+        ("poc:", "EXPLORE", 0.8),
+        ("explore ", "EXPLORE", 0.7),
+        ("research ", "EXPLORE", 0.7),
+        ("rfc:", "REVIEW", 0.85),
+        ("wip:", "EXPLORE", 0.6),
+        ("[wip]", "EXPLORE", 0.65),
+    ];
+    for (pat, ty, conf) in patterns {
+        if hay.contains(pat) {
+            return ((*ty).to_string(), *conf);
+        }
+    }
+    ("OTHER".into(), 0.25)
+}
+
+fn truncate_preview(text: &str, max: usize) -> String {
+    let t = text.trim();
+    if t.chars().count() <= max {
+        return t.to_string();
+    }
+    t.chars().take(max).collect::<String>() + "…"
+}
+
+fn is_slack_channel_message(ev: &serde_json::Value) -> bool {
+    let channel_type = ev
+        .get("channel_type")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if channel_type == "channel" || channel_type == "group" {
+        return true;
+    }
+    let channel = ev.get("channel").and_then(|c| c.as_str()).unwrap_or("");
+    channel.starts_with('C') || channel.starts_with('G')
+}
+
+fn is_slack_dm_message(ev: &serde_json::Value) -> bool {
+    let channel_type = ev
+        .get("channel_type")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if channel_type == "im" || channel_type == "mpim" {
+        return true;
+    }
+    let channel = ev.get("channel").and_then(|c| c.as_str()).unwrap_or("");
+    channel.starts_with('D')
+}
+
+/// Persist channel/DM intent claim to tenant_kv ring buffer (max 100).
+fn push_slack_intent_claim(st: &AppState, tenant_id: &str, claim: serde_json::Value) {
+    let Some(store) = &st.embedded_store else {
+        return;
+    };
+    let mut arr = store
+        .get_tenant_kv(tenant_id, SLACK_INTENT_CLAIMS_KV)
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    arr.push(claim);
+    if arr.len() > SLACK_INTENT_CLAIMS_MAX {
+        let drop_n = arr.len() - SLACK_INTENT_CLAIMS_MAX;
+        arr.drain(0..drop_n);
+    }
+    store.put_tenant_kv(tenant_id, SLACK_INTENT_CLAIMS_KV, serde_json::Value::Array(arr));
+    persist_embedded(st);
+}
+
+fn list_slack_intent_claims(st: &AppState, tenant_id: &str) -> Vec<serde_json::Value> {
+    st.embedded_store
+        .as_ref()
+        .and_then(|s| s.get_tenant_kv(tenant_id, SLACK_INTENT_CLAIMS_KV))
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedPerson {
+    subject_id: String,
+    twin_id: String,
+    display_name: String,
+    aliases: Vec<String>,
+    match_keys: Vec<String>,
+}
+
+/// Resolve github login, gu_*, or twin id → person twin flexibly.
+async fn resolve_person(
+    st: &AppState,
+    tenant_id: &str,
+    subject_raw: &str,
+) -> Result<ResolvedPerson, ApiError> {
+    let raw = urlencoding_decode(subject_raw).trim().to_string();
+    if raw.is_empty() {
+        return Err(ApiError::bad("subject_id required"));
+    }
+    let twins = st
+        .store
+        .list_twins(tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let maps = st
+        .store
+        .list_slack_maps(tenant_id)
+        .await
+        .map_err(ApiError::from)?;
+    let raw_l = raw.to_ascii_lowercase();
+    let mut candidates: Vec<ResolvedPerson> = Vec::new();
+    for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
+        let mut aliases: Vec<String> = t
+            .config_json
+            .get("provider_aliases")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Slack map rows sometimes carry login aliases under global_user_id
+        for m in maps.iter().filter(|m| m.global_user_id == t.subject_id) {
+            if !aliases.iter().any(|a| a == &m.global_user_id) {
+                aliases.push(m.global_user_id.clone());
+            }
+        }
+        let mut keys = vec![
+            t.subject_id.clone(),
+            t.twin_id.clone(),
+            t.display_name.clone(),
+        ];
+        keys.extend(aliases.iter().cloned());
+        candidates.push(ResolvedPerson {
+            subject_id: t.subject_id.clone(),
+            twin_id: t.twin_id.clone(),
+            display_name: t.display_name.clone(),
+            aliases: aliases.clone(),
+            match_keys: keys,
+        });
+    }
+    // Exact (case-insensitive) match on any key
+    if let Some(p) = candidates.iter().find(|p| {
+        p.match_keys
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(&raw) || k.to_ascii_lowercase() == raw_l)
+    }) {
+        return Ok(p.clone());
+    }
+    // twin:person:X form
+    if let Some(rest) = raw.strip_prefix("twin:person:") {
+        if let Some(p) = candidates
+            .iter()
+            .find(|p| p.subject_id.eq_ignore_ascii_case(rest))
+        {
+            return Ok(p.clone());
+        }
+    }
+    // Substring / github login contained in aliases or display
+    if let Some(p) = candidates.iter().find(|p| {
+        p.match_keys
+            .iter()
+            .any(|k| k.to_ascii_lowercase().contains(&raw_l) || raw_l.contains(&k.to_ascii_lowercase()))
+    }) {
+        return Ok(p.clone());
+    }
+    // Fabricate a synthetic person from the raw id (profile still useful for graph-only people)
+    let twin_id = if raw.starts_with("twin:") {
+        raw.clone()
+    } else {
+        person_twin_id(&raw)
+    };
+    Ok(ResolvedPerson {
+        subject_id: raw.clone(),
+        twin_id,
+        display_name: raw.clone(),
+        aliases: vec![raw.clone()],
+        match_keys: vec![raw],
+    })
+}
+
+fn person_matches_keys(person: &ResolvedPerson, hay: &str) -> bool {
+    if hay.is_empty() {
+        return false;
+    }
+    let h = hay.to_ascii_lowercase();
+    person.match_keys.iter().any(|k| {
+        let k = k.to_ascii_lowercase();
+        !k.is_empty() && (h == k || h.contains(&k) || k.contains(&h))
+    })
+}
+
+async fn fetch_v2_snapshot(
+    st: &AppState,
+    tenant_id: &str,
+    node_limit: usize,
+    edge_limit: usize,
+) -> Option<serde_json::Value> {
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    if v2.is_empty() {
+        return None;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .ok()?;
+    let _ = client
+        .post(format!("{v2}/v2/tenants/{tenant_id}/users"))
+        .json(&json!({
+            "global_user_id": "bridge_reader",
+            "groups": ["grp_eng", "grp_default"],
+        }))
+        .send()
+        .await;
+    let url = format!(
+        "{v2}/v2/tenants/{tenant_id}/snapshot?user_id=bridge_reader&node_limit={node_limit}&edge_limit={edge_limit}&include_demo=false"
+    );
+    let res = client.get(&url).send().await.ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    res.json().await.ok()
+}
+
+async fn fetch_v2_intents(st: &AppState, tenant_id: &str, reader: &str) -> Vec<serde_json::Value> {
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    if v2.is_empty() {
+        return Vec::new();
+    }
+    let url = format!(
+        "{v2}/v2/tenants/{tenant_id}/intents?user_id={}&limit=80",
+        urlencoding_simple(reader)
+    );
+    probe_json(&url)
+        .await
+        .and_then(|v| v.get("intents").and_then(|i| i.as_array()).cloned())
+        .unwrap_or_default()
+}
+
+fn intent_owner_matches(intent: &serde_json::Value, person: &ResolvedPerson) -> bool {
+    let props = intent.get("properties").cloned().unwrap_or(json!({}));
+    let owners = [
+        props
+            .get("owner_node_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+        intent
+            .get("owner_node_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+        intent
+            .get("owner")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+        intent
+            .get("label")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+        intent
+            .get("display_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+        intent.get("id").and_then(|x| x.as_str()).unwrap_or(""),
+        // graph node resource_id sometimes embeds login
+        intent
+            .get("resource_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+    ];
+    owners.iter().any(|o| person_matches_keys(person, o))
+        || json_looks_like_person_blob(intent, person)
+}
+
+fn json_looks_like_person_blob(v: &serde_json::Value, person: &ResolvedPerson) -> bool {
+    let blob = v.to_string().to_ascii_lowercase();
+    person
+        .match_keys
+        .iter()
+        .filter(|k| k.len() >= 3)
+        .any(|k| blob.contains(&k.to_ascii_lowercase()))
+}
+
+fn conflict_touches_person(c: &serde_json::Value, person: &ResolvedPerson) -> bool {
+    json_looks_like_person_blob(c, person)
+}
+
+fn parse_time_flex(s: &str) -> Option<chrono::DateTime<Utc>> {
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    // unix seconds
+    if let Ok(secs) = s.parse::<i64>() {
+        return chrono::DateTime::from_timestamp(secs, 0);
+    }
+    None
+}
+
+fn compute_follow_through_items(
+    person: &ResolvedPerson,
+    intents: &[serde_json::Value],
+    nodes: &[serde_json::Value],
+    edges: &[serde_json::Value],
+) -> (Vec<serde_json::Value>, String) {
+    let now = Utc::now();
+    let min_age = Duration::hours(24);
+    let abandon_age = Duration::hours(72);
+    let note = "Best-effort: non-demo intents older than ~24h; later AUTHORED/commit activity on about_node or matching resource → supported; FREEZE+later commits → contradicted; no signal after ~72h → abandoned; else unknown.";
+
+    // Person node ids from graph
+    let mut person_node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for n in nodes {
+        if n.get("type").and_then(|x| x.as_str()) != Some("Person")
+            && n.get("node_type").and_then(|x| x.as_str()) != Some("Person")
+        {
+            continue;
+        }
+        let id = n
+            .get("id")
+            .or_else(|| n.get("node_id"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let lab = n
+            .get("label")
+            .or_else(|| n.get("display_name"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if person_matches_keys(person, id) || person_matches_keys(person, lab) {
+            if !id.is_empty() {
+                person_node_ids.insert(id.to_string());
+            }
+        }
+    }
+
+    // Authored commit targets + times for this person
+    let mut authored_targets: Vec<(String, Option<chrono::DateTime<Utc>>)> = Vec::new();
+    for e in edges {
+        let et = e
+            .get("type")
+            .or_else(|| e.get("edge_type"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if et != "AUTHORED" && et != "PUSHED_TO" && et != "OPENED" && et != "MERGED" {
+            continue;
+        }
+        let from = e.get("from").or_else(|| e.get("from_node_id")).and_then(|x| x.as_str()).unwrap_or("");
+        let to = e.get("to").or_else(|| e.get("to_node_id")).and_then(|x| x.as_str()).unwrap_or("");
+        if !person_node_ids.contains(from) && !person_matches_keys(person, from) {
+            continue;
+        }
+        let t = e
+            .get("valid_from")
+            .and_then(|x| x.as_str())
+            .and_then(parse_time_flex);
+        authored_targets.push((to.to_string(), t));
+    }
+
+    // Commit messages for keyword reinforcement
+    let commit_msgs: Vec<String> = nodes
+        .iter()
+        .filter(|n| {
+            n.get("type").and_then(|x| x.as_str()) == Some("Commit")
+                || n.get("node_type").and_then(|x| x.as_str()) == Some("Commit")
+        })
+        .filter_map(|n| {
+            n.get("message")
+                .or_else(|| n.get("title"))
+                .or_else(|| n.pointer("/properties/message"))
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_ascii_lowercase())
+        })
+        .collect();
+
+    let mut items = Vec::new();
+    for intent in intents {
+        let is_demo = json_looks_like_demo_seed(intent)
+            || intent.get("is_demo").and_then(|x| x.as_bool()).unwrap_or(false);
+        if is_demo {
+            continue;
+        }
+        if !intent_owner_matches(intent, person) {
+            continue;
+        }
+        let props = intent.get("properties").cloned().unwrap_or(json!({}));
+        let itype = props
+            .get("intent_type")
+            .or_else(|| intent.get("intent_type"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("OTHER");
+        let summary = intent
+            .get("display_name")
+            .or_else(|| intent.get("label"))
+            .or_else(|| intent.get("title"))
+            .or_else(|| props.get("summary"))
+            .and_then(|x| x.as_str())
+            .unwrap_or(itype)
+            .to_string();
+        let about = props
+            .get("about_node_id")
+            .or_else(|| intent.get("about_node_id"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let intent_at = props
+            .get("stated_at")
+            .or_else(|| props.get("created_at"))
+            .or_else(|| intent.get("created_at"))
+            .or_else(|| intent.get("valid_from"))
+            .and_then(|x| x.as_str())
+            .and_then(parse_time_flex);
+        // Require ~24h age when we have a timestamp; if unknown, still evaluate as unknown-capable
+        if let Some(at) = intent_at {
+            if now.signed_duration_since(at) < min_age {
+                continue; // too fresh
+            }
+        }
+        // Later activity signals
+        let later: Vec<&(String, Option<chrono::DateTime<Utc>>)> = authored_targets
+            .iter()
+            .filter(|(tgt, t)| {
+                let about_hit = !about.is_empty()
+                    && (tgt == &about || tgt.contains(&about) || about.contains(tgt.as_str()));
+                let time_ok = match (intent_at, t) {
+                    (Some(ia), Some(tt)) => *tt > ia,
+                    (Some(_), None) => true,
+                    (None, _) => true,
+                };
+                time_ok && (about_hit || !about.is_empty() && about_hit)
+            })
+            .collect();
+        // Broader: any later authored by person after intent
+        let any_later = authored_targets.iter().any(|(_, t)| match (intent_at, t) {
+            (Some(ia), Some(tt)) => *tt > ia,
+            _ => false,
+        });
+        let summary_l = summary.to_ascii_lowercase();
+        let msg_hit = commit_msgs.iter().any(|m| {
+            summary_l
+                .split_whitespace()
+                .filter(|w| w.len() > 4)
+                .take(4)
+                .any(|w| m.contains(w))
+        });
+
+        let status = match itype {
+            "SHIP" | "FIX" | "EXPLORE" => {
+                if !later.is_empty() || msg_hit {
+                    "supported"
+                } else if intent_at
+                    .map(|at| now.signed_duration_since(at) >= abandon_age)
+                    .unwrap_or(false)
+                    && !any_later
+                {
+                    "abandoned"
+                } else if any_later {
+                    "supported"
+                } else {
+                    "unknown"
+                }
+            }
+            "FREEZE" => {
+                if !later.is_empty() || (any_later && msg_hit) {
+                    "contradicted"
+                } else if intent_at
+                    .map(|at| now.signed_duration_since(at) >= abandon_age)
+                    .unwrap_or(false)
+                {
+                    "supported" // freeze held — no contradictory commits found
+                } else {
+                    "unknown"
+                }
+            }
+            "BLOCKED" => {
+                if any_later || msg_hit {
+                    "supported" // activity after blocked claim (unblocking work)
+                } else if intent_at
+                    .map(|at| now.signed_duration_since(at) >= abandon_age)
+                    .unwrap_or(false)
+                {
+                    "abandoned"
+                } else {
+                    "unknown"
+                }
+            }
+            _ => "unknown",
+        };
+
+        items.push(json!({
+            "intent_id": intent.get("id").or_else(|| intent.get("node_id")),
+            "intent_type": itype,
+            "said_or_implied": summary,
+            "about_node_id": if about.is_empty() { serde_json::Value::Null } else { json!(about) },
+            "intent_at": intent_at.map(|t| t.to_rfc3339()),
+            "later_signal": {
+                "authored_hits": later.len(),
+                "any_later_activity": any_later,
+                "commit_message_overlap": msg_hit,
+            },
+            "status": status,
+            "is_demo": false,
+            "gap": match status {
+                "unknown" => "Insufficient graph linkage between claim and later work",
+                "abandoned" => "No supporting activity found after claim aged out",
+                "contradicted" => "Later activity conflicts with FREEZE/hold claim",
+                "supported" => "Later commits/PRs align with claim",
+                _ => "",
+            },
+        }));
+    }
+    items.truncate(40);
+    (items, note.to_string())
+}
+
+async fn build_follow_through(
+    st: &AppState,
+    tenant_id: &str,
+    person: &ResolvedPerson,
+) -> serde_json::Value {
+    let reader = person.subject_id.clone();
+    let mut intents = fetch_v2_intents(st, tenant_id, &reader).await;
+    let snap = fetch_v2_snapshot(st, tenant_id, 800, 2000).await;
+    let nodes = snap
+        .as_ref()
+        .and_then(|s| s.get("nodes"))
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let edges = snap
+        .as_ref()
+        .and_then(|s| s.get("edges"))
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if intents.is_empty() {
+        // Fallback: Intent nodes from snapshot owned by person
+        intents = nodes
+            .iter()
+            .filter(|n| {
+                n.get("type").and_then(|x| x.as_str()) == Some("Intent")
+                    || n.get("node_type").and_then(|x| x.as_str()) == Some("Intent")
+            })
+            .filter(|n| intent_owner_matches(n, person))
+            .cloned()
+            .collect();
+    }
+    // Also fold in slack_intent_claims older than 24h as soft claims
+    let claims = list_slack_intent_claims(st, tenant_id);
+    for c in claims {
+        let sub = c.get("subject").and_then(|x| x.as_str()).unwrap_or("");
+        if !person_matches_keys(person, sub) {
+            continue;
+        }
+        let at = c.get("at").and_then(|x| x.as_str()).unwrap_or("");
+        if let Some(dt) = parse_time_flex(at) {
+            if Utc::now().signed_duration_since(dt) < Duration::hours(24) {
+                continue;
+            }
+        }
+        intents.push(json!({
+            "id": format!("slack_claim:{}", c.get("ts").and_then(|x| x.as_str()).unwrap_or("?")),
+            "display_name": c.get("text_preview").cloned().unwrap_or(json!("")),
+            "intent_type": c.get("intent_type").cloned().unwrap_or(json!("OTHER")),
+            "properties": {
+                "intent_type": c.get("intent_type"),
+                "stated_at": c.get("at"),
+                "source": "slack_intent_claim",
+                "confidence": c.get("confidence"),
+            },
+            "is_demo": false,
+        }));
+    }
+    let (items, note) = compute_follow_through_items(person, &intents, &nodes, &edges);
+    json!({
+        "tenant_id": tenant_id,
+        "subject_id": person.subject_id,
+        "twin_id": person.twin_id,
+        "count": items.len(),
+        "items": items,
+        "note": note,
+    })
+}
+
+async fn get_follow_through(
+    State(st): State<AppState>,
+    Path((tenant_id, subject_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let person = resolve_person(&st, &tenant_id, &subject_id).await?;
+    Ok(Json(build_follow_through(&st, &tenant_id, &person).await))
+}
+
+async fn get_person_profile(
+    State(st): State<AppState>,
+    Path((tenant_id, subject_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let person = resolve_person(&st, &tenant_id, &subject_id).await?;
+    let as_of = Utc::now();
+
+    // Digests for twin
+    let drafts = st
+        .store
+        .list_drafts_for_twin(&tenant_id, &person.twin_id)
+        .await
+        .unwrap_or_default();
+    let digests: Vec<serde_json::Value> = drafts
+        .iter()
+        .take(5)
+        .map(|d| {
+            json!({
+                "draft_id": d.draft_id,
+                "ledger_id": d.ledger_id,
+                "status": d.status.as_str(),
+                "updated_at": d.updated_at,
+                "created_at": d.created_at,
+                "preview": d.draft_text.chars().take(400).collect::<String>(),
+                "draft_text": d.draft_text,
+            })
+        })
+        .collect();
+
+    // Insights (work surface + cadence) — filter to person
+    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+    let snap = fetch_v2_snapshot(&st, &tenant_id, 800, 2000).await;
+    let nodes = snap
+        .as_ref()
+        .and_then(|s| s.get("nodes"))
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let edges = snap
+        .as_ref()
+        .and_then(|s| s.get("edges"))
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut person_node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for n in &nodes {
+        let ty = n
+            .get("type")
+            .or_else(|| n.get("node_type"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if ty != "Person" {
+            continue;
+        }
+        let id = n
+            .get("id")
+            .or_else(|| n.get("node_id"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let lab = n
+            .get("label")
+            .or_else(|| n.get("display_name"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if person_matches_keys(&person, id) || person_matches_keys(&person, lab) {
+            if !id.is_empty() {
+                person_node_ids.insert(id.to_string());
+            }
+        }
+    }
+
+    // Repos via resource_id / repo labels on commits authored by person
+    let authored_commit_ids: std::collections::HashSet<String> = edges
+        .iter()
+        .filter(|e| {
+            e.get("type").or_else(|| e.get("edge_type")).and_then(|x| x.as_str()) == Some("AUTHORED")
+        })
+        .filter(|e| {
+            let from = e
+                .get("from")
+                .or_else(|| e.get("from_node_id"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            person_node_ids.contains(from) || person_matches_keys(&person, from)
+        })
+        .filter_map(|e| {
+            e.get("to")
+                .or_else(|| e.get("to_node_id"))
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    let mut repos: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut commit_sample: Vec<serde_json::Value> = Vec::new();
+    let mut hour_hist = vec![0u64; 24];
+    for e in &edges {
+        let et = e
+            .get("type")
+            .or_else(|| e.get("edge_type"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if et != "AUTHORED" && et != "PUSHED_TO" {
+            continue;
+        }
+        let from = e
+            .get("from")
+            .or_else(|| e.get("from_node_id"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if !(person_node_ids.contains(from) || person_matches_keys(&person, from)) {
+            continue;
+        }
+        if let Some(vf) = e.get("valid_from").and_then(|x| x.as_str()) {
+            if let Some(dt) = parse_time_flex(vf) {
+                hour_hist[dt.hour() as usize] += 1;
+            }
+        }
+    }
+    for n in &nodes {
+        let ty = n
+            .get("type")
+            .or_else(|| n.get("node_type"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let id = n
+            .get("id")
+            .or_else(|| n.get("node_id"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if ty == "Commit" && (authored_commit_ids.contains(id) || authored_commit_ids.is_empty()) {
+            // If we have authored set, require membership; if empty person nodes, fall back to label match in blob
+            if !authored_commit_ids.is_empty() && !authored_commit_ids.contains(id) {
+                continue;
+            }
+            if authored_commit_ids.is_empty() && !json_looks_like_person_blob(n, &person) {
+                continue;
+            }
+            let rid = n
+                .get("resource_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !rid.is_empty() {
+                // resource like repo@sha or org/repo
+                let repo = rid.split('@').next().unwrap_or(&rid).to_string();
+                if repo.contains('/') {
+                    *repos.entry(repo).or_insert(0) += 1;
+                }
+            }
+            let msg = n
+                .get("message")
+                .or_else(|| n.get("title"))
+                .or_else(|| n.pointer("/properties/message"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            commit_sample.push(json!({
+                "id": id,
+                "sha7": n.get("label").or_else(|| n.get("display_name")),
+                "message": msg,
+                "resource_id": n.get("resource_id"),
+            }));
+        }
+        if ty == "Repository" || ty == "Repo" {
+            let lab = n
+                .get("label")
+                .or_else(|| n.get("display_name"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if !lab.is_empty() && repos.contains_key(lab) {
+                // already counted
+            }
+        }
+    }
+    // Prefer commits with messages
+    commit_sample.sort_by(|a, b| {
+        let am = a.get("message").and_then(|x| x.as_str()).unwrap_or("").len();
+        let bm = b.get("message").and_then(|x| x.as_str()).unwrap_or("").len();
+        bm.cmp(&am)
+    });
+    commit_sample.truncate(25);
+    let repo_list: Vec<serde_json::Value> = repos
+        .iter()
+        .map(|(k, v)| json!({ "repo": k, "commit_touches": v }))
+        .collect();
+    let (peak_hour, peak_n) = hour_hist
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, n)| *n)
+        .map(|(h, n)| (h, *n))
+        .unwrap_or((0, 0));
+
+    // Intents
+    let reader = person.subject_id.as_str();
+    let mut intents_raw = fetch_v2_intents(&st, &tenant_id, reader).await;
+    if intents_raw.is_empty() {
+        intents_raw = nodes
+            .iter()
+            .filter(|n| {
+                n.get("type").and_then(|x| x.as_str()) == Some("Intent")
+                    || n.get("node_type").and_then(|x| x.as_str()) == Some("Intent")
+            })
+            .cloned()
+            .collect();
+    }
+    let intents: Vec<serde_json::Value> = intents_raw
+        .into_iter()
+        .filter(|i| intent_owner_matches(i, &person) || json_looks_like_person_blob(i, &person))
+        .map(|i| {
+            let mut tagged = with_is_demo_tag(i);
+            if let Some(obj) = tagged.as_object_mut() {
+                let itype = obj
+                    .get("properties")
+                    .and_then(|p| p.get("intent_type"))
+                    .or_else(|| obj.get("intent_type"))
+                    .cloned()
+                    .unwrap_or(json!("OTHER"));
+                obj.insert("intent_type".into(), itype);
+            }
+            tagged
+        })
+        .collect();
+
+    // Conflicts from pulse cache
+    let pulse = st.last_pulse.lock().get(&tenant_id).cloned();
+    if pulse.is_none() {
+        let _ = run_thin_monitors(&st).await;
+    }
+    let pulse = st
+        .last_pulse
+        .lock()
+        .get(&tenant_id)
+        .cloned()
+        .unwrap_or(json!({}));
+    let mut conflict_cards: Vec<serde_json::Value> = pulse
+        .pointer("/conflicts/cards")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let demo_cards: Vec<serde_json::Value> = pulse
+        .pointer("/conflicts/demo_cards")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    conflict_cards.extend(demo_cards);
+    let conflicts_touching: Vec<serde_json::Value> = conflict_cards
+        .into_iter()
+        .filter(|c| conflict_touches_person(c, &person))
+        .map(with_is_demo_tag)
+        .collect();
+
+    let follow = build_follow_through(&st, &tenant_id, &person).await;
+
+    // Slack intent claims for this person
+    let slack_claims: Vec<serde_json::Value> = list_slack_intent_claims(&st, &tenant_id)
+        .into_iter()
+        .filter(|c| {
+            let sub = c.get("subject").and_then(|x| x.as_str()).unwrap_or("");
+            person_matches_keys(&person, sub)
+                || c.get("slack_user")
+                    .and_then(|x| x.as_str())
+                    .map(|s| !s.is_empty() && person_matches_keys(&person, s))
+                    .unwrap_or(false)
+        })
+        .rev()
+        .take(30)
+        .collect();
+
+    // confidence heuristic
+    let mut conf = 0.15_f64;
+    if !person_node_ids.is_empty() {
+        conf += 0.15;
+    }
+    if !commit_sample.is_empty() {
+        conf += 0.2;
+    }
+    if !digests.is_empty() {
+        conf += 0.15;
+    }
+    if intents.iter().any(|i| i.get("is_demo") != Some(&json!(true))) {
+        conf += 0.15;
+    }
+    if !slack_claims.is_empty() {
+        conf += 0.15;
+    }
+    if peak_n > 0 {
+        conf += 0.05;
+    }
+    conf = conf.min(0.95);
+
+    let what_we_cannot_know = json!([
+        "Private 1:1 DMs (no silent wiretap — only bot DMs the person initiates / digest replies)",
+        "Full Slack channel history unless messages were ingested while the bot was a channel member",
+        "Linear/Jira/ticket systems (not connected in this pilot)",
+        "Code review private notes and offline conversations",
+        "Calendar / meeting content",
+        "True goals or preferences not stated as claims or visible as work exhaust",
+        "Productivity rankings or LOC-based performance scores (doctrine: never)",
+    ]);
+
+    let _ = v2; // reserved for future V2 project post
+
+    Ok(Json(json!({
+        "tenant_id": tenant_id,
+        "subject": {
+            "subject_id": person.subject_id,
+            "twin_id": person.twin_id,
+            "display_name": person.display_name,
+            "aliases": person.aliases,
+            "resolved_from": subject_id,
+            "graph_person_node_ids": person_node_ids.iter().cloned().collect::<Vec<_>>(),
+        },
+        "as_of": as_of.to_rfc3339(),
+        "work_surface": {
+            "repos": repo_list,
+            "commit_sample": commit_sample,
+            "authored_commit_count": authored_commit_ids.len(),
+        },
+        "cadence": {
+            "peak_hour_utc": peak_hour,
+            "peak_count": peak_n,
+            "hour_of_day_utc": hour_hist,
+            "notes": if peak_n > 0 {
+                format!("Most active hour (UTC) for this person: {peak_hour:02}:00 ({peak_n} edge events). Not a ranking.")
+            } else {
+                "Insufficient person-scoped activity edges for cadence.".into()
+            },
+        },
+        "digests": {
+            "count": digests.len(),
+            "latest": digests,
+        },
+        "intents": intents,
+        "conflicts_touching": conflicts_touching,
+        "follow_through": follow,
+        "slack_intent_claims": slack_claims,
+        "confidence_overall": conf,
+        "what_we_cannot_know": what_we_cannot_know,
+        "doctrine": "Slack = delivery + opt-in team channel truth (bot must be invited). GitHub = work. Intent = typed claim with evidence, not chat archive. No LOC rankings. No silent 1:1 DM wiretap.",
+        "note": "Developer-evaluator profile from live V3 digests + V2 graph/intents/pulse + slack_intent_claims. Demo intents/conflicts tagged is_demo.",
+    })))
+}
+
 async fn slack_events(
     State(st): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -4556,25 +5558,32 @@ async fn slack_events(
     if body.get("type").and_then(|t| t.as_str()) == Some("url_verification") {
         return Json(json!({ "challenge": body.get("challenge") }));
     }
-    // Plain-text DM: user types "approve" / "don't send" (no Block Kit buttons required)
+    // Plain-text DM: approve / don't send; channel/DM free text → intent claims
     if body.get("type").and_then(|t| t.as_str()) == Some("event_callback") {
         let ev = body.get("event").cloned().unwrap_or(json!({}));
         let et = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let subtype = ev.get("subtype").and_then(|t| t.as_str()).unwrap_or("");
-        // Ignore bot messages
-        if et == "message" && subtype.is_empty() && ev.get("bot_id").is_none() {
-            let text = ev
+        // Ignore bot messages + message edits/joins (prefer plain messages)
+        let ignore_sub = !subtype.is_empty()
+            && subtype != "file_share"
+            && subtype != "thread_broadcast";
+        if et == "message" && !ignore_sub && ev.get("bot_id").is_none() {
+            let text_raw = ev
                 .get("text")
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .trim()
-                .to_ascii_lowercase();
-            let slack_uid = ev
-                .get("user")
-                .and_then(|u| u.as_str())
-                .unwrap_or("");
+                .to_string();
+            let text = text_raw.to_ascii_lowercase();
+            let slack_uid = ev.get("user").and_then(|u| u.as_str()).unwrap_or("");
+            let channel = ev.get("channel").and_then(|c| c.as_str()).unwrap_or("");
+            let ts = ev.get("ts").and_then(|t| t.as_str()).unwrap_or("");
             let tenant_id =
                 std::env::var("DEFAULT_TENANT_ID").unwrap_or_else(|_| "ten_github".into());
+            let is_dm = is_slack_dm_message(&ev);
+            let is_channel = is_slack_channel_message(&ev);
+
+            // ── Approve / don't send (DM path — keep working) ──
             let action = if text == "approve"
                 || text == "a"
                 || text.starts_with("approve ")
@@ -4592,9 +5601,9 @@ async fn slack_events(
                 None
             };
             if let Some(act) = action {
+                // Prefer DM; still honor if typed elsewhere for back-compat
                 if let Ok(maps) = st.store.list_slack_maps(&tenant_id).await {
                     if let Some(m) = maps.iter().find(|m| m.slack_user_id == slack_uid) {
-                        // Find person twin for this subject
                         let twin_id = person_twin_id(&m.global_user_id);
                         if let Ok(Some(twin)) = st.store.get_twin(&tenant_id, &twin_id).await {
                             if let Ok(drafts) =
@@ -4643,6 +5652,95 @@ async fn slack_events(
                                     persist_embedded(&st);
                                 }
                             }
+                        }
+                    }
+                }
+            } else if is_channel || is_dm {
+                // ── Intent claim capture (channels where bot is member; DM free-text) ──
+                let (itype, conf) = classify_slack_intent_text(&text_raw);
+                let keyword_hit = conf >= 0.7
+                    || text.contains("blocked on")
+                    || text.contains("working on")
+                    || text.contains("freeze")
+                    || text.contains("ready to ship")
+                    || text.contains("do not merge")
+                    || text.contains("don't merge");
+                if keyword_hit {
+                    let maps = st.store.list_slack_maps(&tenant_id).await.unwrap_or_default();
+                    let subject = maps
+                        .iter()
+                        .find(|m| m.slack_user_id == slack_uid)
+                        .map(|m| m.global_user_id.clone())
+                        .unwrap_or_else(|| {
+                            if slack_uid.is_empty() {
+                                "unknown".into()
+                            } else {
+                                format!("slack:{slack_uid}")
+                            }
+                        });
+                    let preview = truncate_preview(&text_raw, TEXT_PREVIEW_MAX);
+                    let channel_label = if is_dm {
+                        "dm".to_string()
+                    } else {
+                        channel.to_string()
+                    };
+                    let claim = json!({
+                        "at": Utc::now().to_rfc3339(),
+                        "slack_user": slack_uid,
+                        "subject": subject,
+                        "text_preview": preview,
+                        "intent_type": itype.clone(),
+                        "channel": channel_label,
+                        "ts": ts,
+                        "confidence": conf,
+                        "source": if is_dm { "slack_dm" } else { "slack_channel" },
+                    });
+                    st.observer
+                        .log(
+                            &tenant_id,
+                            "slack_intent",
+                            &subject,
+                            claim.clone(),
+                        )
+                        .await;
+                    push_slack_intent_claim(&st, &tenant_id, claim);
+                    // Optional lightweight V2 project (best-effort; KV is source of truth for profile)
+                    let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+                    if !v2.is_empty() && conf >= 0.75 {
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(5))
+                            .build();
+                        if let Ok(client) = client {
+                            let event_id = format!(
+                                "slack-intent-{}-{}",
+                                channel_label,
+                                ts.replace('.', "_")
+                            );
+                            let intent_node_id = format!("intent:slack:{event_id}");
+                            let _ = client
+                                .post(format!("{v2}/v2/project"))
+                                .json(&json!({
+                                    "tenant_id": tenant_id,
+                                    "event_id": event_id,
+                                    "event_type": "intent.stated",
+                                    "provider": "slack",
+                                    "occurred_at": Utc::now().to_rfc3339(),
+                                    "actor": { "provider_user_id": subject },
+                                    "resource": {
+                                        "kind": "intent",
+                                        "provider_id": intent_node_id,
+                                        "title": format!("{itype}: {preview}"),
+                                    },
+                                    "payload": {
+                                        "intent_type": itype,
+                                        "confidence": conf,
+                                        "source": "slack_channel_claim",
+                                        "text_preview": preview,
+                                        "channel": channel_label,
+                                    },
+                                }))
+                                .send()
+                                .await;
                         }
                     }
                 }

@@ -33,8 +33,16 @@ Keep **`DELIVERY_ADAPTER=slack`** (default) unless the tenant explicitly wants T
 |------|--------|
 | Manifest | `slack-app-manifest.json` |
 | Token storage | **Only** `vertical-security/secrets/dev_secrets.json` key `SLACK_BOT_TOKEN` (ADR-012) |
-| Scopes | `chat:write`, `im:write`, `users:read` (outbound status DMs); events later for channel ingest (M6) |
+| Scopes | `chat:write`, `im:write`, `im:history`, `users:read` (DMs) + `channels:history`, `channels:read`, `groups:history`, `groups:read` (opt-in channel intent) |
+| Events | `message.im` (approve / don't send + DM free-text claims) · `message.channels` / `message.groups` (channel intent claims) |
 | Install flow | UI button → Slack OAuth → store bot token in egress vault → twin uses `USE_EGRESS_SLACK` |
+
+### Channel intent (opt-in team truth — not private wiretap)
+
+- **Bot must be invited** to a public/private channel before channel messages are visible to the Events API.
+- Twin-api classifies high-confidence phrases (`blocked on`, `working on`, `freeze`, `ready to ship`, …) into typed **intent claims** (preview ≤280 chars) — not a full chat archive.
+- Stored as tenant_kv `slack_intent_claims` + observer kind `slack_intent`; surfaces on person profile / follow-through.
+- **No silent 1:1 wiretap:** private human↔human DMs are never read. Only (1) bot DMs for digest approve/veto + explicit free-text claims, and (2) channels where the bot is a member.
 
 ### Human steps when secrets are ready
 

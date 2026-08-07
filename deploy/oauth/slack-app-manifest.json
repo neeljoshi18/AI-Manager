@@ -16,7 +16,11 @@
         "chat:write",
         "im:write",
         "im:history",
-        "users:read"
+        "users:read",
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read"
       ]
     },
     "redirect_urls": [
@@ -34,7 +38,9 @@
     "event_subscriptions": {
       "request_url": "https://status.neel.world/v3/slack/events",
       "bot_events": [
-        "message.im"
+        "message.im",
+        "message.channels",
+        "message.groups"
       ]
     }
   }

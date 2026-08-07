@@ -116,6 +116,9 @@ function showView(name) {
   } else {
     stopGraphLive();
   }
+  if (name === "lab") {
+    /* profile load is explicit */
+  }
   const t = titles[name] || ["AI Manager", ""];
   $("view-title").textContent = t[0];
   $("view-sub").textContent = t[1];
@@ -2957,6 +2960,224 @@ if ($("btn-seed-story")) {
     }
   });
 }
+// ─── Person profile (Cockpit + Lab) ─────────────────────────────────────────
+
+function profileSubject() {
+  return (
+    $("ck-profile-subject")?.value?.trim() ||
+    $("lab-profile-subject")?.value?.trim() ||
+    "neeljoshi18"
+  );
+}
+
+function renderPersonProfile(p, hostEl) {
+  if (!hostEl || !p) return;
+  const sub = p.subject || {};
+  const ws = p.work_surface || {};
+  const cadence = p.cadence || {};
+  const digests = p.digests?.latest || [];
+  const intents = p.intents || [];
+  const conflicts = p.conflicts_touching || [];
+  const ftItems = p.follow_through?.items || [];
+  const claims = p.slack_intent_claims || [];
+  const unknown = p.what_we_cannot_know || [];
+
+  const repos = (ws.repos || [])
+    .slice(0, 12)
+    .map((r) => `<li><strong>${esc(r.repo || r)}</strong> <span class="muted small">${esc(String(r.commit_touches ?? ""))}</span></li>`)
+    .join("") || `<li class="muted">No repos linked yet</li>`;
+  const commits = (ws.commit_sample || [])
+    .slice(0, 8)
+    .map(
+      (c) =>
+        `<li><code>${esc(c.sha7 || c.id || "?")}</code> ${esc((c.message || "").slice(0, 90))}</li>`
+    )
+    .join("") || `<li class="muted">No commit sample</li>`;
+  const digHtml = digests.length
+    ? digests
+        .slice(0, 3)
+        .map(
+          (d) =>
+            `<li><span class="pill mid">${esc(d.status || "")}</span> <pre class="box small" style="white-space:pre-wrap;max-height:120px;overflow:auto;margin:0.25rem 0 0;">${esc((d.preview || d.draft_text || "").slice(0, 500))}</pre></li>`
+        )
+        .join("")
+    : `<li class="muted">No digests for this twin yet — compile digests first</li>`;
+  const intentHtml = intents.length
+    ? intents
+        .slice(0, 12)
+        .map((i) => {
+          const ty = i.intent_type || i.properties?.intent_type || "Intent";
+          const lab = i.display_name || i.label || i.title || i.id || "";
+          const demo = i.is_demo ? ` <span class="pill mid">demo</span>` : "";
+          return `<li><strong>${esc(ty)}</strong> ${esc(lab)}${demo}</li>`;
+        })
+        .join("")
+    : `<li class="muted">No person-owned intents</li>`;
+  const confHtml = conflicts.length
+    ? conflicts
+        .slice(0, 10)
+        .map(
+          (c) =>
+            `<li><strong>[${esc(c.severity || c.kind || "?")}]</strong> ${esc(c.summary || c.kind || "")}${c.is_demo ? ' <span class="pill mid">demo</span>' : ""}</li>`
+        )
+        .join("")
+    : `<li class="muted">No conflicts touching this person</li>`;
+  const ftHtml = ftItems.length
+    ? ftItems
+        .slice(0, 12)
+        .map((it) => {
+          const st = it.status || "unknown";
+          const pillCls =
+            st === "supported" ? "up" : st === "contradicted" || st === "abandoned" ? "down" : "mid";
+          return `<li><span class="pill ${pillCls}">${esc(st)}</span> <strong>${esc(it.intent_type || "")}</strong> ${esc(it.said_or_implied || "")}<div class="muted small">${esc(it.gap || "")}</div></li>`;
+        })
+        .join("")
+    : `<li class="muted">No aged non-demo intents to score yet</li>`;
+  const claimsHtml = claims.length
+    ? claims
+        .slice(0, 12)
+        .map(
+          (c) =>
+            `<li><span class="pill mid">${esc(c.intent_type || "?")}</span> <span class="muted small">${esc(c.channel || "")} · conf ${esc(String(c.confidence ?? ""))}</span><div>${esc(c.text_preview || "")}</div></li>`
+        )
+        .join("")
+    : `<li class="muted">No channel/DM intent claims yet — invite bot to a team channel; not a private wiretap</li>`;
+  const unkHtml = unknown
+    .map((u) => `<li class="muted">${esc(u)}</li>`)
+    .join("");
+
+  hostEl.innerHTML = `
+    <div class="meta-row" style="margin-bottom:0.5rem;">
+      <span class="pill up">${esc(sub.display_name || sub.subject_id || "?")}</span>
+      <span class="pill mid">${esc(sub.subject_id || "")}</span>
+      <span class="pill mid">confidence ${esc(String(Math.round((p.confidence_overall || 0) * 100)))}%</span>
+      <span class="pill mid">${esc((p.as_of || "").slice(0, 19))}Z</span>
+    </div>
+    <p class="muted small">${esc(p.doctrine || "")}</p>
+    <div class="cockpit-grid" style="margin-top:0.5rem;">
+      <div>
+        <h3 class="graph-side-h">Work surface</h3>
+        <ul class="item-list">${repos}</ul>
+        <h3 class="graph-side-h">Commit sample</h3>
+        <ul class="item-list">${commits}</ul>
+      </div>
+      <div>
+        <h3 class="graph-side-h">Cadence</h3>
+        <p class="muted small">${esc(cadence.notes || "")}</p>
+        <p class="muted small">Peak hour UTC: <strong>${esc(String(cadence.peak_hour_utc ?? "—"))}</strong> (${esc(String(cadence.peak_count ?? 0))})</p>
+        <h3 class="graph-side-h">Digests</h3>
+        <ul class="item-list">${digHtml}</ul>
+      </div>
+    </div>
+    <div class="cockpit-grid" style="margin-top:0.5rem;">
+      <div>
+        <h3 class="graph-side-h">Intents</h3>
+        <ul class="item-list">${intentHtml}</ul>
+        <h3 class="graph-side-h">Conflicts touching</h3>
+        <ul class="item-list">${confHtml}</ul>
+      </div>
+      <div>
+        <h3 class="graph-side-h">Follow-through</h3>
+        <p class="muted small">${esc(p.follow_through?.note || "")}</p>
+        <ul class="item-list">${ftHtml}</ul>
+        <h3 class="graph-side-h">Slack intent claims</h3>
+        <p class="muted small">Channel claims only when bot is invited · bot DMs for free-text · never private 1:1 wiretap</p>
+        <ul class="item-list">${claimsHtml}</ul>
+      </div>
+    </div>
+    <h3 class="graph-side-h">What we cannot know</h3>
+    <ul class="item-list">${unkHtml}</ul>
+    <p class="muted small" style="margin-top:0.5rem;">${esc(p.note || "")}</p>
+  `;
+}
+
+async function loadPersonProfile(opts) {
+  const intoLab = opts?.intoLab === true;
+  const tenant = syncTenantFields(activeTenant());
+  const subject = intoLab
+    ? $("lab-profile-subject")?.value?.trim() || profileSubject()
+    : profileSubject();
+  const msg = intoLab ? $("lab-profile-msg") : $("ck-profile-msg");
+  const host = intoLab ? null : $("ck-profile-body");
+  if (msg) msg.textContent = `Loading profile for ${subject}…`;
+  // keep inputs in sync
+  if ($("ck-profile-subject") && subject) $("ck-profile-subject").value = subject;
+  if ($("lab-profile-subject") && subject) $("lab-profile-subject").value = subject;
+  try {
+    const p = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/people/${encodeURIComponent(subject)}/profile`
+    );
+    if (host) renderPersonProfile(p, host);
+    if ($("lab-profile-raw")) {
+      $("lab-profile-raw").textContent = JSON.stringify(p, null, 2);
+    }
+    if ($("lab-raw") && intoLab) {
+      $("lab-raw").textContent = JSON.stringify(
+        { profile_subject: subject, as_of: p.as_of, confidence: p.confidence_overall },
+        null,
+        2
+      );
+    }
+    if (msg) {
+      msg.textContent = `Profile · ${p.subject?.display_name || subject} · conf ${Math.round((p.confidence_overall || 0) * 100)}% · channel intents only when bot invited (not private wiretap)`;
+    }
+    return p;
+  } catch (e) {
+    if (msg) msg.textContent = "Profile failed: " + (e.message || e);
+    if (host) host.innerHTML = `<p class="muted">Failed to load profile.</p>`;
+    throw e;
+  }
+}
+
+async function loadFollowThroughOnly() {
+  const tenant = syncTenantFields(activeTenant());
+  const subject = profileSubject();
+  const msg = $("ck-profile-msg");
+  const host = $("ck-profile-body");
+  if (msg) msg.textContent = `Loading follow-through for ${subject}…`;
+  try {
+    const ft = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/people/${encodeURIComponent(subject)}/follow_through`
+    );
+    const items = ft.items || [];
+    if (host) {
+      host.innerHTML = `
+        <div class="meta-row"><span class="pill mid">${esc(ft.subject_id || subject)}</span>
+        <span class="pill mid">${items.length} item(s)</span></div>
+        <p class="muted small">${esc(ft.note || "")}</p>
+        <ul class="item-list">${
+          items.length
+            ? items
+                .map((it) => {
+                  const st = it.status || "unknown";
+                  const pillCls =
+                    st === "supported"
+                      ? "up"
+                      : st === "contradicted" || st === "abandoned"
+                        ? "down"
+                        : "mid";
+                  return `<li><span class="pill ${pillCls}">${esc(st)}</span> <strong>${esc(it.intent_type || "")}</strong> ${esc(it.said_or_implied || "")}<div class="muted small">${esc(it.gap || "")}</div></li>`;
+                })
+                .join("")
+            : `<li class="muted">No follow-through items</li>`
+        }</ul>`;
+    }
+    if (msg) msg.textContent = `Follow-through · ${items.length} item(s)`;
+  } catch (e) {
+    if (msg) msg.textContent = "Follow-through failed: " + (e.message || e);
+  }
+}
+
+if ($("ck-profile-load")) {
+  $("ck-profile-load").addEventListener("click", () => loadPersonProfile({ intoLab: false }));
+}
+if ($("ck-profile-follow")) {
+  $("ck-profile-follow").addEventListener("click", () => loadFollowThroughOnly());
+}
+if ($("lab-profile-load")) {
+  $("lab-profile-load").addEventListener("click", () => loadPersonProfile({ intoLab: true }));
+}
+
 // Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)
 syncTenantFields(PILOT_TENANT);
 refreshReadiness();

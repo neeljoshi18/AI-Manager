@@ -146,6 +146,27 @@
           <p class="muted small" id="ck-tomorrow-note">Suggestions merge with saved pins (tenant state). Champion role can pin; members see the board.</p>
         </div>
 
+        <div class="card" id="ck-intent-engine-card">
+          <div class="cockpit-card-h">
+            <h2 style="margin:0;">Intent engine</h2>
+            <span class="muted small">In-house claims · closed ontology · evidence required · conflicts first</span>
+          </div>
+          <p class="muted small" style="margin:0.35rem 0 0.5rem;">
+            Typed purpose (SHIP / BLOCKED / FIX / …) — not LOC, not chat archive.
+            Engine proposes; humans ratify. Research: <code>plans/intent-research.md</code>.
+          </p>
+          <div class="meta-row" id="ck-intent-stats" style="margin-bottom:0.5rem;"><span class="pill mid">loading ledger…</span></div>
+          <div class="actions-inline" style="margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">
+            <button type="button" id="ck-intent-refresh" class="primary">Refresh ledger</button>
+            <button type="button" id="ck-intent-capture" class="ghost">Capture claim…</button>
+            <label class="muted small" style="display:inline-flex;align-items:center;gap:0.35rem;">
+              <input type="checkbox" id="ck-intent-demo" /> show demo seeds
+            </label>
+          </div>
+          <ul id="ck-intent-ledger" class="item-list"><li class="muted">—</li></ul>
+          <p class="muted small" id="ck-intent-note" style="margin-top:0.5rem;"></p>
+        </div>
+
         <div class="card" id="ck-person-profile-card">
           <div class="cockpit-card-h">
             <h2 style="margin:0;">Person profile</h2>

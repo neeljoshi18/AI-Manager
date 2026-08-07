@@ -536,6 +536,8 @@ async function refreshCockpit() {
         `/v3/tenants/${encodeURIComponent(tenant)}/graph?node_limit=200&edge_limit=400&include_demo=false`
       ).catch(() => null),
     ]);
+    // Intent engine ledger (non-blocking for rest of cockpit)
+    loadIntentLedger().catch(() => {});
 
     // Readiness
     const soft = ready.soft_outreach_ready === true;
@@ -3168,6 +3170,101 @@ async function loadFollowThroughOnly() {
   }
 }
 
+async function loadIntentLedger() {
+  const tenant = syncTenantFields(activeTenant());
+  const demo = $("ck-intent-demo")?.checked === true;
+  const list = $("ck-intent-ledger");
+  const stats = $("ck-intent-stats");
+  const note = $("ck-intent-note");
+  const pill = $("ck-intent-pill");
+  try {
+    const [eng, led] = await Promise.all([
+      jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/intent/engine`).catch(() => null),
+      jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/intent/ledger?include_demo=${demo}&open_only=true&limit=40`
+      ),
+    ]);
+    const s = led.stats || {};
+    const live = s.live ?? "—";
+    const dem = s.demo ?? "—";
+    const total = s.total ?? led.count ?? 0;
+    if (stats) {
+      stats.innerHTML = [
+        `<span class="pill up">live claims: ${esc(String(live))}</span>`,
+        `<span class="pill mid">demo: ${esc(String(dem))}</span>`,
+        `<span class="pill mid">shown: ${esc(String(total))}</span>`,
+        eng?.conflicts_cached
+          ? `<span class="pill mid">conflicts: ${esc(String(eng.conflicts_cached.count ?? 0))}</span>`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+    if (pill) {
+      pill.textContent = eng?.in_house === false ? "external?" : "in-house";
+      pill.className = "pill up";
+    }
+    const claims = led.claims || [];
+    if (list) {
+      if (!claims.length) {
+        list.innerHTML = `<li class="muted">No open live claims yet — capture via bot/channel keywords or Capture claim. Demo seeds hidden unless checked.</li>`;
+      } else {
+        list.innerHTML = claims
+          .map((c) => {
+            const ty = c.intent_type || "OTHER";
+            const src = c.source || "?";
+            const demoTag = c.is_demo ? ` <span class="pill mid">demo</span>` : "";
+            const conf = typeof c.confidence === "number" ? Math.round(c.confidence * 100) + "%" : "";
+            const sum = c.summary || c.text_preview || "";
+            const own = c.owner_subject ? esc(c.owner_subject) : "—";
+            return `<li><span class="pill mid">${esc(ty)}</span>${demoTag} <strong>${esc(sum).slice(0, 120)}</strong>
+              <div class="muted small">${esc(src)} · ${esc(own)} · conf ${esc(conf)} · <code>${esc((c.claim_id || "").slice(0, 36))}</code></div></li>`;
+          })
+          .join("");
+      }
+    }
+    if (note) {
+      note.textContent =
+        (led.note || "") +
+        (eng?.adequacy_note ? " · " + eng.adequacy_note : "");
+    }
+  } catch (e) {
+    if (stats) stats.innerHTML = `<span class="pill down">ledger: ${esc(e.message || e)}</span>`;
+    if (list) list.innerHTML = `<li class="muted">Failed to load intent ledger</li>`;
+  }
+}
+
+async function captureIntentClaim() {
+  const tenant = syncTenantFields(activeTenant());
+  const text = window.prompt(
+    "State a purpose claim (e.g. \"blocked on security review\" or \"ready to ship neon export\").\nClassified in-house — no inventing work items.",
+    ""
+  );
+  if (text == null || !String(text).trim()) return;
+  const owner =
+    $("ck-profile-subject")?.value?.trim() ||
+    window.prompt("Owner subject (github login / gu_*)", "neeljoshi18") ||
+    "";
+  try {
+    const body = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/intent/claims`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: String(text).trim(),
+        owner_subject: owner || undefined,
+        channel: "champion_ui",
+      }),
+    });
+    const c = body.claim || {};
+    alert(
+      `Captured ${c.intent_type || "?"} (${Math.round((c.confidence || 0) * 100)}% conf)\n${c.summary || ""}\nid: ${c.claim_id || ""}`
+    );
+    await loadIntentLedger();
+  } catch (e) {
+    alert("Capture failed: " + (e.message || e));
+  }
+}
+
 if ($("ck-profile-load")) {
   $("ck-profile-load").addEventListener("click", () => loadPersonProfile({ intoLab: false }));
 }
@@ -3176,6 +3273,15 @@ if ($("ck-profile-follow")) {
 }
 if ($("lab-profile-load")) {
   $("lab-profile-load").addEventListener("click", () => loadPersonProfile({ intoLab: true }));
+}
+if ($("ck-intent-refresh")) {
+  $("ck-intent-refresh").addEventListener("click", () => loadIntentLedger());
+}
+if ($("ck-intent-capture")) {
+  $("ck-intent-capture").addEventListener("click", () => captureIntentClaim());
+}
+if ($("ck-intent-demo")) {
+  $("ck-intent-demo").addEventListener("change", () => loadIntentLedger());
 }
 
 // Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)

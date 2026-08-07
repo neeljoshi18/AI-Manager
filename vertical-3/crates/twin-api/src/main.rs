@@ -34,6 +34,7 @@ use twin_delivery::{
 };
 
 mod observe;
+mod intent_engine;
 use observe::EventObserver;
 
 #[derive(Default)]
@@ -601,6 +602,23 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v3/tenants/{tenant_id}/people/{subject_id}/follow_through",
             get(get_follow_through),
+        )
+        // In-house Intent Engine (plans/intent-research.md + 2026-08-07 design)
+        .route(
+            "/v3/tenants/{tenant_id}/intent/engine",
+            get(intent_engine_status),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/intent/ledger",
+            get(intent_ledger),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/intent/claims",
+            post(intent_claim_create),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/intent/claims/{claim_id}/supersede",
+            post(intent_claim_supersede),
         )
         .route(
             "/v3/tenants/{tenant_id}/insights/dev",
@@ -4587,64 +4605,16 @@ async fn slack_interactions(
 
 const SLACK_INTENT_CLAIMS_KV: &str = "slack_intent_claims";
 const SLACK_INTENT_CLAIMS_MAX: usize = 100;
-const TEXT_PREVIEW_MAX: usize = 280;
+const TEXT_PREVIEW_MAX: usize = intent_engine::TEXT_PREVIEW_MAX;
 
-/// Lightweight intent classifier mirroring vertical-2 graph-core rules (duplicated; no V2 dep).
-/// Returns (intent_type, confidence).
+/// Intent Engine classifier (in-house rules — see intent_engine module).
 fn classify_slack_intent_text(text: &str) -> (String, f32) {
-    let hay = text.to_ascii_lowercase();
-    let patterns: &[(&str, &str, f32)] = &[
-        ("blocked by", "BLOCKED", 0.9),
-        ("blocked on", "BLOCKED", 0.9),
-        ("waiting on", "BLOCKED", 0.8),
-        ("blocked:", "BLOCKED", 0.85),
-        ("[blocked]", "BLOCKED", 0.9),
-        ("i'm blocked", "BLOCKED", 0.9),
-        ("im blocked", "BLOCKED", 0.9),
-        ("code freeze", "FREEZE", 0.9),
-        ("do not merge", "FREEZE", 0.9),
-        ("don't merge", "FREEZE", 0.9),
-        ("donotmerge", "FREEZE", 0.9),
-        ("hold merge", "FREEZE", 0.8),
-        ("freeze ", "FREEZE", 0.75),
-        ("freeze:", "FREEZE", 0.8),
-        ("hotfix", "FIX", 0.85),
-        ("bugfix", "FIX", 0.85),
-        ("fix:", "FIX", 0.8),
-        ("fix ", "FIX", 0.7),
-        ("working on", "SHIP", 0.72),
-        ("ready to ship", "SHIP", 0.9),
-        ("ship ", "SHIP", 0.75),
-        ("shipping ", "SHIP", 0.75),
-        ("release ", "SHIP", 0.75),
-        ("deploy ", "SHIP", 0.7),
-        ("launch ", "SHIP", 0.7),
-        ("merge to main", "SHIP", 0.75),
-        ("feat:", "SHIP", 0.65),
-        ("feature:", "SHIP", 0.65),
-        ("spike:", "EXPLORE", 0.85),
-        ("spike ", "EXPLORE", 0.8),
-        ("poc:", "EXPLORE", 0.8),
-        ("explore ", "EXPLORE", 0.7),
-        ("research ", "EXPLORE", 0.7),
-        ("rfc:", "REVIEW", 0.85),
-        ("wip:", "EXPLORE", 0.6),
-        ("[wip]", "EXPLORE", 0.65),
-    ];
-    for (pat, ty, conf) in patterns {
-        if hay.contains(pat) {
-            return ((*ty).to_string(), *conf);
-        }
-    }
-    ("OTHER".into(), 0.25)
+    let (t, c, _) = intent_engine::classify_text(text);
+    (t, c)
 }
 
 fn truncate_preview(text: &str, max: usize) -> String {
-    let t = text.trim();
-    if t.chars().count() <= max {
-        return t.to_string();
-    }
-    t.chars().take(max).collect::<String>() + "…"
+    intent_engine::truncate_preview(text, max)
 }
 
 fn is_slack_channel_message(ev: &serde_json::Value) -> bool {
@@ -5249,6 +5219,313 @@ async fn get_follow_through(
 ) -> Result<impl IntoResponse, ApiError> {
     let person = resolve_person(&st, &tenant_id, &subject_id).await?;
     Ok(Json(build_follow_through(&st, &tenant_id, &person).await))
+}
+
+// ─── Intent Engine HTTP (in-house claim ledger) ─────────────────────────────
+
+#[derive(Deserialize)]
+struct IntentLedgerQ {
+    include_demo: Option<bool>,
+    open_only: Option<bool>,
+    limit: Option<usize>,
+}
+
+fn list_explicit_claims(st: &AppState, tenant_id: &str) -> Vec<serde_json::Value> {
+    st.embedded_store
+        .as_ref()
+        .and_then(|s| s.get_tenant_kv(tenant_id, intent_engine::EXPLICIT_CLAIMS_KV))
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
+fn push_explicit_claim(st: &AppState, tenant_id: &str, claim: serde_json::Value) {
+    let Some(store) = &st.embedded_store else {
+        return;
+    };
+    let mut arr = store
+        .get_tenant_kv(tenant_id, intent_engine::EXPLICIT_CLAIMS_KV)
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    arr.push(claim);
+    if arr.len() > intent_engine::EXPLICIT_CLAIMS_MAX {
+        let drop_n = arr.len() - intent_engine::EXPLICIT_CLAIMS_MAX;
+        arr.drain(0..drop_n);
+    }
+    store.put_tenant_kv(
+        tenant_id,
+        intent_engine::EXPLICIT_CLAIMS_KV,
+        serde_json::Value::Array(arr),
+    );
+    persist_embedded(st);
+}
+
+async fn collect_intent_ledger(
+    st: &AppState,
+    tenant_id: &str,
+    include_demo: bool,
+    open_only: bool,
+) -> Vec<intent_engine::IntentClaimRecord> {
+    let mut graph_raw = fetch_v2_intents(st, tenant_id, "bridge_reader").await;
+    if graph_raw.is_empty() {
+        if let Some(snap) = fetch_v2_snapshot(st, tenant_id, 800, 2000).await {
+            graph_raw = snap
+                .get("nodes")
+                .and_then(|n| n.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|n| {
+                            n.get("type").and_then(|x| x.as_str()) == Some("Intent")
+                                || n.get("node_type").and_then(|x| x.as_str()) == Some("Intent")
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+    }
+    let graph: Vec<_> = graph_raw
+        .iter()
+        .map(|i| {
+            let tagged = with_is_demo_tag(i.clone());
+            intent_engine::claim_from_graph_intent(tenant_id, &tagged)
+        })
+        .collect();
+    let slack: Vec<_> = list_slack_intent_claims(st, tenant_id)
+        .iter()
+        .map(|c| intent_engine::claim_from_slack_kv(tenant_id, c))
+        .collect();
+    let explicit: Vec<_> = list_explicit_claims(st, tenant_id)
+        .iter()
+        .filter_map(|c| serde_json::from_value::<intent_engine::IntentClaimRecord>(c.clone()).ok())
+        .collect();
+    intent_engine::merge_ledger(graph, slack, explicit, include_demo, open_only)
+}
+
+async fn intent_engine_status(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> impl IntoResponse {
+    let mut manifest = intent_engine::engine_manifest();
+    // Live counts (include demo for honesty stats; live_claims separate)
+    let all = collect_intent_ledger(&st, &tenant_id, true, false).await;
+    let live_only: Vec<_> = all.iter().filter(|c| !c.is_demo).cloned().collect();
+    let stats_all = intent_engine::ledger_stats(&all);
+    let stats_live = intent_engine::ledger_stats(&live_only);
+    // Conflicts from pulse (primary exec surface)
+    let pulse = st.last_pulse.lock().get(&tenant_id).cloned();
+    let conflict_n = pulse
+        .as_ref()
+        .and_then(|p| p.pointer("/conflicts/cards"))
+        .and_then(|c| c.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.insert("tenant_id".into(), json!(tenant_id));
+        obj.insert("ledger_all".into(), stats_all);
+        obj.insert("ledger_live".into(), stats_live);
+        obj.insert(
+            "conflicts_cached".into(),
+            json!({
+                "count": conflict_n,
+                "note": "Conflicts-first surface via /pulse; demo cards tagged is_demo",
+            }),
+        );
+        obj.insert(
+            "endpoints".into(),
+            json!({
+                "ledger": "GET /v3/tenants/{tenant}/intent/ledger?include_demo=false&open_only=true",
+                "capture": "POST /v3/tenants/{tenant}/intent/claims",
+                "supersede": "POST /v3/tenants/{tenant}/intent/claims/{id}/supersede",
+                "profile": "GET /v3/tenants/{tenant}/people/{subject}/profile",
+                "follow_through": "GET /v3/tenants/{tenant}/people/{subject}/follow_through",
+                "pulse": "GET /v3/tenants/{tenant}/pulse",
+            }),
+        );
+        obj.insert(
+            "adequacy_note".into(),
+            json!(
+                "Trajectory (commits/graph) is strong; live purpose claims are still sparse until organic PRs + channel/bot capture fill L1. Demo seeds are tagged and excluded from live ledger by default."
+            ),
+        );
+    }
+    Json(manifest)
+}
+
+async fn intent_ledger(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Query(q): Query<IntentLedgerQ>,
+) -> impl IntoResponse {
+    let include_demo = q.include_demo.unwrap_or(false);
+    let open_only = q.open_only.unwrap_or(true);
+    let limit = q.limit.unwrap_or(100).min(500);
+    let mut claims = collect_intent_ledger(&st, &tenant_id, include_demo, open_only).await;
+    let stats = intent_engine::ledger_stats(&claims);
+    claims.truncate(limit);
+    let rows: Vec<serde_json::Value> = claims.iter().map(|c| c.to_json()).collect();
+    Json(json!({
+        "tenant_id": tenant_id,
+        "include_demo": include_demo,
+        "open_only": open_only,
+        "stats": stats,
+        "count": rows.len(),
+        "claims": rows,
+        "principles": intent_engine::PRINCIPLES.iter().map(|(id, t)| json!({"id": id, "text": t})).collect::<Vec<_>>(),
+        "note": "Unified claim ledger: V2 graph intents + slack channel/DM extracts + explicit captures. Default excludes demo seeds. Conflicts via /pulse.",
+    }))
+}
+
+#[derive(Deserialize)]
+struct IntentClaimBody {
+    intent_type: Option<String>,
+    summary: Option<String>,
+    /// Free text — classified if intent_type omitted
+    text: Option<String>,
+    owner_subject: Option<String>,
+    about_node_id: Option<String>,
+    evidence: Option<Vec<String>>,
+    channel: Option<String>,
+}
+
+async fn intent_claim_create(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(body): Json<IntentClaimBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let text = body.text.clone().unwrap_or_default();
+    let (itype, _conf, ev_tag) = if let Some(ref t) = body.intent_type {
+        if intent_engine::IntentType::parse(t).is_some() {
+            (
+                t.to_ascii_uppercase(),
+                0.95_f32,
+                "source:explicit".to_string(),
+            )
+        } else {
+            intent_engine::classify_text(&text)
+        }
+    } else if !text.trim().is_empty() {
+        intent_engine::classify_text(&text)
+    } else {
+        return Err(ApiError::bad(
+            "Provide intent_type and/or text (e.g. \"blocked on security\")",
+        ));
+    };
+    let summary = body
+        .summary
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.clone())
+            }
+        })
+        .unwrap_or_else(|| format!("{itype} (explicit)"));
+    let mut evidence = body.evidence.clone().unwrap_or_default();
+    if !ev_tag.is_empty() && !evidence.iter().any(|e| e == &ev_tag) {
+        evidence.push(ev_tag);
+    }
+    evidence.push("capture:explicit_api".into());
+    let claim = intent_engine::build_explicit_claim(
+        &tenant_id,
+        &itype,
+        &summary,
+        body.owner_subject.as_deref(),
+        body.about_node_id.as_deref(),
+        evidence,
+        body.channel.as_deref(),
+    );
+    let claim_json = claim.to_json();
+    push_explicit_claim(&st, &tenant_id, claim_json.clone());
+    st.observer
+        .log(
+            &tenant_id,
+            "intent_claim_explicit",
+            claim.intent_type.as_str(),
+            json!({
+                "claim_id": claim.claim_id,
+                "owner": claim.owner_subject,
+                "confidence": claim.confidence,
+            }),
+        )
+        .await;
+    Ok(Json(json!({
+        "ok": true,
+        "claim": claim_json,
+        "note": "Explicit claim stored in tenant ledger (high trust). Conflicts still computed on graph-attached intents via V2; this claim appears in /intent/ledger and person profile slack/explicit fold.",
+    })))
+}
+
+async fn intent_claim_supersede(
+    State(st): State<AppState>,
+    Path((tenant_id, claim_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Some(store) = &st.embedded_store else {
+        return Err(ApiError::bad("embedded store required for claim supersede"));
+    };
+    let mut arr = store
+        .get_tenant_kv(&tenant_id, intent_engine::EXPLICIT_CLAIMS_KV)
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    let mut found = false;
+    for c in &mut arr {
+        if c.get("claim_id").and_then(|x| x.as_str()) == Some(claim_id.as_str()) {
+            if let Some(obj) = c.as_object_mut() {
+                obj.insert("lifecycle".into(), json!("superseded"));
+                obj.insert("superseded_at".into(), json!(Utc::now().to_rfc3339()));
+            }
+            found = true;
+        }
+    }
+    // Also mark slack claims if matching claim_id / slack:ts form
+    let mut slack = store
+        .get_tenant_kv(&tenant_id, SLACK_INTENT_CLAIMS_KV)
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    for c in &mut slack {
+        let id = c
+            .get("claim_id")
+            .or_else(|| c.get("ts"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if claim_id == id || claim_id == format!("slack:{id}") {
+            if let Some(obj) = c.as_object_mut() {
+                obj.insert("lifecycle".into(), json!("superseded"));
+            }
+            found = true;
+        }
+    }
+    if !found {
+        return Err(ApiError::bad(
+            "claim_id not found in explicit or slack ledgers (graph intents supersede via V2 lifecycle later)",
+        ));
+    }
+    store.put_tenant_kv(
+        &tenant_id,
+        intent_engine::EXPLICIT_CLAIMS_KV,
+        serde_json::Value::Array(arr),
+    );
+    store.put_tenant_kv(
+        &tenant_id,
+        SLACK_INTENT_CLAIMS_KV,
+        serde_json::Value::Array(slack),
+    );
+    persist_embedded(&st);
+    st.observer
+        .log(
+            &tenant_id,
+            "intent_claim_supersede",
+            &claim_id,
+            json!({ "ok": true }),
+        )
+        .await;
+    Ok(Json(json!({
+        "ok": true,
+        "claim_id": claim_id,
+        "lifecycle": "superseded",
+        "note": "Human gate: claim no longer open in ledger (open_only=true).",
+    })))
 }
 
 async fn get_person_profile(

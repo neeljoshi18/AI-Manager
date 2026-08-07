@@ -1117,6 +1117,10 @@ fn json_looks_like_demo_seed(v: &serde_json::Value) -> bool {
         || blob.contains("\"seed\":\"intent_demo\"")
         || blob.contains("\"is_demo\":true")
         || blob.contains("\"seed\":\"graph_story\"")
+        || blob.contains("seed:graph_story")
+        // Historical story seed PR used in pilot demos (not multi-repo flywheel work)
+        || blob.contains("/pr/story-1")
+        || blob.contains("pr:neeljoshi18/ai-manager/pr/story-1")
 }
 
 /// Tag a conflict/intent JSON value with `is_demo` for product consumers.
@@ -4703,6 +4707,8 @@ struct ResolvedPerson {
 }
 
 /// Resolve github login, gu_*, or twin id → person twin flexibly.
+/// Prefers **enabled** twins with **exact** display_name / alias / subject match (avoids
+/// identity fragmentation where substring hits ghost twins first).
 async fn resolve_person(
     st: &AppState,
     tenant_id: &str,
@@ -4723,7 +4729,19 @@ async fn resolve_person(
         .await
         .map_err(ApiError::from)?;
     let raw_l = raw.to_ascii_lowercase();
-    let mut candidates: Vec<ResolvedPerson> = Vec::new();
+    let rest = raw
+        .strip_prefix("twin:person:")
+        .unwrap_or(raw.as_str())
+        .to_string();
+    let rest_l = rest.to_ascii_lowercase();
+
+    struct Cand {
+        person: ResolvedPerson,
+        enabled: bool,
+        has_slack: bool,
+        score: i32,
+    }
+    let mut ranked: Vec<Cand> = Vec::new();
     for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person) {
         let mut aliases: Vec<String> = t
             .config_json
@@ -4735,7 +4753,6 @@ async fn resolve_person(
                     .collect()
             })
             .unwrap_or_default();
-        // Slack map rows sometimes carry login aliases under global_user_id
         for m in maps.iter().filter(|m| m.global_user_id == t.subject_id) {
             if !aliases.iter().any(|a| a == &m.global_user_id) {
                 aliases.push(m.global_user_id.clone());
@@ -4747,38 +4764,66 @@ async fn resolve_person(
             t.display_name.clone(),
         ];
         keys.extend(aliases.iter().cloned());
-        candidates.push(ResolvedPerson {
+        let person = ResolvedPerson {
             subject_id: t.subject_id.clone(),
             twin_id: t.twin_id.clone(),
             display_name: t.display_name.clone(),
             aliases: aliases.clone(),
-            match_keys: keys,
+            match_keys: keys.clone(),
+        };
+        let has_slack = maps.iter().any(|m| m.global_user_id == t.subject_id);
+        let exact = keys
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(&raw) || k.eq_ignore_ascii_case(&rest));
+        let exact_display = t.display_name.eq_ignore_ascii_case(&raw)
+            || t.display_name.eq_ignore_ascii_case(&rest);
+        let exact_subject = t.subject_id.eq_ignore_ascii_case(&raw)
+            || t.subject_id.eq_ignore_ascii_case(&rest)
+            || t.twin_id.eq_ignore_ascii_case(&raw);
+        let substr = !exact
+            && keys.iter().any(|k| {
+                let kl = k.to_ascii_lowercase();
+                // Only allow substring on keys longer than 4 to avoid gu_ noise
+                (kl.len() >= 4 && (kl.contains(&raw_l) || raw_l.contains(&kl)))
+                    || (rest_l.len() >= 4 && (kl.contains(&rest_l) || rest_l.contains(&kl)))
+            });
+        if !exact && !substr {
+            continue;
+        }
+        let mut score = 0i32;
+        if exact_display {
+            score += 100;
+        }
+        if exact_subject {
+            score += 90;
+        }
+        if exact {
+            score += 50;
+        }
+        if substr {
+            score += 5;
+        }
+        if t.enabled {
+            score += 40;
+        }
+        if has_slack {
+            score += 25;
+        }
+        ranked.push(Cand {
+            person,
+            enabled: t.enabled,
+            has_slack,
+            score,
         });
     }
-    // Exact (case-insensitive) match on any key
-    if let Some(p) = candidates.iter().find(|p| {
-        p.match_keys
-            .iter()
-            .any(|k| k.eq_ignore_ascii_case(&raw) || k.to_ascii_lowercase() == raw_l)
-    }) {
-        return Ok(p.clone());
-    }
-    // twin:person:X form
-    if let Some(rest) = raw.strip_prefix("twin:person:") {
-        if let Some(p) = candidates
-            .iter()
-            .find(|p| p.subject_id.eq_ignore_ascii_case(rest))
-        {
-            return Ok(p.clone());
-        }
-    }
-    // Substring / github login contained in aliases or display
-    if let Some(p) = candidates.iter().find(|p| {
-        p.match_keys
-            .iter()
-            .any(|k| k.to_ascii_lowercase().contains(&raw_l) || raw_l.contains(&k.to_ascii_lowercase()))
-    }) {
-        return Ok(p.clone());
+    ranked.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.enabled.cmp(&a.enabled))
+            .then_with(|| b.has_slack.cmp(&a.has_slack))
+    });
+    if let Some(best) = ranked.into_iter().next() {
+        return Ok(best.person);
     }
     // Fabricate a synthetic person from the raw id (profile still useful for graph-only people)
     let twin_id = if raw.starts_with("twin:") {
@@ -5345,17 +5390,32 @@ async fn get_person_profile(
             if authored_commit_ids.is_empty() && !json_looks_like_person_blob(n, &person) {
                 continue;
             }
-            let rid = n
-                .get("resource_id")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            if !rid.is_empty() {
-                // resource like repo@sha or org/repo
-                let repo = rid.split('@').next().unwrap_or(&rid).to_string();
-                if repo.contains('/') {
-                    *repos.entry(repo).or_insert(0) += 1;
+            // Repo from id `commit:owner/repo:sha`, resource_id, or properties
+            let mut repo_guess = String::new();
+            if let Some(id_s) = n.get("id").or_else(|| n.get("node_id")).and_then(|x| x.as_str()) {
+                // commit:org/repo:sha40
+                if let Some(rest) = id_s.strip_prefix("commit:") {
+                    if let Some((repo, _)) = rest.rsplit_once(':') {
+                        if repo.contains('/') {
+                            repo_guess = repo.to_string();
+                        }
+                    }
                 }
+            }
+            if repo_guess.is_empty() {
+                let rid = n
+                    .get("resource_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !rid.is_empty() {
+                    let repo = rid.split('@').next().unwrap_or(rid);
+                    if repo.contains('/') && !repo.chars().all(|c| c.is_ascii_hexdigit()) {
+                        repo_guess = repo.to_string();
+                    }
+                }
+            }
+            if !repo_guess.is_empty() {
+                *repos.entry(repo_guess).or_insert(0) += 1;
             }
             let msg = n
                 .get("message")

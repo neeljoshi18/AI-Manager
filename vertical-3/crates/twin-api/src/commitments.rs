@@ -28,8 +28,13 @@ pub struct Commitment {
     pub tenant_id: String,
     /// Who made the promise (subject / display / slack map key)
     pub promiser: String,
+    /// Display name for promiser when known (non-technical UI)
+    #[serde(default)]
+    pub promiser_label: Option<String>,
     /// Who they promised (optional)
     pub promisee: Option<String>,
+    #[serde(default)]
+    pub promisee_label: Option<String>,
     /// Plain English description
     pub text: String,
     pub status: String, // open | done | dismissed
@@ -40,15 +45,36 @@ pub struct Commitment {
     pub created_at: String,
     pub resolved_at: Option<String>,
     pub resolve_evidence: Option<String>,
+    /// Optional one-way Linear export (not required)
+    #[serde(default)]
+    pub linear_issue_id: Option<String>,
+    #[serde(default)]
+    pub linear_url: Option<String>,
 }
 
 impl Commitment {
+    pub fn promiser_display(&self) -> &str {
+        self.promiser_label
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(self.promiser.as_str())
+    }
+
+    pub fn promisee_display(&self) -> Option<&str> {
+        self.promisee_label
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(self.promisee.as_deref())
+    }
+
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
             "tenant_id": self.tenant_id,
             "promiser": self.promiser,
+            "promiser_label": self.promiser_label,
             "promisee": self.promisee,
+            "promisee_label": self.promisee_label,
             "text": self.text,
             "status": self.status,
             "source": self.source,
@@ -58,28 +84,78 @@ impl Commitment {
             "created_at": self.created_at,
             "resolved_at": self.resolved_at,
             "resolve_evidence": self.resolve_evidence,
+            "linear_issue_id": self.linear_issue_id,
+            "linear_url": self.linear_url,
             // Plain English for UI
             "headline": commitment_headline(self),
             "for_promiser": format!("You said you'd: {}", self.text),
-            "for_promisee": self.promisee.as_ref().map(|_p| {
-                format!("{} said they'd: {}", self.promiser, self.text)
+            "for_promisee": self.promisee_display().map(|_p| {
+                format!("{} said they'd: {}", self.promiser_display(), self.text)
             }),
+        })
+    }
+
+    /// Lean storage shape (round-trip safe).
+    pub fn to_storage_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "promiser": self.promiser,
+            "promiser_label": self.promiser_label,
+            "promisee": self.promisee,
+            "promisee_label": self.promisee_label,
+            "text": self.text,
+            "status": self.status,
+            "source": self.source,
+            "channel": self.channel,
+            "evidence": self.evidence,
+            "confidence": self.confidence,
+            "created_at": self.created_at,
+            "resolved_at": self.resolved_at,
+            "resolve_evidence": self.resolve_evidence,
+            "linear_issue_id": self.linear_issue_id,
+            "linear_url": self.linear_url,
         })
     }
 }
 
 pub fn commitment_headline(c: &Commitment) -> String {
+    let who = c.promiser_display();
     match c.status.as_str() {
         "done" => format!("Done: {}", c.text),
         "dismissed" => format!("Dropped: {}", c.text),
         _ => {
-            if let Some(ref to) = c.promisee {
-                format!("{} owes {} — {}", c.promiser, to, c.text)
+            if let Some(to) = c.promisee_display() {
+                format!("{who} owes {to} — {}", c.text)
             } else {
-                format!("{} committed — {}", c.promiser, c.text)
+                format!("{who} committed — {}", c.text)
             }
         }
     }
+}
+
+/// Morning / champion digest text (plain English, Commit-inspired).
+pub fn format_morning_digest(tenant_id: &str, open: &[Commitment]) -> String {
+    let n = open.len();
+    if n == 0 {
+        return format!(
+            "Good morning — no open commitments for {tenant_id}. Quiet board. Have a focused day."
+        );
+    }
+    let mut lines = vec![format!(
+        "Good morning — {n} open commitment{}:",
+        if n == 1 { "" } else { "s" }
+    )];
+    // Cap like Commit "act on today"
+    for (i, c) in open.iter().take(8).enumerate() {
+        lines.push(format!("{}. {}", i + 1, commitment_headline(c)));
+    }
+    if n > 8 {
+        lines.push(format!("…and {} more. Open Cockpit → Commitments.", n - 8));
+    } else {
+        lines.push("Mark done in Cockpit when finished, or say done/shipped in the channel.".into());
+    }
+    lines.join("\n")
 }
 
 /// Detect a commitment in free text. Returns (plain text summary, confidence, evidence tag).
@@ -251,7 +327,9 @@ pub fn guess_promisee(text: &str) -> Option<String> {
 pub fn build_commitment(
     tenant_id: &str,
     promiser: &str,
+    promiser_label: Option<String>,
     promisee: Option<String>,
+    promisee_label: Option<String>,
     text: &str,
     source: &str,
     channel: Option<&str>,
@@ -262,7 +340,9 @@ pub fn build_commitment(
         id: format!("cmt:{}", Uuid::new_v4()),
         tenant_id: tenant_id.to_string(),
         promiser: promiser.to_string(),
+        promiser_label,
         promisee,
+        promisee_label,
         text: plain_commitment_summary(text),
         status: "open".into(),
         source: source.into(),
@@ -272,7 +352,76 @@ pub fn build_commitment(
         created_at: Utc::now().to_rfc3339(),
         resolved_at: None,
         resolve_evidence: None,
+        linear_issue_id: None,
+        linear_url: None,
     }
+}
+
+/// Directory entry for @mention / UI pickers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonDirEntry {
+    pub subject_id: String,
+    pub display_name: String,
+    pub slack_user_id: Option<String>,
+    pub aliases: Vec<String>,
+}
+
+/// Resolve free text / Slack id / github login against directory.
+pub fn resolve_person_ref(raw: &str, dir: &[PersonDirEntry]) -> Option<(String, String)> {
+    let r = raw.trim().trim_start_matches('@');
+    if r.is_empty() {
+        return None;
+    }
+    let rl = r.to_ascii_lowercase();
+    // Exact slack user id
+    if let Some(p) = dir.iter().find(|p| {
+        p.slack_user_id
+            .as_ref()
+            .map(|s| s.eq_ignore_ascii_case(r))
+            .unwrap_or(false)
+    }) {
+        return Some((p.subject_id.clone(), p.display_name.clone()));
+    }
+    // Exact subject / display / alias
+    if let Some(p) = dir.iter().find(|p| {
+        p.subject_id.eq_ignore_ascii_case(r)
+            || p.display_name.eq_ignore_ascii_case(r)
+            || p.aliases.iter().any(|a| a.eq_ignore_ascii_case(r))
+    }) {
+        return Some((p.subject_id.clone(), p.display_name.clone()));
+    }
+    // Substring display (careful: len >= 3)
+    if rl.len() >= 3 {
+        if let Some(p) = dir.iter().find(|p| {
+            p.display_name.to_ascii_lowercase().contains(&rl)
+                || p.aliases
+                    .iter()
+                    .any(|a| a.to_ascii_lowercase().contains(&rl))
+        }) {
+            return Some((p.subject_id.clone(), p.display_name.clone()));
+        }
+    }
+    None
+}
+
+/// Extract Slack mention user ids from message text (<@U123> or <@U123|name>).
+pub fn extract_slack_mention_ids(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<@") {
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find('>') {
+            let inner = &after[..end];
+            let uid = inner.split('|').next().unwrap_or(inner).trim();
+            if !uid.is_empty() && !out.iter().any(|x| x == uid) {
+                out.push(uid.to_string());
+            }
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 // ─── Plain English insights (exec-facing) ───────────────────────────────────
@@ -509,6 +658,31 @@ mod tests {
         let (t, c, _) = r.unwrap();
         assert!(c > 0.8);
         assert!(t.to_ascii_lowercase().contains("deck") || t.to_ascii_lowercase().contains("send"));
+    }
+
+    #[test]
+    fn slack_mention_ids() {
+        let ids = extract_slack_mention_ids("hey <@U0APK7W1X99|neel> I'll review this");
+        assert_eq!(ids, vec!["U0APK7W1X99".to_string()]);
+    }
+
+    #[test]
+    fn resolve_person_dir() {
+        let dir = vec![PersonDirEntry {
+            subject_id: "gu_1".into(),
+            display_name: "neeljoshi18".into(),
+            slack_user_id: Some("U123".into()),
+            aliases: vec!["neel".into()],
+        }];
+        let r = resolve_person_ref("U123", &dir).unwrap();
+        assert_eq!(r.0, "gu_1");
+        assert_eq!(r.1, "neeljoshi18");
+    }
+
+    #[test]
+    fn morning_digest_empty() {
+        let t = format_morning_digest("ten_github", &[]);
+        assert!(t.contains("no open"));
     }
 
     #[test]

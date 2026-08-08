@@ -11,6 +11,53 @@ let state = {
   status: null,
 };
 
+/** Simple = plain English champion UI. Technical = graphs, tags, lab, Neon. */
+const UX_MODE_KEY = "ai_manager_ux_mode";
+function getUxMode() {
+  try {
+    const m = localStorage.getItem(UX_MODE_KEY);
+    if (m === "technical" || m === "simple") return m;
+  } catch (_) {}
+  return "simple";
+}
+function setUxMode(mode) {
+  const m = mode === "technical" ? "technical" : "simple";
+  try {
+    localStorage.setItem(UX_MODE_KEY, m);
+  } catch (_) {}
+  document.body.classList.remove("mode-simple", "mode-technical");
+  document.body.classList.add(m === "technical" ? "mode-technical" : "mode-simple");
+  const label = m === "technical" ? "Technical" : "Simple";
+  document.querySelectorAll(".ux-mode-btn").forEach((btn) => {
+    btn.textContent = m === "technical" ? "Simple mode" : "Technical mode";
+    btn.title =
+      m === "technical"
+        ? "Switch to Simple: plain English, commitments, digests"
+        : "Switch to Technical: graph, machine tags, Lab, Neon";
+  });
+  if ($("settings-ux-mode")) {
+    $("settings-ux-mode").textContent = `Mode: ${label} — ${
+      m === "simple"
+        ? "plain English first; hide engineer consoles"
+        : "full operator surface including graph & Neon"
+    }`;
+  }
+  if ($("nav-mode")) {
+    $("nav-mode").textContent = label.toLowerCase();
+  }
+  // If simple and stuck on a tech-only view, go cockpit
+  if (m === "simple") {
+    const active = document.querySelector(".nav-item.active");
+    const v = active?.getAttribute("data-view");
+    if (v === "graph" || v === "lab" || v === "insights") {
+      showView("cockpit");
+    }
+  }
+}
+function toggleUxMode() {
+  setUxMode(getUxMode() === "simple" ? "technical" : "simple");
+}
+
 function activeTenant() {
   return (
     $("team-tenant")?.value?.trim() ||
@@ -79,15 +126,18 @@ function showView(name) {
   if (view) view.classList.remove("hidden");
   const btn = document.querySelector(`.nav-item[data-view="${name}"]`);
   if (btn) btn.classList.add("active");
+  const simple = getUxMode() === "simple";
   const titles = {
-    cockpit: ["Champion cockpit", "Pod pulse · digests · conflicts · heat · tomorrow focus"],
-    today: ["Today", "Org pulse — lighter view; use Cockpit for full operator console"],
-    status: ["My status", "Approve / edit / don't send · change-only Slack"],
-    team: ["Team", "Map eng pod · bulk import · compile digests"],
+    cockpit: simple
+      ? ["Champion cockpit", "What needs attention · commitments · digests · people"]
+      : ["Champion cockpit", "Pod pulse · digests · friction · heat · graph · tomorrow"],
+    today: ["Today", "Quick pulse — use Cockpit for the full view"],
+    status: ["My status", "Approve / edit / don't send your digest"],
+    team: ["Team", "Map people and compile digests"],
     graph: ["Graph", "Live context map — people, work, intents, edges"],
-    connections: ["Connections", "Services and on-demand test status"],
-    settings: ["Settings", "Cadence, metrics, product boundaries"],
-    insights: ["Dev insights", "Activity heat · commits · when you ship — data is currency"],
+    connections: ["Connections", "Connect Slack & GitHub · health"],
+    settings: ["Settings", simple ? "Look & feel · how digests work" : "Cadence, metrics, Neon, product boundaries"],
+    insights: ["Dev insights", "Activity heat · commits · when you ship"],
     lab: ["Lab", "Engineer console and raw JSON"],
   };
   if (name === "cockpit") {
@@ -3354,12 +3404,18 @@ async function loadCommitments(mode) {
         list.innerHTML = rows
           .map((c) => {
             const id = c.id || "";
+            const who = c.promiser_label || c.promiser || "";
+            const to = c.promisee_label || c.promisee || "";
+            const lin = c.linear_url
+              ? `<a class="cmt-linear" href="${esc(c.linear_url)}" target="_blank" rel="noopener">Linear ↗</a>`
+              : "";
             return `<li>
               <strong>${esc(c.headline || c.text || "")}</strong>
-              <div class="muted small">${esc(c.promiser || "")}${c.promisee ? " → " + esc(c.promisee) : ""} · ${esc(c.source || "")}</div>
+              <div class="muted small">${esc(who)}${to ? " → " + esc(to) : ""} · ${esc(c.source || "")} ${lin}</div>
               <div class="actions-inline" style="margin-top:0.25rem;">
                 <button type="button" class="ghost cmt-done" data-id="${esc(id)}">Mark done</button>
                 <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Dismiss</button>
+                <button type="button" class="ghost cmt-linear-btn tech-only" data-id="${esc(id)}">Export to Linear</button>
               </div>
             </li>`;
           })
@@ -3391,6 +3447,28 @@ async function loadCommitments(mode) {
               await loadPlainInsights();
             } catch (e) {
               alert(e.message || e);
+            }
+          });
+        });
+        list.querySelectorAll(".cmt-linear-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-id");
+            try {
+              const r = await jfetch(
+                `/v3/tenants/${encodeURIComponent(tenant)}/commitments/${encodeURIComponent(id)}/export_linear`,
+                { method: "POST", body: "{}" }
+              );
+              if (r.linear_url) {
+                window.open(r.linear_url, "_blank", "noopener");
+              } else {
+                alert(r.note || JSON.stringify(r));
+              }
+              await loadCommitments();
+            } catch (e) {
+              alert(
+                (e.message || e) +
+                  "\n\nOptional: set LINEAR_API_KEY + LINEAR_TEAM_ID on staging. Commitment stays source of truth."
+              );
             }
           });
         });
@@ -3446,6 +3524,62 @@ if ($("ck-cmt-owed")) {
 if ($("ck-cmt-team")) {
   $("ck-cmt-team").addEventListener("click", () => loadCommitments("team"));
 }
+if ($("ck-cmt-digest")) {
+  $("ck-cmt-digest").addEventListener("click", async () => {
+    const tenant = syncTenantFields(activeTenant());
+    const pre = $("ck-cmt-digest-preview");
+    try {
+      const d = await jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/commitments/digest`
+      );
+      if (pre) {
+        pre.classList.remove("hidden");
+        pre.textContent = d.text || JSON.stringify(d, null, 2);
+      }
+    } catch (e) {
+      if (pre) {
+        pre.classList.remove("hidden");
+        pre.textContent = e.message || String(e);
+      }
+    }
+  });
+}
+if ($("ck-cmt-digest-send")) {
+  $("ck-cmt-digest-send").addEventListener("click", async () => {
+    const tenant = syncTenantFields(activeTenant());
+    const pre = $("ck-cmt-digest-preview");
+    try {
+      const d = await jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/commitments/digest/send`,
+        { method: "POST", body: "{}" }
+      );
+      if (pre) {
+        pre.classList.remove("hidden");
+        pre.textContent =
+          (d.posted ? "Sent to Slack.\n\n" : "Not posted (check channel env).\n\n") +
+          (d.text || "") +
+          "\n\n" +
+          (d.detail || "");
+      }
+      alert(d.detail || (d.posted ? "Digest sent" : "Preview only"));
+    } catch (e) {
+      alert(e.message || e);
+    }
+  });
+}
+
+// UX mode toggle (simple / technical)
+document.querySelectorAll(".ux-mode-btn, #btn-ux-mode, #btn-ux-mode-top").forEach((btn) => {
+  btn.addEventListener("click", () => toggleUxMode());
+});
+if ($("btn-ux-simple")) {
+  $("btn-ux-simple").addEventListener("click", () => setUxMode("simple"));
+}
+if ($("btn-ux-technical")) {
+  $("btn-ux-technical").addEventListener("click", () => setUxMode("technical"));
+}
+// Apply saved mode early
+setUxMode(getUxMode());
 
 // Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)
 syncTenantFields(PILOT_TENANT);

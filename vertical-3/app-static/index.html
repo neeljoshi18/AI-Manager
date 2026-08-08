@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260806b" />
-  <script>window.__APP_JS_V="20260806b";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260808a" />
+  <script>window.__APP_JS_V="20260808a";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -23,14 +23,15 @@
         <button class="nav-item" data-view="today">Today</button>
         <button class="nav-item" data-view="status">My status</button>
         <button class="nav-item" data-view="team">Team</button>
-        <button class="nav-item" data-view="graph">Graph</button>
+        <button class="nav-item tech-only" data-view="graph">Graph</button>
         <button class="nav-item" data-view="connections">Connections</button>
-        <button class="nav-item" data-view="insights">Dev insights</button>
+        <button class="nav-item tech-only" data-view="insights">Dev insights</button>
         <button class="nav-item" data-view="settings">Settings</button>
-        <button class="nav-item lab" data-view="lab">Lab</button>
+        <button class="nav-item lab tech-only" data-view="lab">Lab</button>
       </nav>
       <div class="nav-foot">
         <span id="nav-mode" class="muted">—</span>
+        <button type="button" id="btn-ux-mode" class="ghost ux-mode-btn" title="Toggle Simple vs Technical view">Simple</button>
       </div>
     </aside>
 
@@ -38,9 +39,10 @@
       <header class="top">
         <div>
           <h1 id="view-title">Champion cockpit</h1>
-          <p class="muted" id="view-sub">Pod pulse · digests · conflicts · heat · tomorrow focus</p>
+          <p class="muted" id="view-sub">What needs attention · commitments · digests</p>
         </div>
         <div class="top-actions">
+          <button type="button" id="btn-ux-mode-top" class="ghost ux-mode-btn" title="Simple = plain English. Technical = graphs, ledgers, lab.">Simple mode</button>
           <button id="btn-refresh" class="ghost">Refresh</button>
         </div>
       </header>
@@ -101,16 +103,16 @@
           </div>
           <div class="card">
             <div class="cockpit-card-h">
-              <h2 style="margin:0;">Work conflicts</h2>
-              <span class="muted small">SHIP / FREEZE / BLOCKED · dual owners</span>
+              <h2 style="margin:0;">Work friction</h2>
+              <span class="muted small">Where the team is stuck or mixed on ship vs hold</span>
             </div>
             <div id="ck-conflicts" class="empty-hint">Loading…</div>
-            <h3 class="graph-side-h">Intents sample</h3>
-            <ul id="ck-intents" class="item-list"><li class="muted">—</li></ul>
+            <h3 class="graph-side-h tech-only">Intents sample (tags)</h3>
+            <ul id="ck-intents" class="item-list tech-only"><li class="muted">—</li></ul>
           </div>
         </div>
 
-        <div class="cockpit-grid">
+        <div class="cockpit-grid tech-only">
           <div class="card">
             <div class="cockpit-card-h">
               <h2 style="margin:0;">Team heat</h2>
@@ -177,12 +179,15 @@
             <button type="button" id="ck-cmt-mine" class="ghost">I owe</button>
             <button type="button" id="ck-cmt-owed" class="ghost">Owed to me</button>
             <button type="button" id="ck-cmt-team" class="ghost">Team open</button>
+            <button type="button" id="ck-cmt-digest" class="ghost">Morning digest preview</button>
+            <button type="button" id="ck-cmt-digest-send" class="ghost">Send digest now</button>
           </div>
+          <pre id="ck-cmt-digest-preview" class="box small hidden" style="max-height:160px;overflow:auto;margin-bottom:0.5rem;"></pre>
           <ul id="ck-cmt-list" class="item-list"><li class="muted">—</li></ul>
           <p class="muted small" id="ck-cmt-note"></p>
         </div>
 
-        <div class="card" id="ck-intent-engine-card">
+        <div class="card tech-only" id="ck-intent-engine-card">
           <div class="cockpit-card-h">
             <h2 style="margin:0;">Intent ledger (technical)</h2>
             <span class="muted small">Under the hood · SHIP/BLOCKED tags · for debugging</span>
@@ -565,6 +570,16 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       <!-- SETTINGS -->
       <section id="view-settings" class="view hidden">
         <div class="card">
+          <h2>How the app looks</h2>
+          <p class="muted small">Simple mode = plain English, commitments, digests. Technical mode = graphs, machine tags, Lab, Neon ops.</p>
+          <div class="actions-inline">
+            <button type="button" id="btn-ux-simple" class="primary">Simple</button>
+            <button type="button" id="btn-ux-technical" class="ghost">Technical</button>
+          </div>
+          <p class="muted small" id="settings-ux-mode" style="margin-top:0.5rem;">Mode: —</p>
+          <p class="muted small" style="margin-top:0.75rem;"><strong>Commitments morning digest</strong> — set <code>COMMITMENT_DIGEST_CHANNEL</code> + hour UTC (<code>COMMITMENT_DIGEST_HOUR_UTC</code>, default 13). Optional Linear export: <code>LINEAR_API_KEY</code> + <code>LINEAR_TEAM_ID</code>.</p>
+        </div>
+        <div class="card tech-only">
           <h2>Cadence (server env)</h2>
           <table class="kv">
             <tr><td>STATUS_WINDOW_SECS</td><td id="cfg-window">—</td></tr>
@@ -575,7 +590,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           </table>
           <p class="muted small">Change via env when starting twin-api. See plans/2026-07-23_demo-to-product-m5.md.</p>
         </div>
-        <div class="card">
+        <div class="card tech-only">
           <h2>Pilot metrics</h2>
           <table class="kv">
             <tr><td>Notify policy</td><td id="met-policy">—</td></tr>
@@ -587,7 +602,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           </table>
           <p class="muted small">From <code>/metrics</code>. Learning-window scorecard uses these. Suppressed ≫ sent means anti-spam is working.</p>
         </div>
-        <div class="card">
+        <div class="card tech-only">
           <h2>System health (staging)</h2>
           <p class="muted small">Public stack probe — no SSH. Green = process up; data still lives on droplet volumes until Neon/Postgres is wired.</p>
           <div class="actions-inline">
@@ -596,7 +611,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <div class="meta-row" id="stack-health-pills" style="margin-top:0.5rem;"></div>
           <pre id="stack-health-raw" class="box small" style="max-height:220px;overflow:auto;">{}</pre>
         </div>
-        <div class="card">
+        <div class="card tech-only">
           <h2>Live event trail + Neon DB</h2>
           <p class="muted small">Approve / Don't send / compile dual-write to Neon continuously when connected. Optional button re-upserts everything (idempotent). Graph export is periodic + on-demand (SQL insights; Graph UI remains primary).</p>
           <div class="actions-inline">

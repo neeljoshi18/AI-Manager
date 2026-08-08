@@ -515,6 +515,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Morning commitment digest (Commit-style) — optional Slack channel
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            info!("commitment morning digest loop started");
+            tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+            loop {
+                if let Err(e) = maybe_send_morning_commitment_digest(&st).await {
+                    tracing::debug!(error = %e, "commitment digest tick");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await; // check every 10m
+            }
+        });
+    }
+
     let demo_dir = demo_static_dir();
     let app_dir = app_static_dir();
     info!(?demo_dir, ?app_dir, "static directories");
@@ -640,6 +655,22 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v3/tenants/{tenant_id}/commitments/{commitment_id}/dismiss",
             post(dismiss_commitment),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments/{commitment_id}/export_linear",
+            post(export_commitment_linear),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments/digest",
+            get(commitment_digest_preview),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/commitments/digest/send",
+            post(commitment_digest_send),
+        )
+        .route(
+            "/v3/tenants/{tenant_id}/people/directory",
+            get(people_directory),
         )
         .route(
             "/v3/tenants/{tenant_id}/insights/dev",
@@ -5566,31 +5597,7 @@ fn save_commitments(st: &AppState, tenant_id: &str, list: Vec<commitments::Commi
     let Some(store) = &st.embedded_store else {
         return;
     };
-    let mut arr: Vec<serde_json::Value> = list.into_iter().map(|c| c.to_json()).collect();
-    // Drop UI-only fields that break round-trip? to_json has extra fields — store lean
-    // Re-serialize from struct fields only via intermediate
-    let lean: Vec<serde_json::Value> = arr
-        .drain(..)
-        .map(|v| {
-            // Keep full to_json for API; for storage use Deserialize-compatible shape
-            json!({
-                "id": v.get("id"),
-                "tenant_id": v.get("tenant_id"),
-                "promiser": v.get("promiser"),
-                "promisee": v.get("promisee"),
-                "text": v.get("text"),
-                "status": v.get("status"),
-                "source": v.get("source"),
-                "channel": v.get("channel"),
-                "evidence": v.get("evidence"),
-                "confidence": v.get("confidence"),
-                "created_at": v.get("created_at"),
-                "resolved_at": v.get("resolved_at"),
-                "resolve_evidence": v.get("resolve_evidence"),
-            })
-        })
-        .collect();
-    let mut lean = lean;
+    let mut lean: Vec<serde_json::Value> = list.into_iter().map(|c| c.to_storage_json()).collect();
     if lean.len() > commitments::COMMITMENTS_MAX {
         let drop_n = lean.len() - commitments::COMMITMENTS_MAX;
         lean.drain(0..drop_n);
@@ -5599,7 +5606,72 @@ fn save_commitments(st: &AppState, tenant_id: &str, list: Vec<commitments::Commi
     persist_embedded(st);
 }
 
-fn maybe_handle_commitment_from_slack(
+/// Build person directory for @mention resolution (twins + slack maps).
+async fn build_person_directory(
+    st: &AppState,
+    tenant_id: &str,
+) -> Vec<commitments::PersonDirEntry> {
+    let twins = st.store.list_twins(tenant_id).await.unwrap_or_default();
+    let maps = st.store.list_slack_maps(tenant_id).await.unwrap_or_default();
+    let mut out: Vec<commitments::PersonDirEntry> = Vec::new();
+    for t in twins.iter().filter(|t| t.twin_kind == TwinKind::Person && t.enabled) {
+        let mut aliases: Vec<String> = t
+            .config_json
+            .get("provider_aliases")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !aliases.iter().any(|a| a == &t.display_name) {
+            aliases.push(t.display_name.clone());
+        }
+        let slack = maps
+            .iter()
+            .find(|m| m.global_user_id == t.subject_id)
+            .map(|m| m.slack_user_id.clone());
+        out.push(commitments::PersonDirEntry {
+            subject_id: t.subject_id.clone(),
+            display_name: if t.display_name.is_empty() {
+                t.subject_id.clone()
+            } else {
+                t.display_name.clone()
+            },
+            slack_user_id: slack,
+            aliases,
+        });
+    }
+    // Slack-mapped people without twin yet
+    for m in &maps {
+        if out.iter().any(|p| p.subject_id == m.global_user_id) {
+            continue;
+        }
+        out.push(commitments::PersonDirEntry {
+            subject_id: m.global_user_id.clone(),
+            display_name: m.global_user_id.clone(),
+            slack_user_id: Some(m.slack_user_id.clone()),
+            aliases: vec![m.global_user_id.clone()],
+        });
+    }
+    out
+}
+
+async fn people_directory(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> impl IntoResponse {
+    let dir = build_person_directory(&st, &tenant_id).await;
+    Json(json!({
+        "tenant_id": tenant_id,
+        "count": dir.len(),
+        "people": dir,
+        "note": "Used to resolve @mentions and Slack user ids into human names for commitments.",
+    }))
+}
+
+async fn maybe_handle_commitment_from_slack_async(
     st: &AppState,
     tenant_id: &str,
     subject: &str,
@@ -5608,6 +5680,22 @@ fn maybe_handle_commitment_from_slack(
     ts: &str,
     is_dm: bool,
 ) {
+    let dir = build_person_directory(st, tenant_id).await;
+    let promiser_label = dir
+        .iter()
+        .find(|p| p.subject_id == subject)
+        .map(|p| p.display_name.clone())
+        .or_else(|| {
+            dir.iter()
+                .find(|p| {
+                    p.slack_user_id
+                        .as_ref()
+                        .map(|s| subject.ends_with(s.as_str()) || subject.contains(s.as_str()))
+                        .unwrap_or(false)
+                })
+                .map(|p| p.display_name.clone())
+        });
+
     let hay = text_raw.to_ascii_lowercase();
     let mut list = load_commitments(st, tenant_id);
     // Resolve open commitments first
@@ -5617,10 +5705,18 @@ fn maybe_handle_commitment_from_slack(
             if c.status != "open" {
                 continue;
             }
-            // Prefer same promiser; else same channel
             let same_person = c.promiser == subject
                 || c.promiser.contains(subject)
-                || subject.contains(&c.promiser);
+                || subject.contains(&c.promiser)
+                || c.promiser_label
+                    .as_ref()
+                    .map(|l| {
+                        promiser_label
+                            .as_ref()
+                            .map(|pl| pl.eq_ignore_ascii_case(l))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
             let same_channel = c
                 .channel
                 .as_ref()
@@ -5631,7 +5727,7 @@ fn maybe_handle_commitment_from_slack(
             {
                 c.status = "done".into();
                 c.resolved_at = Some(Utc::now().to_rfc3339());
-                c.resolve_evidence = Some(format!("slack:{ts} {text_raw}"));
+                c.resolve_evidence = Some(format!("slack:{ts} {}", text_raw.chars().take(120).collect::<String>()));
                 changed = true;
             }
         }
@@ -5645,12 +5741,37 @@ fn maybe_handle_commitment_from_slack(
         if conf < 0.72 {
             return;
         }
-        let promisee = commitments::guess_promisee(text_raw);
+        // @mentions first, then "for/to name"
+        let mut promisee: Option<String> = None;
+        let mut promisee_label: Option<String> = None;
+        for uid in commitments::extract_slack_mention_ids(text_raw) {
+            if let Some((sid, lab)) = commitments::resolve_person_ref(&uid, &dir) {
+                // First mention after self is usually the promisee
+                if sid != subject {
+                    promisee = Some(sid);
+                    promisee_label = Some(lab);
+                    break;
+                }
+            }
+        }
+        if promisee.is_none() {
+            if let Some(raw) = commitments::guess_promisee(text_raw) {
+                if let Some((sid, lab)) = commitments::resolve_person_ref(&raw, &dir) {
+                    promisee = Some(sid);
+                    promisee_label = Some(lab);
+                } else {
+                    promisee = Some(raw.clone());
+                    promisee_label = Some(raw);
+                }
+            }
+        }
         let source = if is_dm { "slack_dm" } else { "slack_channel" };
         let cmt = commitments::build_commitment(
             tenant_id,
             subject,
+            promiser_label,
             promisee,
+            promisee_label,
             &summary,
             source,
             Some(channel),
@@ -5737,19 +5858,50 @@ async fn create_commitment(
     if text.len() < 4 {
         return Err(ApiError::bad("text required (what was promised)"));
     }
-    let promiser = body
+    let promiser_raw = body
         .promiser
         .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "unknown".into());
+    let dir = build_person_directory(&st, &tenant_id).await;
+    let (promiser, promiser_label) = commitments::resolve_person_ref(&promiser_raw, &dir)
+        .unwrap_or_else(|| (promiser_raw.clone(), promiser_raw.clone()));
     // Prefer extract; fall back to raw text as commitment
     let (summary, conf, tag) = commitments::extract_commitment(text)
         .unwrap_or_else(|| (text.to_string(), 0.9, "source:explicit".into()));
-    let promisee = body.promisee.or_else(|| commitments::guess_promisee(text));
+    let mut promisee = body.promisee.clone();
+    let mut promisee_label: Option<String> = None;
+    if let Some(ref p) = promisee {
+        if let Some((sid, lab)) = commitments::resolve_person_ref(p, &dir) {
+            promisee = Some(sid);
+            promisee_label = Some(lab);
+        } else {
+            promisee_label = Some(p.clone());
+        }
+    } else if let Some(raw) = commitments::guess_promisee(text) {
+        if let Some((sid, lab)) = commitments::resolve_person_ref(&raw, &dir) {
+            promisee = Some(sid);
+            promisee_label = Some(lab);
+        } else {
+            promisee = Some(raw.clone());
+            promisee_label = Some(raw);
+        }
+    }
+    for uid in commitments::extract_slack_mention_ids(text) {
+        if let Some((sid, lab)) = commitments::resolve_person_ref(&uid, &dir) {
+            if sid != promiser {
+                promisee = Some(sid);
+                promisee_label = Some(lab);
+                break;
+            }
+        }
+    }
     let cmt = commitments::build_commitment(
         &tenant_id,
         &promiser,
+        Some(promiser_label),
         promisee,
+        promisee_label,
         &summary,
         "explicit",
         body.channel.as_deref(),
@@ -5818,6 +5970,237 @@ async fn set_commitment_status(
         )
         .await;
     Ok(Json(json!({ "ok": true, "id": commitment_id, "status": status })))
+}
+
+const COMMITMENT_DIGEST_KV: &str = "commitment_digest_meta";
+
+async fn maybe_send_morning_commitment_digest(st: &AppState) -> Result<(), String> {
+    let hour: u32 = std::env::var("COMMITMENT_DIGEST_HOUR_UTC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(13);
+    let now = Utc::now();
+    if now.hour() != hour {
+        return Ok(());
+    }
+    let tenant = std::env::var("DEFAULT_TENANT_ID")
+        .or_else(|_| std::env::var("SEED_TEAM_TENANT"))
+        .unwrap_or_else(|_| "ten_github".into());
+    let day = now.format("%Y-%m-%d").to_string();
+    // Once per day
+    if let Some(store) = &st.embedded_store {
+        if let Some(meta) = store.get_tenant_kv(&tenant, COMMITMENT_DIGEST_KV) {
+            if meta.get("last_day").and_then(|x| x.as_str()) == Some(day.as_str()) {
+                return Ok(());
+            }
+        }
+    }
+    send_commitment_digest_inner(st, &tenant, false).await?;
+    if let Some(store) = &st.embedded_store {
+        store.put_tenant_kv(
+            &tenant,
+            COMMITMENT_DIGEST_KV,
+            json!({ "last_day": day, "sent_at": now.to_rfc3339() }),
+        );
+        persist_embedded(st);
+    }
+    Ok(())
+}
+
+async fn send_commitment_digest_inner(
+    st: &AppState,
+    tenant_id: &str,
+    force: bool,
+) -> Result<serde_json::Value, String> {
+    let open: Vec<_> = load_commitments(st, tenant_id)
+        .into_iter()
+        .filter(|c| c.status == "open")
+        .collect();
+    let text = commitments::format_morning_digest(tenant_id, &open);
+    let channel = std::env::var("COMMITMENT_DIGEST_CHANNEL")
+        .or_else(|_| std::env::var("SEED_TEAM_CHANNEL"))
+        .unwrap_or_default();
+    let mut posted = false;
+    let mut post_detail = "preview only — set COMMITMENT_DIGEST_CHANNEL to post to Slack".to_string();
+    if !channel.is_empty() && (force || std::env::var("COMMITMENT_DIGEST_ENABLED").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(true)) {
+        match st.slack.post_channel(&channel, &text).await {
+            Ok(r) => {
+                posted = true;
+                post_detail = format!("posted to {} ts={}", r.channel, r.ts);
+            }
+            Err(e) => {
+                post_detail = format!("slack post failed: {e}");
+                tracing::warn!(error = %e, "commitment digest slack post failed");
+            }
+        }
+    }
+    let _ = st
+        .observer
+        .log(
+            tenant_id,
+            "commitment_digest",
+            if posted { "sent" } else { "preview" },
+            json!({ "open": open.len(), "detail": post_detail, "force": force }),
+        )
+        .await;
+    Ok(json!({
+        "ok": true,
+        "posted": posted,
+        "open_count": open.len(),
+        "text": text,
+        "channel": if channel.is_empty() { serde_json::Value::Null } else { json!(channel) },
+        "detail": post_detail,
+    }))
+}
+
+async fn commitment_digest_preview(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> impl IntoResponse {
+    let open: Vec<_> = load_commitments(&st, &tenant_id)
+        .into_iter()
+        .filter(|c| c.status == "open")
+        .collect();
+    let text = commitments::format_morning_digest(&tenant_id, &open);
+    Json(json!({
+        "tenant_id": tenant_id,
+        "open_count": open.len(),
+        "text": text,
+        "hour_utc": std::env::var("COMMITMENT_DIGEST_HOUR_UTC").unwrap_or_else(|_| "13".into()),
+        "channel_set": std::env::var("COMMITMENT_DIGEST_CHANNEL").or_else(|_| std::env::var("SEED_TEAM_CHANNEL")).map(|s| !s.is_empty()).unwrap_or(false),
+        "note": "Preview only. POST …/commitments/digest/send to push to Slack (COMMITMENT_DIGEST_CHANNEL).",
+    }))
+}
+
+async fn commitment_digest_send(
+    State(st): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    match send_commitment_digest_inner(&st, &tenant_id, true).await {
+        Ok(body) => Ok(Json(body)),
+        Err(e) => Err(ApiError::bad(&e)),
+    }
+}
+
+/// Optional one-way Linear export (env LINEAR_API_KEY + LINEAR_TEAM_ID).
+async fn export_commitment_linear(
+    State(st): State<AppState>,
+    Path((tenant_id, commitment_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let api_key = std::env::var("LINEAR_API_KEY").unwrap_or_default();
+    let team_id = std::env::var("LINEAR_TEAM_ID").unwrap_or_default();
+    if api_key.is_empty() || team_id.is_empty() {
+        return Err(ApiError::bad(
+            "Linear export needs LINEAR_API_KEY and LINEAR_TEAM_ID in staging env (optional). Commitment stays the source of truth.",
+        ));
+    }
+    let mut list = load_commitments(&st, &tenant_id);
+    let cmt = list
+        .iter()
+        .find(|c| c.id == commitment_id)
+        .cloned()
+        .ok_or_else(|| ApiError::bad("commitment not found"))?;
+    if let Some(ref url) = cmt.linear_url {
+        return Ok(Json(json!({
+            "ok": true,
+            "already_exported": true,
+            "linear_url": url,
+            "linear_issue_id": cmt.linear_issue_id,
+        })));
+    }
+    let title = format!("Commitment: {}", cmt.text.chars().take(120).collect::<String>());
+    let desc = format!(
+        "**From AI Manager commitments** (not a full ticket system)\n\n\
+         **Who promised:** {} ({})\n\
+         **Owed to:** {}\n\
+         **Source:** {}\n\
+         **Commitment id:** `{}`\n\n\
+         {}",
+        cmt.promiser_display(),
+        cmt.promiser,
+        cmt.promisee_display().unwrap_or("team"),
+        cmt.source,
+        cmt.id,
+        cmt.text
+    );
+    // Escape for GraphQL string
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let query = format!(
+        r#"mutation {{ issueCreate(input: {{ teamId: "{team}", title: "{title}", description: "{desc}" }}) {{ success issue {{ id identifier url }} }} }}"#,
+        team = esc(&team_id),
+        title = esc(&title),
+        desc = esc(&desc),
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| ApiError::bad(&e.to_string()))?;
+    let res = client
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", api_key)
+        .header("Content-Type", "application/json")
+        .json(&json!({ "query": query }))
+        .send()
+        .await
+        .map_err(|e| ApiError::bad(&format!("Linear request failed: {e}")))?;
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| ApiError::bad(&format!("Linear JSON: {e}")))?;
+    if body.get("errors").is_some() {
+        return Err(ApiError::bad(&format!(
+            "Linear GraphQL error: {}",
+            body.get("errors").map(|e| e.to_string()).unwrap_or_default()
+        )));
+    }
+    let issue = body
+        .pointer("/data/issueCreate/issue")
+        .cloned()
+        .unwrap_or(json!({}));
+    let issue_id = issue
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let url = issue
+        .get("url")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let ident = issue
+        .get("identifier")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if issue_id.is_empty() {
+        return Err(ApiError::bad(&format!("Linear create failed: {body}")));
+    }
+    for c in &mut list {
+        if c.id == commitment_id {
+            c.linear_issue_id = Some(if ident.is_empty() {
+                issue_id.clone()
+            } else {
+                ident.clone()
+            });
+            c.linear_url = Some(url.clone());
+            c.evidence.push(format!("linear:{issue_id}"));
+        }
+    }
+    save_commitments(&st, &tenant_id, list);
+    st.observer
+        .log(
+            &tenant_id,
+            "commitment_export_linear",
+            &commitment_id,
+            json!({ "linear_url": url, "identifier": ident }),
+        )
+        .await;
+    Ok(Json(json!({
+        "ok": true,
+        "linear_issue_id": if ident.is_empty() { issue_id } else { ident },
+        "linear_url": url,
+        "note": "One-way export. Commitment remains source of truth; closing in Linear does not auto-close here (yet).",
+    })))
 }
 
 async fn intent_insights_plain(
@@ -6374,7 +6757,7 @@ async fn slack_events(
                     channel.to_string()
                 };
                 // ── Commitments: "I'll send…" open loops + "done/shipped" resolve ──
-                maybe_handle_commitment_from_slack(
+                maybe_handle_commitment_from_slack_async(
                     &st,
                     &tenant_id,
                     &subject,
@@ -6382,7 +6765,8 @@ async fn slack_events(
                     &channel_label,
                     ts,
                     is_dm,
-                );
+                )
+                .await;
                 // ── Intent claim capture (channels where bot is member; DM free-text) ──
                 let (itype, conf) = classify_slack_intent_text(&text_raw);
                 let keyword_hit = conf >= 0.7

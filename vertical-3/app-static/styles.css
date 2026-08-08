@@ -619,3 +619,30 @@ code {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
 }
+
+/* Simple vs Technical mode (like light/dark — product language, not theme) */
+body.mode-simple .tech-only {
+  display: none !important;
+}
+body.mode-technical .simple-only {
+  display: none !important;
+}
+.ux-mode-btn {
+  font-size: 12px;
+  margin-top: 0.35rem;
+}
+.nav-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: flex-start;
+}
+body.mode-simple .nav-sub {
+  opacity: 0.9;
+}
+body.mode-simple #view-sub {
+  max-width: 36rem;
+}
+.cmt-linear {
+  font-size: 11px;
+}

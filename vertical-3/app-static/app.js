@@ -11,7 +11,11 @@ let state = {
   status: null,
 };
 
-/** Simple = plain English champion UI. Technical = graphs, tags, lab, Neon. */
+/**
+ * Simple vs Technical = presentation only (not different feature sets).
+ * Simple: plain English, visual cards, human names — same data underneath.
+ * Technical: machine tags, IDs, raw status codes, JSON-ish stats.
+ */
 const UX_MODE_KEY = "ai_manager_ux_mode";
 function getUxMode() {
   try {
@@ -20,7 +24,10 @@ function getUxMode() {
   } catch (_) {}
   return "simple";
 }
-function setUxMode(mode) {
+function isSimpleMode() {
+  return getUxMode() === "simple";
+}
+function setUxMode(mode, opts) {
   const m = mode === "technical" ? "technical" : "simple";
   try {
     localStorage.setItem(UX_MODE_KEY, m);
@@ -29,33 +36,93 @@ function setUxMode(mode) {
   document.body.classList.add(m === "technical" ? "mode-technical" : "mode-simple");
   const label = m === "technical" ? "Technical" : "Simple";
   document.querySelectorAll(".ux-mode-btn").forEach((btn) => {
-    btn.textContent = m === "technical" ? "Simple mode" : "Technical mode";
+    // Button shows the mode you can switch *to*
+    btn.textContent = m === "technical" ? "Simple view" : "Technical view";
+    btn.setAttribute("aria-pressed", m === "simple" ? "true" : "false");
     btn.title =
       m === "technical"
-        ? "Switch to Simple: plain English, commitments, digests"
-        : "Switch to Technical: graph, machine tags, Lab, Neon";
+        ? "Switch to Simple view: plain English + visual cards (same features)"
+        : "Switch to Technical view: tags, IDs, raw stats (same features)";
   });
   if ($("settings-ux-mode")) {
-    $("settings-ux-mode").textContent = `Mode: ${label} — ${
+    $("settings-ux-mode").textContent =
       m === "simple"
-        ? "plain English first; hide engineer consoles"
-        : "full operator surface including graph & Neon"
-    }`;
+        ? "Mode: Simple — same features, plain language and visual cards for anyone."
+        : "Mode: Technical — same features, with machine tags, IDs, and raw detail.";
   }
   if ($("nav-mode")) {
-    $("nav-mode").textContent = label.toLowerCase();
+    $("nav-mode").textContent = label.toLowerCase() + " view";
   }
-  // If simple and stuck on a tech-only view, go cockpit
-  if (m === "simple") {
-    const active = document.querySelector(".nav-item.active");
-    const v = active?.getAttribute("data-view");
-    if (v === "graph" || v === "lab" || v === "insights") {
-      showView("cockpit");
+  // Re-paint current screens so wording/layout flips immediately
+  if (opts?.rerender !== false) {
+    try {
+      const active = document.querySelector(".nav-item.active");
+      const v = active?.getAttribute("data-view") || "cockpit";
+      if (v === "cockpit" && typeof refreshCockpit === "function") refreshCockpit();
+      else if (typeof loadPlainInsights === "function") loadPlainInsights().catch(() => {});
+      if (typeof loadCommitments === "function") loadCommitments().catch(() => {});
+      if (typeof loadIntentLedger === "function") loadIntentLedger().catch(() => {});
+    } catch (_) {
+      /* ignore first-boot */
     }
   }
 }
-function toggleUxMode() {
+function toggleUxMode(ev) {
+  if (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
   setUxMode(getUxMode() === "simple" ? "technical" : "simple");
+}
+
+/** Map machine intent/conflict tags → plain English (Simple view). */
+function plainIntentType(ty) {
+  const t = (ty || "").toString().toUpperCase();
+  const map = {
+    SHIP: "Trying to ship",
+    BLOCKED: "Stuck / waiting",
+    FREEZE: "Hold — don't merge yet",
+    FIX: "Fixing something",
+    EXPLORE: "Exploring",
+    REVIEW: "In review",
+    OTHER: "Other work",
+    INTENT: "Work focus",
+  };
+  return map[t] || (ty ? String(ty) : "Work");
+}
+function plainConflictKind(kind) {
+  const k = (kind || "").toString().toLowerCase();
+  if (k.includes("ship") && k.includes("freeze")) return "Mixed signals (ship vs hold)";
+  if (k.includes("dual") && k.includes("owner")) return "Unclear ownership";
+  if (k.includes("block")) return "Blocker needs attention";
+  if (k.includes("merge") || k.includes("friction")) return "Merge friction";
+  if (k.includes("stale")) return "Review gone quiet";
+  if (k.includes("ci")) return "Checks failing on ready work";
+  return kind ? String(kind).replace(/_/g, " ") : "Team friction";
+}
+function plainSeverity(sev) {
+  const s = (sev || "").toString().toLowerCase();
+  if (s === "high") return "Urgent";
+  if (s === "medium") return "Soon";
+  if (s === "low") return "Watch";
+  return sev || "";
+}
+function plainDigestStatus(d) {
+  if (!d) return "No status update yet";
+  if (d.empty_placeholder) return "Quiet window — nothing to report";
+  const st = (d.status_label || d.status || "").toString().toLowerCase();
+  if (st.includes("publish") || st === "shared") return "Shared with the team";
+  if (st.includes("force") || st.includes("human") || st.includes("pending"))
+    return "Needs your Approve / Don't send";
+  if (st.includes("veto") || st.includes("dont")) return "Held back (don't send)";
+  if (d.has_content) return "Update ready";
+  return d.status_label || d.status || "Update";
+}
+function shortHumanId(id) {
+  if (!id) return "";
+  const s = String(id);
+  if (s.length <= 14) return s;
+  return s.slice(0, 8) + "…";
 }
 
 function activeTenant() {
@@ -126,18 +193,22 @@ function showView(name) {
   if (view) view.classList.remove("hidden");
   const btn = document.querySelector(`.nav-item[data-view="${name}"]`);
   if (btn) btn.classList.add("active");
-  const simple = getUxMode() === "simple";
+  const simple = isSimpleMode();
   const titles = {
     cockpit: simple
-      ? ["Champion cockpit", "What needs attention · commitments · digests · people"]
-      : ["Champion cockpit", "Pod pulse · digests · friction · heat · graph · tomorrow"],
-    today: ["Today", "Quick pulse — use Cockpit for the full view"],
+      ? ["Champion cockpit", "What needs attention · who owes what · team status"]
+      : ["Champion cockpit", "Pod · digests · conflicts · heat · graph · intent ledger"],
+    today: ["Today", "Quick pulse — Cockpit has the full board"],
     status: ["My status", "Approve / edit / don't send your digest"],
     team: ["Team", "Map people and compile digests"],
-    graph: ["Graph", "Live context map — people, work, intents, edges"],
+    graph: simple
+      ? ["Work map", "People and work connected — who touches what"]
+      : ["Graph", "Context map — nodes, edges, intent types"],
     connections: ["Connections", "Connect Slack & GitHub · health"],
-    settings: ["Settings", simple ? "Look & feel · how digests work" : "Cadence, metrics, Neon, product boundaries"],
-    insights: ["Dev insights", "Activity heat · commits · when you ship"],
+    settings: ["Settings", "Look & feel · cadence · system"],
+    insights: simple
+      ? ["Team rhythm", "When the pod works — not who is 'best'"]
+      : ["Dev insights", "Activity heat · commits · authored edges"],
     lab: ["Lab", "Engineer console and raw JSON"],
   };
   if (name === "cockpit") {
@@ -591,19 +662,26 @@ async function refreshCockpit() {
     loadCommitments("team").catch(() => {});
     loadIntentLedger().catch(() => {});
 
+    const simple = isSimpleMode();
     // Readiness
     const soft = ready.soft_outreach_ready === true;
     const multi = ready.multi_person_ready === true || team.multi_person_ready === true;
     const content = ready.content_people ?? 0;
     if ($("ck-readiness")) {
-      $("ck-readiness").innerHTML = [
-        `<span class="pill ${soft ? "up" : "mid"}">soft outreach: ${soft ? "ready" : "solo ok"}</span>`,
-        `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "yes" : "need ≥2"}</span>`,
-        `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">content digests: ${content}</span>`,
-        `<span class="pill mid">${esc((ready.note || ready.error || "").toString().slice(0, 100))}</span>`,
-      ].join(" ");
+      $("ck-readiness").innerHTML = simple
+        ? [
+            `<span class="pill ${soft ? "up" : "mid"}">${soft ? "Ready for a sales demo" : "OK for one-person pilot"}</span>`,
+            `<span class="pill ${multi ? "up" : "mid"}">${multi ? "Multiple people mapped" : "Need 2+ people mapped"}</span>`,
+            `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">${content} status update${content === 1 ? "" : "s"} with real content</span>`,
+          ].join(" ")
+        : [
+            `<span class="pill ${soft ? "up" : "mid"}">soft_outreach: ${soft ? "ready" : "solo ok"}</span>`,
+            `<span class="pill ${multi ? "up" : "mid"}">multi_person: ${multi ? "yes" : "need ≥2"}</span>`,
+            `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">content_people: ${content}</span>`,
+            `<span class="pill mid">${esc((ready.note || ready.error || "").toString().slice(0, 100))}</span>`,
+          ].join(" ");
     }
-    // Data flywheel strip (sales: continuous ingest → insight)
+    // Data flywheel strip
     if ($("ck-flywheel")) {
       try {
         const st = await jfetch("/v3/demo/status");
@@ -614,17 +692,31 @@ async function refreshCockpit() {
         const gNodes = st.graph_nodes || (graph && (graph.nodes || []).length) || 0;
         const v1up = st.v1 === true;
         const v2up = st.v2 === true;
-        $("ck-flywheel").innerHTML = [
-          `<span class="pill ${v1up ? "up" : "down"}">ingest V1: ${v1up ? "up" : "down"}</span>`,
-          `<span class="pill ${v2up ? "up" : "down"}">graph V2: ${v2up ? "up" : "down"}</span>`,
-          `<span class="pill ${commits >= 20 ? "up" : commits > 0 ? "mid" : "down"}">commits mapped: ${commits}</span>`,
-          `<span class="pill mid">graph nodes: ${gNodes}</span>`,
-          `<span class="pill ${st.egress ? "up" : "down"}">egress: ${st.egress ? "up" : "down"}</span>`,
-        ].join(" ");
-        if ($("ck-flywheel-note")) {
-          $("ck-flywheel-note").textContent = v1up
-            ? `Flywheel live — commits keep filling the graph (poller + webhooks). Pitch: “status writes itself from work; champion sees heat & conflicts without standups.”`
-            : `Ingest V1 is down — recover stack so the flywheel does not stall. Graph may still show prior data.`;
+        if (simple) {
+          $("ck-flywheel").innerHTML = [
+            `<span class="pill ${v1up && v2up ? "up" : "down"}">${v1up && v2up ? "Work stream healthy" : "Work stream needs a check"}</span>`,
+            `<span class="pill ${commits > 0 ? "up" : "mid"}">${commits} work updates on the map</span>`,
+            `<span class="pill mid">${gNodes} people & work items linked</span>`,
+            `<span class="pill ${st.egress ? "up" : "down"}">${st.egress ? "Chat delivery on" : "Chat delivery off"}</span>`,
+          ].join(" ");
+          if ($("ck-flywheel-note")) {
+            $("ck-flywheel-note").textContent = v1up
+              ? "Status writes itself from real work. You review digests and open loops — no standup theater."
+              : "Work intake is down — status may be stale until the stack is recovered.";
+          }
+        } else {
+          $("ck-flywheel").innerHTML = [
+            `<span class="pill ${v1up ? "up" : "down"}">ingest V1: ${v1up ? "up" : "down"}</span>`,
+            `<span class="pill ${v2up ? "up" : "down"}">graph V2: ${v2up ? "up" : "down"}</span>`,
+            `<span class="pill ${commits >= 20 ? "up" : commits > 0 ? "mid" : "down"}">commits mapped: ${commits}</span>`,
+            `<span class="pill mid">graph nodes: ${gNodes}</span>`,
+            `<span class="pill ${st.egress ? "up" : "down"}">egress: ${st.egress ? "up" : "down"}</span>`,
+          ].join(" ");
+          if ($("ck-flywheel-note")) {
+            $("ck-flywheel-note").textContent = v1up
+              ? `Flywheel live — commits keep filling the graph (poller + webhooks).`
+              : `Ingest V1 is down — recover stack so the flywheel does not stall.`;
+          }
         }
       } catch (_) {
         /* non-fatal */
@@ -639,20 +731,62 @@ async function refreshCockpit() {
 
     if ($("ck-stat-mapped")) $("ck-stat-mapped").textContent = String(mapped);
     if ($("ck-stat-mapped-d"))
-      $("ck-stat-mapped-d").textContent = `${members.length} twins · ${team.unique_slack_users ?? mapped} unique chat`;
+      $("ck-stat-mapped-d").textContent = simple
+        ? `${mapped} people linked to chat`
+        : `${members.length} twins · ${team.unique_slack_users ?? mapped} unique chat`;
     if ($("ck-stat-content")) $("ck-stat-content").textContent = String(withContent);
     if ($("ck-stat-content-d"))
-      $("ck-stat-content-d").textContent = `${members.filter((m) => m.last_digest).length} with any draft`;
+      $("ck-stat-content-d").textContent = simple
+        ? "people with a real status story"
+        : `${members.filter((m) => m.last_digest).length} with any draft`;
     if ($("ck-stat-conflicts")) $("ck-stat-conflicts").textContent = String(confCount);
     if ($("ck-stat-conflicts-d"))
-      $("ck-stat-conflicts-d").textContent =
-        confCount > 0 ? "shared-work conflicts live" : "no open work conflicts";
+      $("ck-stat-conflicts-d").textContent = simple
+        ? confCount > 0
+          ? "places the team is stuck or mixed"
+          : "no open friction right now"
+        : confCount > 0
+          ? "shared-work conflicts live"
+          : "no open work conflicts";
 
     // Pod roster
     const pod = $("ck-pod");
     if (pod) {
       if (!members.length) {
-        pod.innerHTML = `<li class="muted">No pod members — open <strong>Team</strong> and map people (or bulk import).</li>`;
+        pod.innerHTML = simple
+          ? `<li class="muted">No one on the pod yet — open <strong>Team</strong> and add people.</li>`
+          : `<li class="muted">No pod members — open <strong>Team</strong> and map people (or bulk import).</li>`;
+      } else if (simple) {
+        pod.innerHTML = members
+          .map((m) => {
+            const d = m.last_digest;
+            const name = m.display_name || m.subject_id;
+            const dig = plainDigestStatus(d);
+            const preview = d?.preview
+              ? d.preview
+                  .split("\n")
+                  .map((l) => l.replace(/^[*•\-\s]+/, "").trim())
+                  .filter((l) => l && !l.match(/^[A-Z_]+:/) && !l.includes("led_") && !l.includes("dft_"))
+                  .slice(0, 2)
+                  .join(" · ")
+                  .slice(0, 90)
+              : "";
+            const did = d?.draft_id || "";
+            const lid = d?.ledger_id || "";
+            const tone = d?.has_content ? "up" : d ? "mid" : "down";
+            return `<li class="ux-card">
+              <button type="button" class="ghost dig-open ux-card-btn" data-draft="${esc(did)}" data-ledger="${esc(lid)}">
+                <span class="ux-avatar">${esc((name || "?").slice(0, 1).toUpperCase())}</span>
+                <span class="ux-card-body">
+                  <strong>${esc(name)}</strong>
+                  <span class="pill ${tone}">${esc(dig)}</span>
+                  ${preview ? `<div class="muted small">${esc(preview)}</div>` : ""}
+                  ${!m.slack_mapped ? `<div class="muted small">Chat not connected yet</div>` : ""}
+                </span>
+              </button>
+            </li>`;
+          })
+          .join("");
       } else {
         pod.innerHTML = members
           .map((m) => {
@@ -671,32 +805,60 @@ async function refreshCockpit() {
               <button type="button" class="ghost graph-filter-btn pod-row-btn dig-open"
                 data-draft="${esc(did)}" data-ledger="${esc(lid)}">
                 <strong>${esc(m.display_name || m.subject_id)}</strong>
+                <span class="muted small">${esc(shortHumanId(m.subject_id))}</span>
                 ${m.slack_mapped ? "" : " · <span class='muted'>unmapped chat</span>"}
               </button>
-              <div class="muted small">${esc(dig)}${d?.preview ? " · " + esc(d.preview.slice(0, 72)) : ""}</div>
+              <div class="muted small">${esc(dig)}${d?.preview ? " · " + esc(d.preview.slice(0, 72)) : ""}
+              ${did ? ` · <code>${esc(shortHumanId(did))}</code>` : ""}</div>
             </li>`;
           })
           .join("");
-        pod.querySelectorAll(".dig-open").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const did = btn.getAttribute("data-draft");
-            const lid = btn.getAttribute("data-ledger");
-            if (!did) {
-              alert("No draft yet — Compile digests first");
-              return;
-            }
-            const ok = await openDraftById(tenant, did, lid);
-            if (ok) showView("status");
-          });
-        });
       }
+      pod.querySelectorAll(".dig-open").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const did = btn.getAttribute("data-draft");
+          const lid = btn.getAttribute("data-ledger");
+          if (!did) {
+            alert(simple ? "No status update yet — try Compile digests first" : "No draft yet — Compile digests first");
+            return;
+          }
+          const ok = await openDraftById(tenant, did, lid);
+          if (ok) showView("status");
+        });
+      });
     }
 
-    // Conflicts
+    // Conflicts / friction
     const confEl = $("ck-conflicts");
     if (confEl) {
       if (!cards.length) {
-        confEl.innerHTML = `<p class="muted">No open live conflicts. Enrich story or ship real dual-owner PRs to surface SHIP/FREEZE.</p>`;
+        confEl.innerHTML = simple
+          ? `<p class="muted">No open friction right now. When people disagree on ship vs hold, it shows up here.</p>`
+          : `<p class="muted">No open live conflicts. Enrich story or ship real dual-owner PRs to surface SHIP/FREEZE.</p>`;
+      } else if (simple) {
+        confEl.innerHTML =
+          `<div class="ux-friction-list">` +
+          cards
+            .slice(0, 12)
+            .map((c) => {
+              const title = plainConflictKind(c.kind);
+              const sev = plainSeverity(c.severity);
+              const sum = (c.summary || "")
+                .replace(/intent:person:[^\s]+/gi, "")
+                .replace(/pr:[^\s]+/gi, "a shared pull request")
+                .replace(/cfl_[^\s]+/gi, "")
+                .trim();
+              return `<div class="ux-friction-card">
+                <div class="ux-friction-top">
+                  <span class="pill ${c.severity === "high" ? "down" : "mid"}">${esc(sev || "Note")}</span>
+                  <strong>${esc(title)}</strong>
+                </div>
+                <p class="muted small">${esc(sum || "Needs a quick alignment conversation.")}</p>
+                <p class="muted small"><em>What to do:</em> Get the people involved in one thread and pick a direction.</p>
+              </div>`;
+            })
+            .join("") +
+          `</div>`;
       } else {
         confEl.innerHTML =
           `<ul class="item-list">` +
@@ -713,61 +875,115 @@ async function refreshCockpit() {
     const intentUl = $("ck-intents");
     if (intentUl) {
       const sample = pulse.intents?.sample || [];
-      intentUl.innerHTML = sample.length
-        ? sample
-            .slice(0, 12)
-            .map((n) => {
-              const ty = n.intent_type || n.type || "Intent";
-              return `<li><strong>${esc(ty)}</strong> ${esc(n.label || n.title || n.id || "")}</li>`;
-            })
-            .join("")
-        : `<li class="muted">No live intents in sample</li>`;
+      if (!sample.length) {
+        intentUl.innerHTML = `<li class="muted">${simple ? "No open focuses in the sample" : "No live intents in sample"}</li>`;
+      } else if (simple) {
+        intentUl.innerHTML = sample
+          .slice(0, 12)
+          .map((n) => {
+            const ty = n.intent_type || n.type || "Intent";
+            const lab = (n.label || n.title || "")
+              .replace(/^(SHIP|BLOCKED|FREEZE|FIX|EXPLORE|REVIEW):\s*/i, "");
+            return `<li class="ux-chip-row"><span class="pill mid">${esc(plainIntentType(ty))}</span> ${esc(lab || "Work in flight")}</li>`;
+          })
+          .join("");
+      } else {
+        intentUl.innerHTML = sample
+          .slice(0, 12)
+          .map((n) => {
+            const ty = n.intent_type || n.type || "Intent";
+            return `<li><strong>${esc(ty)}</strong> ${esc(n.label || n.title || n.id || "")}</li>`;
+          })
+          .join("");
+      }
     }
 
     // Heat
     if (ins && ins.activity) {
       const act = ins.activity;
-      if ($("ck-heat-insight")) $("ck-heat-insight").textContent = act.insight || "";
+      if ($("ck-heat-insight")) {
+        $("ck-heat-insight").textContent = simple
+          ? act.insight
+              ? act.insight.replace(/UTC/g, "team time").replace(/Peak day/i, "Busiest day")
+              : "When the team usually ships work."
+          : act.insight || "";
+      }
       const hod = act.hour_of_day_utc || {};
       const counts = hod.counts || [];
       const labels = hod.labels || [];
       if ($("ck-heat-hours")) {
-        let lines = [];
-        for (let i = 0; i < counts.length; i++) {
-          const n = counts[i] || 0;
-          if (!n) continue;
-          const bar = "█".repeat(Math.min(28, n));
-          lines.push(`${labels[i] || i}: ${bar} ${n}`);
+        if (simple) {
+          let html = `<div class="ux-heat-bars">`;
+          for (let i = 0; i < counts.length; i++) {
+            const n = counts[i] || 0;
+            if (!n) continue;
+            const pct = Math.min(100, Math.round((n / Math.max(...counts, 1)) * 100));
+            html += `<div class="ux-heat-row"><span class="ux-heat-lab">${esc(labels[i] || String(i))}</span>
+              <span class="ux-heat-bar" style="width:${pct}%"></span>
+              <span class="muted small">${n}</span></div>`;
+          }
+          html += `</div>`;
+          $("ck-heat-hours").innerHTML = html || `<span class="muted">No activity heat yet.</span>`;
+        } else {
+          let lines = [];
+          for (let i = 0; i < counts.length; i++) {
+            const n = counts[i] || 0;
+            if (!n) continue;
+            const bar = "█".repeat(Math.min(28, n));
+            lines.push(`${labels[i] || i}: ${bar} ${n}`);
+          }
+          $("ck-heat-hours").textContent = lines.join("\n") || "No heat yet.";
         }
-        $("ck-heat-hours").textContent = lines.join("\n") || "No heat yet.";
       }
       if ($("ck-heat-authors")) {
         const by = act.by_author || {};
         const top = Object.entries(by)
           .sort((a, b) => b[1] - a[1])
-          .slice(0, 6)
-          .map(([k, v]) => `${k}: ${v} authored`)
-          .join(" · ");
-        $("ck-heat-authors").textContent = top
-          ? `Authored volume (context, not rank): ${top}`
-          : "";
+          .slice(0, 6);
+        $("ck-heat-authors").textContent = simple
+          ? top.length
+            ? `Most active on the map: ${top.map(([k, v]) => `${k} (${v})`).join(", ")} — context only, not a ranking.`
+            : ""
+          : top.length
+            ? `Authored volume (context, not rank): ${top.map(([k, v]) => `${k}: ${v}`).join(" · ")}`
+            : "";
       }
     } else if ($("ck-heat-insight")) {
-      $("ck-heat-insight").textContent = "Heat unavailable";
+      $("ck-heat-insight").textContent = simple ? "Rhythm data not available yet" : "Heat unavailable";
     }
 
     // Graph stats
     if ($("ck-graph-stats") && graph) {
-      $("ck-graph-stats").textContent = JSON.stringify(
-        {
-          nodes: (graph.nodes || []).length,
-          edges: (graph.edges || []).length,
-          by_type: graph.by_type || {},
-          edge_by_type: graph.edge_by_type || {},
-        },
-        null,
-        2
-      );
+      const nodes = (graph.nodes || []).length;
+      const edges = (graph.edges || []).length;
+      const by = graph.by_type || {};
+      if (simple) {
+        const friendly = {
+          Commit: "code updates",
+          Person: "people",
+          Repo: "repositories",
+          PullRequest: "pull requests",
+          Intent: "focus claims",
+          Issue: "issues",
+        };
+        const bits = Object.entries(by)
+          .map(([k, v]) => `${v} ${friendly[k] || k.toLowerCase()}`)
+          .join(" · ");
+        $("ck-graph-stats").textContent = bits
+          ? `Map has ${nodes} items and ${edges} links.\n${bits}`
+          : `Map has ${nodes} items and ${edges} links.`;
+      } else {
+        $("ck-graph-stats").textContent = JSON.stringify(
+          {
+            nodes,
+            edges,
+            by_type: by,
+            edge_by_type: graph.edge_by_type || {},
+          },
+          null,
+          2
+        );
+      }
     }
 
     // Tomorrow focus — suggestions from conflicts, intents, digests + persisted pins
@@ -775,18 +991,23 @@ async function refreshCockpit() {
     for (const c of cards.slice(0, 5)) {
       tomorrow.push({
         kind: "conflict",
-        text: `${c.severity || c.kind}: ${c.summary || c.kind}`,
-        why: "Resolve shared-work conflict before next standup",
+        text: simple
+          ? `${plainConflictKind(c.kind)}: ${(c.summary || "").replace(/intent:person:\S+/g, "").replace(/pr:\S+/g, "shared work").trim() || "needs alignment"}`
+          : `${c.severity || c.kind}: ${c.summary || c.kind}`,
+        why: simple
+          ? "Clear this before the next team sync"
+          : "Resolve shared-work conflict before next standup",
         pinned: false,
       });
     }
     for (const n of (pulse.intents?.sample || []).slice(0, 5)) {
       const ty = n.intent_type || "Intent";
       if (ty === "BLOCKED" || ty === "FREEZE" || ty === "SHIP") {
+        const lab = (n.label || n.title || "").replace(/^(SHIP|BLOCKED|FREEZE|FIX):\s*/i, "");
         tomorrow.push({
           kind: "intent",
-          text: `${ty}: ${n.label || n.title || ""}`,
-          why: "Intent needs champion attention",
+          text: simple ? `${plainIntentType(ty)} — ${lab}` : `${ty}: ${n.label || n.title || ""}`,
+          why: simple ? "Someone needs a clear next step" : "Intent needs champion attention",
           pinned: false,
         });
       }
@@ -3240,26 +3461,52 @@ async function loadIntentLedger() {
     const live = s.live ?? "—";
     const dem = s.demo ?? "—";
     const total = s.total ?? led.count ?? 0;
+    const simple = isSimpleMode();
     if (stats) {
-      stats.innerHTML = [
-        `<span class="pill up">live claims: ${esc(String(live))}</span>`,
-        `<span class="pill mid">demo: ${esc(String(dem))}</span>`,
-        `<span class="pill mid">shown: ${esc(String(total))}</span>`,
-        eng?.conflicts_cached
-          ? `<span class="pill mid">conflicts: ${esc(String(eng.conflicts_cached.count ?? 0))}</span>`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+      stats.innerHTML = simple
+        ? [
+            `<span class="pill up">${esc(String(live))} live focus item${live === 1 ? "" : "s"}</span>`,
+            dem > 0
+              ? `<span class="pill mid">${esc(String(dem))} demo (ignore for real decisions)</span>`
+              : "",
+            `<span class="pill mid">showing ${esc(String(total))}</span>`,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        : [
+            `<span class="pill up">live claims: ${esc(String(live))}</span>`,
+            `<span class="pill mid">demo: ${esc(String(dem))}</span>`,
+            `<span class="pill mid">shown: ${esc(String(total))}</span>`,
+            eng?.conflicts_cached
+              ? `<span class="pill mid">conflicts: ${esc(String(eng.conflicts_cached.count ?? 0))}</span>`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
     }
     if (pill) {
-      pill.textContent = eng?.in_house === false ? "external?" : "in-house";
+      pill.textContent = simple ? "focus list" : eng?.in_house === false ? "external?" : "in-house";
       pill.className = "pill up";
     }
     const claims = led.claims || [];
     if (list) {
       if (!claims.length) {
-        list.innerHTML = `<li class="muted">No open live claims yet — capture via bot/channel keywords or Capture claim. Demo seeds hidden unless checked.</li>`;
+        list.innerHTML = simple
+          ? `<li class="muted">No open focus items yet. Capture a claim, or wait for Slack/GitHub signals.</li>`
+          : `<li class="muted">No open live claims yet — capture via bot/channel keywords or Capture claim. Demo seeds hidden unless checked.</li>`;
+      } else if (simple) {
+        list.innerHTML = claims
+          .map((c) => {
+            const ty = c.intent_type || "OTHER";
+            const sum = (c.summary || c.text_preview || "")
+              .replace(/^(SHIP|BLOCKED|FREEZE|FIX|EXPLORE|REVIEW):\s*/i, "")
+              .slice(0, 140);
+            const own = c.owner_subject ? esc(c.owner_subject) : "Someone";
+            const demoTag = c.is_demo ? ` <span class="pill mid">demo</span>` : "";
+            return `<li class="ux-card"><span class="pill mid">${esc(plainIntentType(ty))}</span>${demoTag}
+              <strong>${esc(own)}</strong> — ${esc(sum || plainIntentType(ty))}</li>`;
+          })
+          .join("");
       } else {
         list.innerHTML = claims
           .map((c) => {
@@ -3276,9 +3523,9 @@ async function loadIntentLedger() {
       }
     }
     if (note) {
-      note.textContent =
-        (led.note || "") +
-        (eng?.adequacy_note ? " · " + eng.adequacy_note : "");
+      note.textContent = simple
+        ? "Same data as technical view — shown in plain language."
+        : (led.note || "") + (eng?.adequacy_note ? " · " + eng.adequacy_note : "");
     }
   } catch (e) {
     if (stats) stats.innerHTML = `<span class="pill down">ledger: ${esc(e.message || e)}</span>`;
@@ -3308,9 +3555,15 @@ async function captureIntentClaim() {
       }),
     });
     const c = body.claim || {};
-    alert(
-      `Captured ${c.intent_type || "?"} (${Math.round((c.confidence || 0) * 100)}% conf)\n${c.summary || ""}\nid: ${c.claim_id || ""}`
-    );
+    if (isSimpleMode()) {
+      alert(
+        `Saved: ${plainIntentType(c.intent_type)}\n${c.summary || ""}\n\nYou can find it under focus items / What needs attention.`
+      );
+    } else {
+      alert(
+        `Captured ${c.intent_type || "?"} (${Math.round((c.confidence || 0) * 100)}% conf)\n${c.summary || ""}\nid: ${c.claim_id || ""}`
+      );
+    }
     await loadIntentLedger();
   } catch (e) {
     alert("Capture failed: " + (e.message || e));
@@ -3389,17 +3642,27 @@ async function loadCommitments(mode) {
     const body = await jfetch(
       `/v3/tenants/${encodeURIComponent(tenant)}/commitments?${q}`
     );
+    const simple = isSimpleMode();
     if (stats) {
-      stats.innerHTML = [
-        `<span class="pill up">open: ${esc(String(body.open_count ?? 0))}</span>`,
-        `<span class="pill mid">shown: ${esc(String(body.count ?? 0))}</span>`,
-        `<span class="pill mid">view: ${esc(__cmtMode)}</span>`,
-      ].join(" ");
+      const modeLabel =
+        __cmtMode === "mine" ? "I owe" : __cmtMode === "owed" ? "Owed to me" : "Whole team";
+      stats.innerHTML = simple
+        ? [
+            `<span class="pill up">${esc(String(body.open_count ?? 0))} open promises</span>`,
+            `<span class="pill mid">${esc(modeLabel)}</span>`,
+          ].join(" ")
+        : [
+            `<span class="pill up">open: ${esc(String(body.open_count ?? 0))}</span>`,
+            `<span class="pill mid">shown: ${esc(String(body.count ?? 0))}</span>`,
+            `<span class="pill mid">view: ${esc(__cmtMode)}</span>`,
+          ].join(" ");
     }
     const rows = body.commitments || [];
     if (list) {
       if (!rows.length) {
-        list.innerHTML = `<li class="muted">No open commitments. Capture from Slack (“I'll…”) or Add commitment.</li>`;
+        list.innerHTML = simple
+          ? `<li class="muted">No open promises. When someone says “I'll…”, it shows up here — or add one.</li>`
+          : `<li class="muted">No open commitments. Capture from Slack (“I'll…”) or Add commitment.</li>`;
       } else {
         list.innerHTML = rows
           .map((c) => {
@@ -3407,15 +3670,33 @@ async function loadCommitments(mode) {
             const who = c.promiser_label || c.promiser || "";
             const to = c.promisee_label || c.promisee || "";
             const lin = c.linear_url
-              ? `<a class="cmt-linear" href="${esc(c.linear_url)}" target="_blank" rel="noopener">Linear ↗</a>`
+              ? `<a class="cmt-linear" href="${esc(c.linear_url)}" target="_blank" rel="noopener">Open in Linear ↗</a>`
               : "";
+            if (simple) {
+              return `<li class="ux-card ux-cmt-card">
+                <div class="ux-cmt-main">
+                  <span class="ux-avatar">${esc((who || "?").slice(0, 1).toUpperCase())}</span>
+                  <div>
+                    <strong>${esc(c.headline || c.text || "")}</strong>
+                    <div class="muted small">${to ? esc(who) + " → " + esc(to) : esc(who)}</div>
+                    ${lin ? `<div class="muted small">${lin}</div>` : ""}
+                  </div>
+                </div>
+                <div class="actions-inline" style="margin-top:0.35rem;">
+                  <button type="button" class="primary cmt-done" data-id="${esc(id)}">Done</button>
+                  <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Not doing</button>
+                  <button type="button" class="ghost cmt-linear-btn" data-id="${esc(id)}">Send to Linear</button>
+                </div>
+              </li>`;
+            }
             return `<li>
               <strong>${esc(c.headline || c.text || "")}</strong>
-              <div class="muted small">${esc(who)}${to ? " → " + esc(to) : ""} · ${esc(c.source || "")} ${lin}</div>
+              <div class="muted small">${esc(who)}${to ? " → " + esc(to) : ""} · ${esc(c.source || "")}
+              · <code>${esc(shortHumanId(id))}</code> ${lin}</div>
               <div class="actions-inline" style="margin-top:0.25rem;">
                 <button type="button" class="ghost cmt-done" data-id="${esc(id)}">Mark done</button>
                 <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Dismiss</button>
-                <button type="button" class="ghost cmt-linear-btn tech-only" data-id="${esc(id)}">Export to Linear</button>
+                <button type="button" class="ghost cmt-linear-btn" data-id="${esc(id)}">Export to Linear</button>
               </div>
             </li>`;
           })
@@ -3568,18 +3849,27 @@ if ($("ck-cmt-digest-send")) {
   });
 }
 
-// UX mode toggle (simple / technical)
-document.querySelectorAll(".ux-mode-btn, #btn-ux-mode, #btn-ux-mode-top").forEach((btn) => {
-  btn.addEventListener("click", () => toggleUxMode());
-});
-if ($("btn-ux-simple")) {
-  $("btn-ux-simple").addEventListener("click", () => setUxMode("simple"));
+// UX mode toggle — presentation only (all features always available)
+function wireUxModeButtons() {
+  document.querySelectorAll(".ux-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => toggleUxMode(e));
+  });
+  if ($("btn-ux-simple")) {
+    $("btn-ux-simple").addEventListener("click", (e) => {
+      e.preventDefault();
+      setUxMode("simple");
+    });
+  }
+  if ($("btn-ux-technical")) {
+    $("btn-ux-technical").addEventListener("click", (e) => {
+      e.preventDefault();
+      setUxMode("technical");
+    });
+  }
 }
-if ($("btn-ux-technical")) {
-  $("btn-ux-technical").addEventListener("click", () => setUxMode("technical"));
-}
-// Apply saved mode early
-setUxMode(getUxMode());
+wireUxModeButtons();
+// Apply saved mode (no full re-render on first paint — refreshCockpit follows boot)
+setUxMode(getUxMode(), { rerender: false });
 
 // Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)
 syncTenantFields(PILOT_TENANT);

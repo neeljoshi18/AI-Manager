@@ -620,16 +620,14 @@ code {
   50% { opacity: 0.25; }
 }
 
-/* Simple vs Technical mode (like light/dark — product language, not theme) */
-body.mode-simple .tech-only {
-  display: none !important;
-}
-body.mode-technical .simple-only {
-  display: none !important;
-}
+/* Simple vs Technical = presentation only (all features always available) */
 .ux-mode-btn {
   font-size: 12px;
   margin-top: 0.35rem;
+  cursor: pointer;
+}
+.ux-mode-btn[aria-pressed="true"] {
+  border-color: var(--up, #0a7);
 }
 .nav-foot {
   display: flex;
@@ -637,12 +635,110 @@ body.mode-technical .simple-only {
   gap: 0.35rem;
   align-items: flex-start;
 }
-body.mode-simple .nav-sub {
-  opacity: 0.9;
-}
 body.mode-simple #view-sub {
   max-width: 36rem;
 }
+/* Simple: friendlier type + card layouts */
+body.mode-simple .item-list li {
+  line-height: 1.45;
+}
 .cmt-linear {
+  font-size: 11px;
+}
+.ux-card {
+  list-style: none;
+  margin: 0.4rem 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: 10px;
+  background: var(--surface-2, #f8f9fb);
+}
+.ux-card-btn {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.ux-avatar {
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: #111;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.ux-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.ux-friction-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ux-friction-card {
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border, #e5e5e5);
+  background: #fff;
+}
+.ux-friction-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+.ux-heat-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 12px;
+}
+.ux-heat-row {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+.ux-heat-lab {
+  color: var(--muted, #737373);
+  font-variant-numeric: tabular-nums;
+}
+.ux-heat-bar {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #111 0%, #444 100%);
+  min-width: 4px;
+}
+.ux-cmt-card .ux-cmt-main {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+}
+.ux-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+/* Technical view: monospace touches on raw stats */
+body.mode-technical #ck-graph-stats,
+body.mode-technical #ck-heat-hours,
+body.mode-technical #ck-intent-ledger code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }

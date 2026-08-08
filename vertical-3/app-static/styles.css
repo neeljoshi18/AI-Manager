@@ -620,7 +620,200 @@ code {
   50% { opacity: 0.25; }
 }
 
-/* Simple vs Technical = presentation only (all features always available) */
+/* Simple vs Technical: two full presentations of the same product */
+body.mode-simple .tech-panel {
+  display: none !important;
+}
+body.mode-technical .simple-panel {
+  display: none !important;
+}
+body.mode-simple .ux-hide-simple {
+  display: none !important;
+}
+body.mode-simple {
+  --viz-bg: #f4f6f8;
+  --viz-card: #ffffff;
+  --viz-ink: #0f172a;
+  --viz-muted: #64748b;
+  --viz-accent: #0f172a;
+}
+body.mode-simple .main {
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+}
+body.mode-simple .nav {
+  background: #0f172a;
+  color: #e2e8f0;
+}
+body.mode-simple .nav-title,
+body.mode-simple .nav-sub,
+body.mode-simple .nav-item {
+  color: #e2e8f0;
+}
+body.mode-simple .nav-item.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+body.mode-simple #view-title {
+  font-size: 1.65rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+/* Visual home board */
+.viz-hero {
+  background: var(--viz-card, #fff);
+  border-radius: 16px;
+  padding: 1.5rem 1.75rem;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+  margin-bottom: 1rem;
+}
+.viz-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  color: var(--viz-muted, #64748b);
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+}
+.viz-headline {
+  margin: 0;
+  font-size: 1.55rem;
+  line-height: 1.25;
+  color: var(--viz-ink, #0f172a);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.viz-sub {
+  margin: 0.5rem 0 1rem;
+  color: var(--viz-muted, #64748b);
+  font-size: 1rem;
+  max-width: 40rem;
+}
+.viz-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.viz-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+@media (max-width: 900px) {
+  .viz-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.viz-metric {
+  background: var(--viz-card, #fff);
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+}
+.viz-metric-n {
+  font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  color: var(--viz-ink, #0f172a);
+  line-height: 1.1;
+}
+.viz-metric-l {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--viz-muted, #64748b);
+  font-weight: 500;
+}
+.viz-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+@media (max-width: 900px) {
+  .viz-columns {
+    grid-template-columns: 1fr;
+  }
+}
+.viz-col {
+  background: var(--viz-card, #fff);
+  border-radius: 14px;
+  padding: 1rem 1.15rem;
+  border: 1px solid #e2e8f0;
+  min-height: 8rem;
+}
+.viz-col-h {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--viz-ink, #0f172a);
+}
+.viz-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.viz-card {
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.viz-card-urgent {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.viz-card-soon {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.viz-card-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #0f172a;
+  line-height: 1.35;
+}
+.viz-card-action {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+.viz-empty {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  padding: 0.5rem 0;
+}
+.viz-people {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.viz-person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font: inherit;
+}
+.viz-person-name {
+  font-weight: 600;
+  flex: 1;
+  min-width: 5rem;
+}
+body.mode-simple code.small,
+body.mode-simple .kv {
+  font-size: 12px;
+}
+
 .ux-mode-btn {
   font-size: 12px;
   margin-top: 0.35rem;

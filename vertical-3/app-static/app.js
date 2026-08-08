@@ -34,37 +34,36 @@ function setUxMode(mode, opts) {
   } catch (_) {}
   document.body.classList.remove("mode-simple", "mode-technical");
   document.body.classList.add(m === "technical" ? "mode-technical" : "mode-simple");
-  const label = m === "technical" ? "Technical" : "Simple";
+  // Nav: friendly names in Simple, engineer names in Technical
+  document.querySelectorAll(".nav-item[data-label-simple]").forEach((btn) => {
+    const s = btn.getAttribute("data-label-simple");
+    const t = btn.getAttribute("data-label-tech");
+    if (s && t) btn.textContent = m === "simple" ? s : t;
+  });
   document.querySelectorAll(".ux-mode-btn").forEach((btn) => {
-    // Button shows the mode you can switch *to*
     btn.textContent = m === "technical" ? "Simple view" : "Technical view";
     btn.setAttribute("aria-pressed", m === "simple" ? "true" : "false");
     btn.title =
       m === "technical"
-        ? "Switch to Simple view: plain English + visual cards (same features)"
-        : "Switch to Technical view: tags, IDs, raw stats (same features)";
+        ? "Simple view: visual org story, plain English, low jargon"
+        : "Technical view: tags, IDs, denser operator console";
   });
   if ($("settings-ux-mode")) {
     $("settings-ux-mode").textContent =
       m === "simple"
-        ? "Mode: Simple — same features, plain language and visual cards for anyone."
-        : "Mode: Technical — same features, with machine tags, IDs, and raw detail.";
+        ? "Mode: Simple — visual, plain English. Same data; less intimidation."
+        : "Mode: Technical — same data with machine tags, IDs, and raw detail.";
   }
-  if ($("nav-mode")) {
-    $("nav-mode").textContent = label.toLowerCase() + " view";
+  if ($("nav-mode")) $("nav-mode").textContent = m === "simple" ? "simple view" : "technical view";
+  const navSub = document.querySelector(".nav-sub");
+  if (navSub) {
+    navSub.textContent =
+      m === "simple" ? "See your org clearly" : "Kill status meetings";
   }
-  // Re-paint current screens so wording/layout flips immediately
   if (opts?.rerender !== false) {
     try {
-      const active = document.querySelector(".nav-item.active");
-      const v = active?.getAttribute("data-view") || "cockpit";
-      if (v === "cockpit" && typeof refreshCockpit === "function") refreshCockpit();
-      else if (typeof loadPlainInsights === "function") loadPlainInsights().catch(() => {});
-      if (typeof loadCommitments === "function") loadCommitments().catch(() => {});
-      if (typeof loadIntentLedger === "function") loadIntentLedger().catch(() => {});
-    } catch (_) {
-      /* ignore first-boot */
-    }
+      rerenderActiveViewForUx();
+    } catch (_) {}
   }
 }
 function toggleUxMode(ev) {
@@ -73,6 +72,24 @@ function toggleUxMode(ev) {
     ev.stopPropagation();
   }
   setUxMode(getUxMode() === "simple" ? "technical" : "simple");
+}
+function rerenderActiveViewForUx() {
+  const active = document.querySelector(".nav-item.active");
+  const v = active?.getAttribute("data-view") || "cockpit";
+  if (v === "cockpit" && typeof refreshCockpit === "function") refreshCockpit();
+  if (v === "team" && typeof refreshTeam === "function") refreshTeam();
+  if (v === "graph" && typeof refreshGraph === "function") refreshGraph(false);
+  if (v === "connections") {
+    if (typeof refreshConnectors === "function") refreshConnectors();
+    if (typeof refreshHealth === "function") refreshHealth();
+    if (typeof refreshOnboarding === "function") refreshOnboarding();
+  }
+  if (v === "insights" && typeof loadDevInsightsView === "function") loadDevInsightsView();
+  if (v === "today" && typeof refreshToday === "function") refreshToday();
+  if (v === "status" && typeof applyStatusUxMode === "function") applyStatusUxMode();
+  if (typeof loadPlainInsights === "function") loadPlainInsights().catch(() => {});
+  if (typeof loadCommitments === "function") loadCommitments().catch(() => {});
+  if (typeof loadIntentLedger === "function") loadIntentLedger().catch(() => {});
 }
 
 /** Map machine intent/conflict tags → plain English (Simple view). */
@@ -196,20 +213,32 @@ function showView(name) {
   const simple = isSimpleMode();
   const titles = {
     cockpit: simple
-      ? ["Champion cockpit", "What needs attention · who owes what · team status"]
-      : ["Champion cockpit", "Pod · digests · conflicts · heat · graph · intent ledger"],
-    today: ["Today", "Quick pulse — Cockpit has the full board"],
-    status: ["My status", "Approve / edit / don't send your digest"],
-    team: ["Team", "Map people and compile digests"],
+      ? ["Home", "Your org at a glance — status, promises, friction"]
+      : ["Cockpit", "Operator console — digests, conflicts, heat, graph, ledgers"],
+    today: simple
+      ? ["Today", "Quick snapshot of the team"]
+      : ["Today", "Pulse + digests + blockers"],
+    status: simple
+      ? ["My update", "Review and send your status — or hold it"]
+      : ["My status", "Approve / edit / don't send · draft + ledger ids"],
+    team: simple
+      ? ["People", "Who's on the pod and their latest update"]
+      : ["Team", "Map subjects · bulk import · compile digests"],
     graph: simple
-      ? ["Work map", "People and work connected — who touches what"]
-      : ["Graph", "Context map — nodes, edges, intent types"],
-    connections: ["Connections", "Connect Slack & GitHub · health"],
-    settings: ["Settings", "Look & feel · cadence · system"],
+      ? ["Work map", "Who is connected to what work"]
+      : ["Graph", "Nodes · edges · intent types · filters"],
+    connections: simple
+      ? ["Connect", "Link chat and GitHub — health at a glance"]
+      : ["Connections", "OAuth · webhooks · service pills"],
+    settings: simple
+      ? ["Settings", "Simple vs Technical view · how updates work"]
+      : ["Settings", "Env cadence · metrics · Neon · health"],
     insights: simple
-      ? ["Team rhythm", "When the pod works — not who is 'best'"]
-      : ["Dev insights", "Activity heat · commits · authored edges"],
-    lab: ["Lab", "Engineer console and raw JSON"],
+      ? ["Rhythm", "When the team is active — not rankings"]
+      : ["Dev insights", "Heat · authored edges · commit samples"],
+    lab: simple
+      ? ["Advanced", "Raw tools for engineers"]
+      : ["Lab", "Engineer console and raw JSON"],
   };
   if (name === "cockpit") {
     refreshCockpit();
@@ -224,9 +253,11 @@ function showView(name) {
   }
   if (name === "insights") {
     refreshDevInsights();
+    if (typeof applyInsightsUxMode === "function") applyInsightsUxMode();
   }
   if (name === "status") {
     loadLatest();
+    if (typeof applyStatusUxMode === "function") applyStatusUxMode();
   }
   if (name === "today") {
     refreshPulse();
@@ -1071,11 +1102,208 @@ async function refreshCockpit() {
         : "Pin the board to persist champion focus across reloads (tenant state).";
     }
 
+    // Visual simple home (always fill; visibility via CSS)
+    await fillVisualHome({
+      tenant,
+      members,
+      mapped,
+      withContent,
+      confCount,
+      cards,
+      ins,
+      soft,
+      multi,
+    });
+
     if (msg) {
-      msg.textContent = `Updated ${new Date().toISOString().slice(11, 19)} UTC · tenant ${tenant}`;
+      msg.textContent = simple
+        ? `Updated just now`
+        : `Updated ${new Date().toISOString().slice(11, 19)} UTC · tenant ${tenant}`;
     }
   } catch (e) {
     if (msg) msg.textContent = "Cockpit failed: " + (e.message || e);
+  }
+}
+
+/** Simple-mode visual board — org story without ops jargon. */
+async function fillVisualHome(ctx) {
+  const {
+    tenant,
+    members = [],
+    mapped = 0,
+    withContent = 0,
+    confCount = 0,
+    cards = [],
+    ins = null,
+    soft = false,
+    multi = false,
+  } = ctx || {};
+  let insights = null;
+  let cmts = [];
+  try {
+    insights = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/intent/insights`);
+  } catch (_) {}
+  try {
+    const body = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/commitments?status=open&limit=20`
+    );
+    cmts = body.commitments || [];
+  } catch (_) {}
+
+  const act = insights?.act_on_today || [];
+  const needN = act.length + confCount;
+  const openPromises = cmts.filter((c) => c.status === "open").length;
+
+  if ($("viz-m-people")) $("viz-m-people").textContent = String(mapped || members.length || 0);
+  if ($("viz-m-updates")) $("viz-m-updates").textContent = String(withContent);
+  if ($("viz-m-attention")) $("viz-m-attention").textContent = String(needN);
+  if ($("viz-m-promises")) $("viz-m-promises").textContent = String(openPromises);
+
+  // Headline story
+  let headline = "Your team is quiet right now.";
+  if (needN > 0 && openPromises > 0) {
+    headline = `${needN} thing${needN === 1 ? "" : "s"} need you · ${openPromises} open promise${openPromises === 1 ? "" : "s"}.`;
+  } else if (needN > 0) {
+    headline = `${needN} thing${needN === 1 ? "" : "s"} need your attention today.`;
+  } else if (openPromises > 0) {
+    headline = `${openPromises} open promise${openPromises === 1 ? "" : "s"} to keep an eye on.`;
+  } else if (withContent >= 2) {
+    headline = "Status is flowing — no fires in the open loops.";
+  } else if (mapped >= 2) {
+    headline = "People are mapped. Write status updates when you're ready.";
+  } else if (mapped < 2) {
+    headline = "Add people under People, then connect chat.";
+  }
+  if ($("viz-headline")) $("viz-headline").textContent = headline;
+  if ($("viz-sub")) {
+    $("viz-sub").textContent = soft || multi
+      ? "Digests and promises update from real work and chat — you only approve what gets sent."
+      : "Connect GitHub and Slack, map the pod, then this board fills itself.";
+  }
+
+  // Attention cards
+  const att = $("viz-attention");
+  if (att) {
+    const items = [];
+    for (const a of act.slice(0, 6)) {
+      items.push({
+        title: a.text || "Something needs a look",
+        action: a.action || "Open the thread and decide next step",
+        tone: a.priority === "high" ? "urgent" : "soon",
+      });
+    }
+    for (const c of cards.slice(0, 4)) {
+      if (c.is_demo) continue;
+      items.push({
+        title: plainConflictKind(c.kind),
+        action: "Get the people involved and pick ship vs hold — or reassign ownership.",
+        tone: c.severity === "high" ? "urgent" : "soon",
+      });
+    }
+    if (!items.length) {
+      att.innerHTML = `<div class="viz-empty">Nothing urgent. Enjoy the quiet.</div>`;
+    } else {
+      att.innerHTML = items
+        .slice(0, 6)
+        .map(
+          (it) => `<div class="viz-card viz-card-${esc(it.tone)}">
+          <div class="viz-card-title">${esc(it.title)}</div>
+          <div class="viz-card-action">${esc(it.action)}</div>
+        </div>`
+        )
+        .join("");
+    }
+  }
+
+  // Promises
+  const pr = $("viz-promises");
+  if (pr) {
+    if (!cmts.length) {
+      pr.innerHTML = `<div class="viz-empty">No open promises. When someone says “I'll…”, it lands here.</div>`;
+    } else {
+      pr.innerHTML = cmts
+        .slice(0, 6)
+        .map((c) => {
+          const who = c.promiser_label || c.promiser || "Someone";
+          const to = c.promisee_label || c.promisee;
+          return `<div class="viz-card">
+            <div class="viz-card-title">${esc(c.headline || c.text || "")}</div>
+            <div class="viz-card-action">${esc(who)}${to ? " → " + esc(to) : ""}
+              <button type="button" class="ghost viz-done" data-id="${esc(c.id)}">Done</button>
+            </div>
+          </div>`;
+        })
+        .join("");
+      pr.querySelectorAll(".viz-done").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await jfetch(
+              `/v3/tenants/${encodeURIComponent(tenant)}/commitments/${encodeURIComponent(btn.getAttribute("data-id"))}/done`,
+              { method: "POST", body: "{}" }
+            );
+            refreshCockpit();
+          } catch (e) {
+            alert(e.message || e);
+          }
+        });
+      });
+    }
+  }
+
+  // People grid
+  const pg = $("viz-people-grid");
+  if (pg) {
+    if (!members.length) {
+      pg.innerHTML = `<div class="viz-empty">No people yet — open People and add the pod.</div>`;
+    } else {
+      pg.innerHTML = members
+        .map((m) => {
+          const name = m.display_name || m.subject_id || "?";
+          const dig = plainDigestStatus(m.last_digest);
+          const ok = m.last_digest?.has_content;
+          const did = m.last_digest?.draft_id || "";
+          const lid = m.last_digest?.ledger_id || "";
+          return `<button type="button" class="viz-person dig-open" data-draft="${esc(did)}" data-ledger="${esc(lid)}">
+            <span class="ux-avatar">${esc(name.slice(0, 1).toUpperCase())}</span>
+            <span class="viz-person-name">${esc(name)}</span>
+            <span class="pill ${ok ? "up" : "mid"}">${esc(dig)}</span>
+          </button>`;
+        })
+        .join("");
+      pg.querySelectorAll(".dig-open").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const did = btn.getAttribute("data-draft");
+          if (!did) {
+            alert("No status update yet for this person.");
+            return;
+          }
+          const ok = await openDraftById(tenant, did, btn.getAttribute("data-ledger"));
+          if (ok) showView("status");
+        });
+      });
+    }
+  }
+
+  // Rhythm
+  if ($("viz-rhythm")) {
+    const insight = ins?.activity?.insight;
+    $("viz-rhythm").textContent = insight
+      ? insight.replace(/UTC/g, "team time").replace(/Peak day/i, "Busiest day")
+      : "Activity rhythm appears as the work map fills.";
+  }
+  const bars = $("viz-rhythm-bars");
+  if (bars && ins?.activity?.hour_of_day_utc) {
+    const counts = ins.activity.hour_of_day_utc.counts || [];
+    const labels = ins.activity.hour_of_day_utc.labels || [];
+    const max = Math.max(...counts, 1);
+    let html = "";
+    for (let i = 0; i < counts.length; i++) {
+      if (!counts[i]) continue;
+      const pct = Math.round((counts[i] / max) * 100);
+      html += `<div class="ux-heat-row"><span class="ux-heat-lab">${esc(labels[i] || i)}</span>
+        <span class="ux-heat-bar" style="width:${pct}%"></span><span class="muted small">${counts[i]}</span></div>`;
+    }
+    bars.innerHTML = html || "";
   }
 }
 
@@ -1364,25 +1592,34 @@ async function refreshConnectors() {
           ? "mid"
           : "mid";
     if (statusEl) {
-      statusEl.innerHTML = [
-        `<span class="pill ${slack.bot_token_in_vault ? "up" : slack.oauth_credentials ? "mid" : "mid"}">Slack: ${
-          slack.bot_token_in_vault
-            ? "token in vault"
-            : slack.oauth_credentials
-              ? "OAuth ready"
-              : "manual vault"
-        }</span>`,
-        `<span class="pill ${ghReady ? "up" : "mid"}">GitHub App: ${ghReady ? "ready" : "set slug/id"}</span>`,
-        `<span class="pill ${teamsPill}">Teams: ${esc(teams.status || "manual")}</span>`,
-        `<span class="pill mid">adapter: ${esc(o.delivery_adapter || "slack")}</span>`,
-        graphOk
-          ? `<span class="pill up">graph: healthy</span>`
-          : demo
-            ? `<span class="pill mid">graph: ${esc(demo.graph_status || "n/a")}</span>`
-            : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const simple = isSimpleMode();
+      statusEl.innerHTML = simple
+        ? [
+            `<span class="pill ${slackConnected ? "up" : "mid"}">${slackConnected ? "Chat connected" : "Connect chat"}</span>`,
+            `<span class="pill ${ghReady ? "up" : "mid"}">${ghReady ? "GitHub ready" : "Connect GitHub"}</span>`,
+            graphOk
+              ? `<span class="pill up">Work map healthy</span>`
+              : `<span class="pill mid">Work map warming up</span>`,
+          ].join(" ")
+        : [
+            `<span class="pill ${slack.bot_token_in_vault ? "up" : slack.oauth_credentials ? "mid" : "mid"}">Slack: ${
+              slack.bot_token_in_vault
+                ? "token in vault"
+                : slack.oauth_credentials
+                  ? "OAuth ready"
+                  : "manual vault"
+            }</span>`,
+            `<span class="pill ${ghReady ? "up" : "mid"}">GitHub App: ${ghReady ? "ready" : "set slug/id"}</span>`,
+            `<span class="pill ${teamsPill}">Teams: ${esc(teams.status || "manual")}</span>`,
+            `<span class="pill mid">adapter: ${esc(o.delivery_adapter || "slack")}</span>`,
+            graphOk
+              ? `<span class="pill up">graph: healthy</span>`
+              : demo
+                ? `<span class="pill mid">graph: ${esc(demo.graph_status || "n/a")}</span>`
+                : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
     }
     if ($("conn-github")) {
       $("conn-github").textContent = gh.note || $("conn-github").textContent;
@@ -1725,15 +1962,53 @@ async function refreshTeam() {
   const tenant = $("team-tenant")?.value?.trim() || "ten_github";
   const body = $("team-body");
   const ready = $("team-ready");
+  const simple = isSimpleMode();
   try {
     const team = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`);
     if (ready) {
       const withDigest = (team.members || []).filter((m) => m.last_digest).length;
-      ready.innerHTML = [
-        `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2 Slack maps"}</span>`,
-        `<span class="pill mid">${team.slack_mapped_count ?? 0} mapped / ${team.person_count ?? 0} members</span>`,
-        `<span class="pill mid">${withDigest} with digests</span>`,
-      ].join("");
+      ready.innerHTML = simple
+        ? [
+            `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">${team.multi_person_ready ? "Team of 2+ ready" : "Add at least 2 people"}</span>`,
+            `<span class="pill mid">${team.slack_mapped_count ?? 0} connected to chat</span>`,
+            `<span class="pill mid">${withDigest} with a status update</span>`,
+          ].join("")
+        : [
+            `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2 Slack maps"}</span>`,
+            `<span class="pill mid">${team.slack_mapped_count ?? 0} mapped / ${team.person_count ?? 0} members</span>`,
+            `<span class="pill mid">${withDigest} with digests</span>`,
+          ].join("");
+    }
+    // Simple: visual people grid above/instead of dense table
+    let simpleHost = $("team-simple-grid");
+    if (!simpleHost && body?.closest(".card")) {
+      simpleHost = document.createElement("div");
+      simpleHost.id = "team-simple-grid";
+      simpleHost.className = "viz-people simple-panel";
+      body.closest(".card").insertBefore(simpleHost, body.closest("table") || body.parentElement);
+    }
+    if (simpleHost) {
+      const members = team.members || [];
+      if (simple) {
+        simpleHost.classList.remove("hidden");
+        if (body?.closest("table")) body.closest("table").classList.add("hidden");
+        simpleHost.innerHTML = members.length
+          ? members
+              .map((m) => {
+                const name = m.display_name || m.subject_id;
+                return `<div class="viz-person">
+                  <span class="ux-avatar">${esc(name.slice(0, 1).toUpperCase())}</span>
+                  <span class="viz-person-name">${esc(name)}</span>
+                  <span class="pill ${m.slack_mapped ? "up" : "mid"}">${m.slack_mapped ? "Chat linked" : "No chat yet"}</span>
+                  <span class="pill ${m.last_digest?.has_content ? "up" : "mid"}">${esc(plainDigestStatus(m.last_digest))}</span>
+                </div>`;
+              })
+              .join("")
+          : `<div class="viz-empty">No people yet — add someone below.</div>`;
+      } else {
+        simpleHost.classList.add("hidden");
+        if (body?.closest("table")) body.closest("table").classList.remove("hidden");
+      }
     }
     if (body) {
       const members = team.members || [];
@@ -1745,12 +2020,14 @@ async function refreshTeam() {
             const aliases = Array.isArray(m.provider_aliases)
               ? m.provider_aliases.join(", ")
               : "";
-            const sub = aliases
-              ? `${esc(m.subject_id)} <span class="muted">(${esc(aliases)})</span>`
-              : esc(m.subject_id);
+            const sub = simple
+              ? esc(m.display_name || m.subject_id)
+              : aliases
+                ? `${esc(m.subject_id)} <span class="muted">(${esc(aliases)})</span>`
+                : esc(m.subject_id);
             return `<tr>
               <td>${esc(m.display_name || "—")}</td>
-              <td><code class="small">${sub}</code></td>
+              <td class="${simple ? "" : ""}">${simple ? sub : `<code class="small">${sub}</code>`}</td>
               <td><code class="small">${esc(m.slack_user_id || "—")}</code></td>
               <td>${m.slack_mapped ? "✓" : "○"}</td>
               <td>${digestCell(m)}</td>
@@ -2465,23 +2742,39 @@ function renderGraphChrome(data) {
   const v2Up = data.v2_up !== false && data.error !== "v2_unreachable";
   const status = data.status || (v2Up ? "ok" : "v2_down");
   if (statsEl) {
-    const statusPill =
-      status === "v2_down" || !v2Up
-        ? `<span class="pill down">V2 down — recovering</span>`
-        : status === "empty_or_error" && !(totals.nodes > 0)
-          ? `<span class="pill mid">V2 up · map empty (bridge re-projecting)</span>`
-          : `<span class="pill up">V2 up</span>`;
-    statsEl.innerHTML = [
-      live ? `<span class="pill up"><span class="graph-live-dot"></span>live</span>` : `<span class="pill mid">paused</span>`,
-      statusPill,
-      `<span class="pill mid">nodes ${returned.nodes ?? graphState.nodes.length}/${totals.nodes ?? "—"}</span>`,
-      `<span class="pill mid">edges ${returned.edges ?? graphState.edges.length}/${totals.edges ?? "—"}</span>`,
-      data.truncated ? `<span class="pill mid">truncated</span>` : "",
-      `<span class="pill mid">reader ${esc(data.reader || "—")}</span>`,
-      `<span class="pill mid">as_of ${esc((data.as_of || "").replace("T", " ").slice(0, 19))}</span>`,
-    ]
-      .filter(Boolean)
-      .join("");
+    const simple = isSimpleMode();
+    if (simple) {
+      const n = returned.nodes ?? graphState.nodes.length;
+      const e = returned.edges ?? graphState.edges.length;
+      statsEl.innerHTML = [
+        live
+          ? `<span class="pill up"><span class="graph-live-dot"></span>Live map</span>`
+          : `<span class="pill mid">Paused</span>`,
+        v2Up
+          ? `<span class="pill up">Connected</span>`
+          : `<span class="pill down">Map service offline</span>`,
+        `<span class="pill mid">${n} items</span>`,
+        `<span class="pill mid">${e} links</span>`,
+      ].join(" ");
+    } else {
+      const statusPill =
+        status === "v2_down" || !v2Up
+          ? `<span class="pill down">V2 down — recovering</span>`
+          : status === "empty_or_error" && !(totals.nodes > 0)
+            ? `<span class="pill mid">V2 up · map empty (bridge re-projecting)</span>`
+            : `<span class="pill up">V2 up</span>`;
+      statsEl.innerHTML = [
+        live ? `<span class="pill up"><span class="graph-live-dot"></span>live</span>` : `<span class="pill mid">paused</span>`,
+        statusPill,
+        `<span class="pill mid">nodes ${returned.nodes ?? graphState.nodes.length}/${totals.nodes ?? "—"}</span>`,
+        `<span class="pill mid">edges ${returned.edges ?? graphState.edges.length}/${totals.edges ?? "—"}</span>`,
+        data.truncated ? `<span class="pill mid">truncated</span>` : "",
+        `<span class="pill mid">reader ${esc(data.reader || "—")}</span>`,
+        `<span class="pill mid">as_of ${esc((data.as_of || "").replace("T", " ").slice(0, 19))}</span>`,
+      ]
+        .filter(Boolean)
+        .join("");
+    }
   }
   // Banner under toolbar for durable ops signal
   let banner = $("graph-banner");
@@ -2518,14 +2811,23 @@ function renderGraphChrome(data) {
   }
   const legend = $("graph-legend");
   if (legend) {
-    legend.innerHTML = [
-      `<span><i></i> Person</span>`,
-      `<span><i class="pr"></i> Pull request</span>`,
-      `<span><i class="issue"></i> Issue</span>`,
-      `<span><i class="intent"></i> Intent</span>`,
-      `<span><i class="repo"></i> Repo</span>`,
-      `<span>Lines = edges (AUTHORED, CLAIMS, BLOCKS…)</span>`,
-    ].join("");
+    legend.innerHTML = isSimpleMode()
+      ? [
+          `<span><i></i> People</span>`,
+          `<span><i class="pr"></i> Reviews / PRs</span>`,
+          `<span><i class="issue"></i> Issues</span>`,
+          `<span><i class="intent"></i> Focus / goals</span>`,
+          `<span><i class="repo"></i> Projects</span>`,
+          `<span>Lines show who is connected to what</span>`,
+        ].join("")
+      : [
+          `<span><i></i> Person</span>`,
+          `<span><i class="pr"></i> Pull request</span>`,
+          `<span><i class="issue"></i> Issue</span>`,
+          `<span><i class="intent"></i> Intent</span>`,
+          `<span><i class="repo"></i> Repo</span>`,
+          `<span>Lines = edges (AUTHORED, CLAIMS, BLOCKS…)</span>`,
+        ].join("");
   }
   const people = $("graph-people");
   if (people) {
@@ -3868,8 +4170,49 @@ function wireUxModeButtons() {
   }
 }
 wireUxModeButtons();
-// Apply saved mode (no full re-render on first paint — refreshCockpit follows boot)
+// Apply saved mode (re-render after short tick so cockpit can paint)
 setUxMode(getUxMode(), { rerender: false });
+setTimeout(() => {
+  try {
+    rerenderActiveViewForUx();
+  } catch (_) {}
+}, 50);
+
+function applyStatusUxMode() {
+  const simple = isSimpleMode();
+  const view = $("view-status");
+  if (!view) return;
+  view.querySelectorAll("code, pre.box").forEach((el) => {
+    el.classList.toggle("ux-hide-simple", simple);
+  });
+  const h = view.querySelector("h2");
+  // soft label hints only
+  if (simple && $("view-sub")) {
+    /* titles already set in showView */
+  }
+}
+
+function applyInsightsUxMode() {
+  const simple = isSimpleMode();
+  const view = $("view-insights");
+  if (!view) return;
+  const h2 = view.querySelector("h2");
+  if (h2) h2.textContent = simple ? "Team rhythm" : "Dev insights";
+  view.querySelectorAll("pre, code").forEach((el) => {
+    el.classList.toggle("ux-hide-simple", simple);
+  });
+}
+
+function loadDevInsightsView() {
+  if (typeof refreshDevInsights === "function") refreshDevInsights();
+  applyInsightsUxMode();
+}
+
+async function refreshToday() {
+  if (typeof refreshPulse === "function") await refreshPulse();
+  if (typeof refreshReadiness === "function") await refreshReadiness();
+  if (typeof refreshTeamDigestsToday === "function") await refreshTeamDigestsToday().catch(() => {});
+}
 
 // Boot: pilot tenant + champion cockpit default (or Connections after OAuth return)
 syncTenantFields(PILOT_TENANT);
@@ -3917,6 +4260,26 @@ if ($("ck-graph-2")) $("ck-graph-2").addEventListener("click", () => showView("g
 if ($("ck-team")) $("ck-team").addEventListener("click", () => showView("team"));
 if ($("ck-insights")) $("ck-insights").addEventListener("click", () => showView("insights"));
 if ($("ck-connect")) $("ck-connect").addEventListener("click", () => showView("connections"));
+// Simple visual home actions
+if ($("viz-refresh")) $("viz-refresh").addEventListener("click", () => refreshCockpit());
+if ($("viz-compile")) {
+  $("viz-compile").addEventListener("click", async () => {
+    const tenant = syncTenantFields(activeTenant());
+    try {
+      await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team/compile`, {
+        method: "POST",
+        body: "{}",
+      });
+      await refreshCockpit();
+      alert("Status updates compiled. Open a person card to review.");
+    } catch (e) {
+      alert(e.message || e);
+    }
+  });
+}
+if ($("viz-people")) $("viz-people").addEventListener("click", () => showView("team"));
+if ($("viz-connect")) $("viz-connect").addEventListener("click", () => showView("connections"));
+if ($("viz-map")) $("viz-map").addEventListener("click", () => showView("graph"));
 if ($("btn-team-bulk")) $("btn-team-bulk").addEventListener("click", () => bulkImportTeam());
 if ($("btn-gh-webhook-copy")) {
   $("btn-gh-webhook-copy").addEventListener("click", async () => {

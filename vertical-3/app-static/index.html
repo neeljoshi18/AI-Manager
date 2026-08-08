@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260808b" />
-  <script>window.__APP_JS_V="20260808b";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260808c" />
+  <script>window.__APP_JS_V="20260808c";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -19,15 +19,15 @@
         </div>
       </div>
       <nav>
-        <button class="nav-item active" data-view="cockpit">Cockpit</button>
-        <button class="nav-item" data-view="today">Today</button>
-        <button class="nav-item" data-view="status">My status</button>
-        <button class="nav-item" data-view="team">Team</button>
-        <button class="nav-item" data-view="graph">Graph</button>
-        <button class="nav-item" data-view="connections">Connections</button>
-        <button class="nav-item" data-view="insights">Dev insights</button>
-        <button class="nav-item" data-view="settings">Settings</button>
-        <button class="nav-item lab" data-view="lab">Lab</button>
+        <button class="nav-item active" data-view="cockpit" data-label-simple="Home" data-label-tech="Cockpit">Home</button>
+        <button class="nav-item" data-view="today" data-label-simple="Today" data-label-tech="Today">Today</button>
+        <button class="nav-item" data-view="status" data-label-simple="My update" data-label-tech="My status">My update</button>
+        <button class="nav-item" data-view="team" data-label-simple="People" data-label-tech="Team">People</button>
+        <button class="nav-item" data-view="graph" data-label-simple="Work map" data-label-tech="Graph">Work map</button>
+        <button class="nav-item" data-view="connections" data-label-simple="Connect" data-label-tech="Connections">Connect</button>
+        <button class="nav-item" data-view="insights" data-label-simple="Rhythm" data-label-tech="Dev insights">Rhythm</button>
+        <button class="nav-item" data-view="settings" data-label-simple="Settings" data-label-tech="Settings">Settings</button>
+        <button class="nav-item lab" data-view="lab" data-label-simple="Advanced" data-label-tech="Lab">Advanced</button>
       </nav>
       <div class="nav-foot">
         <span id="nav-mode" class="muted">—</span>
@@ -47,8 +47,53 @@
         </div>
       </header>
 
-      <!-- CHAMPION COCKPIT (operator north star) -->
+      <!-- CHAMPION COCKPIT / HOME -->
       <section id="view-cockpit" class="view">
+        <!-- SIMPLE: visual org story (same data, non-intimidating) -->
+        <div id="ck-visual-home" class="simple-panel">
+          <div class="viz-hero">
+            <p class="viz-kicker">Your organization at a glance</p>
+            <h2 class="viz-headline" id="viz-headline">Loading your team story…</h2>
+            <p class="viz-sub" id="viz-sub">One place for status, promises, and friction — no standup theater.</p>
+            <div class="viz-actions">
+              <button type="button" id="viz-refresh" class="primary">Refresh</button>
+              <button type="button" id="viz-compile" class="ghost">Write status updates</button>
+              <button type="button" id="viz-people" class="ghost">People</button>
+              <button type="button" id="viz-connect" class="ghost">Connect tools</button>
+            </div>
+          </div>
+          <div class="viz-metrics" id="viz-metrics">
+            <div class="viz-metric"><div class="viz-metric-n" id="viz-m-people">—</div><div class="viz-metric-l">People</div></div>
+            <div class="viz-metric"><div class="viz-metric-n" id="viz-m-updates">—</div><div class="viz-metric-l">Status updates</div></div>
+            <div class="viz-metric"><div class="viz-metric-n" id="viz-m-attention">—</div><div class="viz-metric-l">Need you</div></div>
+            <div class="viz-metric"><div class="viz-metric-n" id="viz-m-promises">—</div><div class="viz-metric-l">Open promises</div></div>
+          </div>
+          <div class="viz-columns">
+            <div class="viz-col">
+              <h3 class="viz-col-h">Needs you today</h3>
+              <div id="viz-attention" class="viz-stack"><div class="muted">…</div></div>
+            </div>
+            <div class="viz-col">
+              <h3 class="viz-col-h">Open promises</h3>
+              <div id="viz-promises" class="viz-stack"><div class="muted">…</div></div>
+            </div>
+          </div>
+          <div class="viz-columns">
+            <div class="viz-col">
+              <h3 class="viz-col-h">Your people</h3>
+              <div id="viz-people-grid" class="viz-people"><div class="muted">…</div></div>
+            </div>
+            <div class="viz-col">
+              <h3 class="viz-col-h">Team rhythm</h3>
+              <p id="viz-rhythm" class="muted">…</p>
+              <div id="viz-rhythm-bars" class="ux-heat-bars"></div>
+              <button type="button" id="viz-map" class="ghost" style="margin-top:0.5rem;">Open work map</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- TECHNICAL: operator console (same data, denser) -->
+        <div id="ck-ops-stack" class="tech-panel">
         <div class="card cockpit-hero">
           <div class="cockpit-hero-row">
             <div>
@@ -71,7 +116,7 @@
           <div class="meta-row" id="ck-flywheel" style="margin-top:0.5rem;"><span class="pill mid">data flywheel…</span></div>
           <p class="muted small" id="ck-msg" style="margin:0.4rem 0 0;"></p>
           <p class="muted small" id="ck-flywheel-note" style="margin:0.35rem 0 0;">
-            Sales proof: continuous GitHub → graph → digests. More commits = more insight surface (time-of-day heat, dual digests, conflicts) — the efficiency flywheel.
+            Sales proof: continuous GitHub → graph → digests. More commits = more insight surface.
           </p>
         </div>
 
@@ -223,6 +268,7 @@
           </p>
           <div id="ck-profile-body" class="profile-body" style="margin-top:0.75rem;"></div>
         </div>
+        </div><!-- /ck-ops-stack -->
       </section>
 
       <!-- TODAY -->
@@ -656,6 +702,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260808b"></script>
+  <script src="/app/app.js?v=20260808c"></script>
 </body>
 </html>

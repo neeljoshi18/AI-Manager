@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260808c" />
-  <script>window.__APP_JS_V="20260808c";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260810b" />
+  <script>window.__APP_JS_V="20260810b";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -68,6 +68,15 @@
             <div class="viz-metric"><div class="viz-metric-n" id="viz-m-attention">—</div><div class="viz-metric-l">Need you</div></div>
             <div class="viz-metric"><div class="viz-metric-n" id="viz-m-promises">—</div><div class="viz-metric-l">Open promises</div></div>
           </div>
+          <div class="viz-quick-row">
+            <button type="button" id="viz-add-promise" class="primary">Add a promise</button>
+            <button type="button" id="viz-capture-focus" class="ghost">Capture a focus</button>
+            <button type="button" id="viz-digest-preview" class="ghost">Morning digest preview</button>
+            <button type="button" id="viz-filter-mine" class="ghost viz-filter" data-filter="mine">I owe</button>
+            <button type="button" id="viz-filter-owed" class="ghost viz-filter" data-filter="owed">Owed to me</button>
+            <button type="button" id="viz-filter-team" class="ghost viz-filter active" data-filter="team">Team</button>
+          </div>
+          <p class="muted small viz-digest-preview hidden" id="viz-digest-box"></p>
           <div class="viz-columns">
             <div class="viz-col">
               <h3 class="viz-col-h">Needs you today</h3>
@@ -76,6 +85,17 @@
             <div class="viz-col">
               <h3 class="viz-col-h">Open promises</h3>
               <div id="viz-promises" class="viz-stack"><div class="muted">…</div></div>
+            </div>
+          </div>
+          <div class="viz-columns">
+            <div class="viz-col">
+              <h3 class="viz-col-h">Open focuses</h3>
+              <p class="muted small" style="margin:0 0 0.5rem;">Same purpose claims as Technical — plain English here.</p>
+              <div id="viz-focus" class="viz-stack"><div class="muted">…</div></div>
+            </div>
+            <div class="viz-col">
+              <h3 class="viz-col-h">Good news</h3>
+              <div id="viz-wins" class="viz-stack"><div class="muted">…</div></div>
             </div>
           </div>
           <div class="viz-columns">
@@ -702,6 +722,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260808c"></script>
+  <script src="/app/app.js?v=20260810b"></script>
 </body>
 </html>

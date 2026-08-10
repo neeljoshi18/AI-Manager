@@ -76,6 +76,7 @@ function toggleUxMode(ev) {
 function rerenderActiveViewForUx() {
   const active = document.querySelector(".nav-item.active");
   const v = active?.getAttribute("data-view") || "cockpit";
+  if (typeof applyChromeUxMode === "function") applyChromeUxMode();
   if (v === "cockpit" && typeof refreshCockpit === "function") refreshCockpit();
   if (v === "team" && typeof refreshTeam === "function") refreshTeam();
   if (v === "graph" && typeof refreshGraph === "function") refreshGraph(false);
@@ -243,6 +244,7 @@ function showView(name) {
   if (name === "cockpit") {
     refreshCockpit();
   }
+  if (typeof applyChromeUxMode === "function") applyChromeUxMode();
   if (name === "connections") {
     refreshConnectors();
     refreshHealth();
@@ -294,7 +296,11 @@ async function refreshHealth() {
     $("stat-notify").textContent = fmtSecs(h.notify_interval_secs);
     $("stat-window").textContent = fmtSecs(h.status_window_secs);
     $("conn-detail").textContent = `Slack: ${h.slack_mode || "—"} · runtime ${h.mode || "—"} · notify ${h.notify_policy || "v1"}`;
-    $("nav-mode").textContent = `${h.mode || "?"} · ${h.slack_mode || "slack?"}`;
+    // Keep UX presentation mode in the foot (do not clobber with runtime mode)
+    if ($("nav-mode")) {
+      const ux = isSimpleMode() ? "simple view" : "technical view";
+      $("nav-mode").textContent = `${ux} · ${h.slack_mode || "slack?"}`;
+    }
     $("cfg-window").textContent = String(h.status_window_secs ?? "—");
     $("cfg-notify").textContent = String(h.notify_interval_secs ?? "—");
     $("cfg-compile").textContent = String(h.compile_interval_secs ?? "—");
@@ -1125,7 +1131,10 @@ async function refreshCockpit() {
   }
 }
 
-/** Simple-mode visual board — org story without ops jargon. */
+/** Simple-home promise filter: team | mine | owed (same commitment API as Technical). */
+let __vizCmtFilter = "team";
+
+/** Simple-mode visual board — org story without ops jargon (full feature surface). */
 async function fillVisualHome(ctx) {
   const {
     tenant,
@@ -1140,19 +1149,42 @@ async function fillVisualHome(ctx) {
   } = ctx || {};
   let insights = null;
   let cmts = [];
+  let claims = [];
+  const subject =
+    $("ck-profile-subject")?.value?.trim() ||
+    members[0]?.display_name ||
+    "neeljoshi18";
+
+  // Highlight active filter chips
+  document.querySelectorAll(".viz-filter").forEach((btn) => {
+    const f = btn.getAttribute("data-filter");
+    btn.classList.toggle("active", f === __vizCmtFilter);
+  });
+
   try {
     insights = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/intent/insights`);
   } catch (_) {}
   try {
+    let q = "status=open&limit=20";
+    if (__vizCmtFilter === "mine") q += `&i_owe=${encodeURIComponent(subject)}`;
+    if (__vizCmtFilter === "owed") q += `&owed_to=${encodeURIComponent(subject)}`;
     const body = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/commitments?status=open&limit=20`
+      `/v3/tenants/${encodeURIComponent(tenant)}/commitments?${q}`
     );
     cmts = body.commitments || [];
   } catch (_) {}
+  try {
+    const led = await jfetch(
+      `/v3/tenants/${encodeURIComponent(tenant)}/intent/ledger?include_demo=false&open_only=true&limit=20`
+    );
+    claims = led.claims || [];
+  } catch (_) {}
 
   const act = insights?.act_on_today || [];
+  const wins = insights?.good_news || [];
   const needN = act.length + confCount;
   const openPromises = cmts.filter((c) => c.status === "open").length;
+  const openFocus = claims.length;
 
   if ($("viz-m-people")) $("viz-m-people").textContent = String(mapped || members.length || 0);
   if ($("viz-m-updates")) $("viz-m-updates").textContent = String(withContent);
@@ -1167,6 +1199,8 @@ async function fillVisualHome(ctx) {
     headline = `${needN} thing${needN === 1 ? "" : "s"} need your attention today.`;
   } else if (openPromises > 0) {
     headline = `${openPromises} open promise${openPromises === 1 ? "" : "s"} to keep an eye on.`;
+  } else if (openFocus > 0) {
+    headline = `${openFocus} open focus item${openFocus === 1 ? "" : "s"} on the board.`;
   } else if (withContent >= 2) {
     headline = "Status is flowing — no fires in the open loops.";
   } else if (mapped >= 2) {
@@ -1177,7 +1211,7 @@ async function fillVisualHome(ctx) {
   if ($("viz-headline")) $("viz-headline").textContent = headline;
   if ($("viz-sub")) {
     $("viz-sub").textContent = soft || multi
-      ? "Digests and promises update from real work and chat — you only approve what gets sent."
+      ? "Promises, focuses, and status — same product as Technical, told as a story. You approve what gets sent."
       : "Connect GitHub and Slack, map the pod, then this board fills itself.";
   }
 
@@ -1190,6 +1224,7 @@ async function fillVisualHome(ctx) {
         title: a.text || "Something needs a look",
         action: a.action || "Open the thread and decide next step",
         tone: a.priority === "high" ? "urgent" : "soon",
+        cmtId: a.kind === "commitment" ? a.id : null,
       });
     }
     for (const c of cards.slice(0, 4)) {
@@ -1198,6 +1233,7 @@ async function fillVisualHome(ctx) {
         title: plainConflictKind(c.kind),
         action: "Get the people involved and pick ship vs hold — or reassign ownership.",
         tone: c.severity === "high" ? "urgent" : "soon",
+        cmtId: null,
       });
     }
     if (!items.length) {
@@ -1208,28 +1244,52 @@ async function fillVisualHome(ctx) {
         .map(
           (it) => `<div class="viz-card viz-card-${esc(it.tone)}">
           <div class="viz-card-title">${esc(it.title)}</div>
-          <div class="viz-card-action">${esc(it.action)}</div>
+          <div class="viz-card-action">${esc(it.action)}${
+            it.cmtId
+              ? ` <button type="button" class="ghost viz-done" data-id="${esc(it.cmtId)}">Mark done</button>`
+              : ""
+          }</div>
         </div>`
         )
         .join("");
+      att.querySelectorAll(".viz-done").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await jfetch(
+              `/v3/tenants/${encodeURIComponent(tenant)}/commitments/${encodeURIComponent(btn.getAttribute("data-id"))}/done`,
+              { method: "POST", body: "{}" }
+            );
+            refreshCockpit();
+          } catch (e) {
+            alert(e.message || e);
+          }
+        });
+      });
     }
   }
 
-  // Promises
+  // Promises (full loop: done + dismiss — same APIs as Technical)
   const pr = $("viz-promises");
   if (pr) {
     if (!cmts.length) {
-      pr.innerHTML = `<div class="viz-empty">No open promises. When someone says “I'll…”, it lands here.</div>`;
+      const filterHint =
+        __vizCmtFilter === "mine"
+          ? "Nothing you currently owe. Switch to Team or add a promise."
+          : __vizCmtFilter === "owed"
+            ? "Nothing owed to you right now."
+            : "No open promises. When someone says “I'll…”, it lands here — or tap Add a promise.";
+      pr.innerHTML = `<div class="viz-empty">${esc(filterHint)}</div>`;
     } else {
       pr.innerHTML = cmts
-        .slice(0, 6)
+        .slice(0, 8)
         .map((c) => {
           const who = c.promiser_label || c.promiser || "Someone";
           const to = c.promisee_label || c.promisee;
           return `<div class="viz-card">
             <div class="viz-card-title">${esc(c.headline || c.text || "")}</div>
             <div class="viz-card-action">${esc(who)}${to ? " → " + esc(to) : ""}
-              <button type="button" class="ghost viz-done" data-id="${esc(c.id)}">Done</button>
+              <button type="button" class="primary viz-done" data-id="${esc(c.id)}">Done</button>
+              <button type="button" class="ghost viz-dismiss" data-id="${esc(c.id)}">Not doing</button>
             </div>
           </div>`;
         })
@@ -1247,6 +1307,60 @@ async function fillVisualHome(ctx) {
           }
         });
       });
+      pr.querySelectorAll(".viz-dismiss").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await jfetch(
+              `/v3/tenants/${encodeURIComponent(tenant)}/commitments/${encodeURIComponent(btn.getAttribute("data-id"))}/dismiss`,
+              { method: "POST", body: "{}" }
+            );
+            refreshCockpit();
+          } catch (e) {
+            alert(e.message || e);
+          }
+        });
+      });
+    }
+  }
+
+  // Open focuses (intent ledger — plain English)
+  const focusEl = $("viz-focus");
+  if (focusEl) {
+    if (!claims.length) {
+      focusEl.innerHTML = `<div class="viz-empty">No open focuses. Capture one, or wait for work signals.</div>`;
+    } else {
+      focusEl.innerHTML = claims
+        .slice(0, 8)
+        .map((c) => {
+          const ty = plainIntentType(c.intent_type || "OTHER");
+          const sum = (c.summary || c.text_preview || "")
+            .replace(/^(SHIP|BLOCKED|FREEZE|FIX|EXPLORE|REVIEW):\s*/i, "")
+            .slice(0, 140);
+          const own = c.owner_subject || "Someone";
+          return `<div class="viz-card">
+            <div class="viz-card-title"><span class="pill mid">${esc(ty)}</span> ${esc(sum || ty)}</div>
+            <div class="viz-card-meta">${esc(own)}</div>
+          </div>`;
+        })
+        .join("");
+    }
+  }
+
+  // Good news
+  const winsEl = $("viz-wins");
+  if (winsEl) {
+    if (!wins.length) {
+      winsEl.innerHTML = `<div class="viz-empty">Wins show up as motion and status land.</div>`;
+    } else {
+      winsEl.innerHTML = wins
+        .slice(0, 5)
+        .map(
+          (w) => `<div class="viz-card">
+          <div class="viz-card-title">${esc(w.text || "Progress")}</div>
+          <div class="viz-card-action">${esc(w.action || "")}</div>
+        </div>`
+        )
+        .join("");
     }
   }
 
@@ -3837,14 +3951,20 @@ async function loadIntentLedger() {
 
 async function captureIntentClaim() {
   const tenant = syncTenantFields(activeTenant());
+  const simple = isSimpleMode();
   const text = window.prompt(
-    "State a purpose claim (e.g. \"blocked on security review\" or \"ready to ship neon export\").\nClassified in-house — no inventing work items.",
+    simple
+      ? "What's the focus? (e.g. “stuck on security review” or “aiming to ship neon export”)"
+      : "State a purpose claim (e.g. \"blocked on security review\" or \"ready to ship neon export\").\nClassified in-house — no inventing work items.",
     ""
   );
   if (text == null || !String(text).trim()) return;
   const owner =
     $("ck-profile-subject")?.value?.trim() ||
-    window.prompt("Owner subject (github login / gu_*)", "neeljoshi18") ||
+    window.prompt(
+      simple ? "Whose focus is this? (name or github login)" : "Owner subject (github login / gu_*)",
+      "neeljoshi18"
+    ) ||
     "";
   try {
     const body = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/intent/claims`, {
@@ -3857,9 +3977,9 @@ async function captureIntentClaim() {
       }),
     });
     const c = body.claim || {};
-    if (isSimpleMode()) {
+    if (simple) {
       alert(
-        `Saved: ${plainIntentType(c.intent_type)}\n${c.summary || ""}\n\nYou can find it under focus items / What needs attention.`
+        `Saved: ${plainIntentType(c.intent_type)}\n${c.summary || ""}\n\nIt shows under Open focuses and Needs you today.`
       );
     } else {
       alert(
@@ -3867,6 +3987,7 @@ async function captureIntentClaim() {
       );
     }
     await loadIntentLedger();
+    if (typeof refreshCockpit === "function") await refreshCockpit();
   } catch (e) {
     alert("Capture failed: " + (e.message || e));
   }
@@ -4065,25 +4186,35 @@ async function loadCommitments(mode) {
 
 async function addCommitmentUi() {
   const tenant = syncTenantFields(activeTenant());
+  const simple = isSimpleMode();
   const text = window.prompt(
-    "What was promised? (plain English)\ne.g. I'll send the security write-up by Friday",
+    simple
+      ? "What was promised?\ne.g. I'll send the security write-up by Friday"
+      : "What was promised? (plain English)\ne.g. I'll send the security write-up by Friday",
     ""
   );
   if (text == null || !String(text).trim()) return;
   const promiser =
-    window.prompt("Who promised? (github login / name)", $("ck-profile-subject")?.value || "neeljoshi18") ||
-    "unknown";
+    window.prompt(
+      simple ? "Who promised? (name or github login)" : "Who promised? (github login / name)",
+      $("ck-profile-subject")?.value || "neeljoshi18"
+    ) || "unknown";
+  const promisee = simple
+    ? window.prompt("Who is owed? (optional — leave blank)", "") || undefined
+    : undefined;
   try {
     await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/commitments`, {
       method: "POST",
       body: JSON.stringify({
         text: String(text).trim(),
         promiser: String(promiser).trim(),
+        promisee: promisee ? String(promisee).trim() : undefined,
         channel: "champion_ui",
       }),
     });
     await loadCommitments();
     await loadPlainInsights();
+    if (typeof refreshCockpit === "function") await refreshCockpit();
   } catch (e) {
     alert("Add failed: " + (e.message || e));
   }
@@ -4198,9 +4329,89 @@ function applyInsightsUxMode() {
   if (!view) return;
   const h2 = view.querySelector("h2");
   if (h2) h2.textContent = simple ? "Team rhythm" : "Dev insights";
+  const intro = view.querySelector("p.muted.small");
+  if (intro && intro.closest(".card") === view.querySelector(".card")) {
+    intro.textContent = simple
+      ? "When the pod is active — from real work on the map. Not who is “best.”"
+      : "Your engineering activity as currency — from the live graph (webhooks + commit poller). UTC clocks.";
+  }
+  // Stat labels: plain English in Simple
+  const labels = view.querySelectorAll(".stat-label");
+  if (labels[0]) labels[0].textContent = simple ? "Recent commits" : "Commit nodes";
+  if (labels[1]) labels[1].textContent = simple ? "Work links" : "Authored edges";
+  if (labels[2]) labels[2].textContent = simple ? "Busiest hour" : "Peak hour (UTC)";
+  const byAuthor = Array.from(view.querySelectorAll("h2")).find((el) =>
+    /by author|who is active/i.test(el.textContent || "")
+  );
+  if (byAuthor) byAuthor.textContent = simple ? "Who is active" : "By author";
+  const recent = Array.from(view.querySelectorAll("h2")).find((el) =>
+    /recent commits/i.test(el.textContent || "")
+  );
+  if (recent) recent.textContent = simple ? "Latest work on the map" : "Recent commits on graph";
   view.querySelectorAll("pre, code").forEach((el) => {
     el.classList.toggle("ux-hide-simple", simple);
   });
+}
+
+/** Soften People / Work map / Connect chrome for Simple presentation (same features). */
+function applyChromeUxMode() {
+  const simple = isSimpleMode();
+  // People
+  const teamView = $("view-team");
+  if (teamView) {
+    const h = teamView.querySelector("h2");
+    if (h) h.textContent = simple ? "Your people" : "Multi-person Slack map";
+    const p = teamView.querySelector(".card > p.muted.small");
+    if (p) {
+      p.textContent = simple
+        ? "Map at least two people so status updates cover the whole pod. Chat ids link digests — we never read private 1:1s."
+        : "Map ≥2 humans for multi-member digests. Bridge merges this map with SLACK_USER_MAP (never DMs — ingest only). Embedded twin state persists to disk so maps survive restarts.";
+    }
+    const intentsH = Array.from(teamView.querySelectorAll("h2")).find((el) =>
+      /intents|focus/i.test(el.textContent || "")
+    );
+    if (intentsH) intentsH.textContent = simple ? "Open focuses" : "Intents (rules v0)";
+    const intentsP = intentsH?.parentElement?.querySelector("p.muted.small");
+    if (intentsP) {
+      intentsP.textContent = simple
+        ? "What people are trying to do — stuck, ship, hold — from work titles and labels."
+        : "Classified from PR/issue titles & labels — SHIP / BLOCKED / FIX / …";
+    }
+  }
+  // Work map
+  const graphView = $("view-graph");
+  if (graphView) {
+    const h = graphView.querySelector("h2");
+    if (h) h.textContent = simple ? "Work map" : "Live context map";
+    const p = graphView.querySelector(".graph-toolbar p.muted.small");
+    if (p) {
+      p.textContent = simple
+        ? "People connected to the work they touch. Drag, zoom, click a node for the story."
+        : "People → work → intents/conflicts. Hierarchical layout (not a hairball). Recent commits only by default; scroll to zoom, drag canvas or nodes.";
+    }
+  }
+  // Connect
+  const connView = $("view-connections");
+  if (connView) {
+    const h = connView.querySelector("h2");
+    if (h) h.textContent = simple ? "Get set up" : "Onboarding";
+    const p = connView.querySelector(".card > p.muted.small");
+    if (p) {
+      p.textContent = simple
+        ? "Link chat and GitHub, map the pod, then status writes itself."
+        : "Tenant → Slack → GitHub → batch notify → first digest. Server checks stack; OAuth needs human secrets.";
+    }
+  }
+  // Today
+  const todayView = $("view-today");
+  if (todayView) {
+    const prefer = todayView.querySelector(".card > p.muted.small");
+    if (prefer) {
+      prefer.innerHTML = simple
+        ? `Prefer <strong>Home</strong> for the full org story. Path: status updates → My update → Work map.`
+        : `Prefer <strong>Cockpit</strong> for the full champion view. Path: digests → My status → Graph.`;
+    }
+  }
 }
 
 function loadDevInsightsView() {
@@ -4260,7 +4471,7 @@ if ($("ck-graph-2")) $("ck-graph-2").addEventListener("click", () => showView("g
 if ($("ck-team")) $("ck-team").addEventListener("click", () => showView("team"));
 if ($("ck-insights")) $("ck-insights").addEventListener("click", () => showView("insights"));
 if ($("ck-connect")) $("ck-connect").addEventListener("click", () => showView("connections"));
-// Simple visual home actions
+// Simple visual home actions (same product surface as Technical ops stack)
 if ($("viz-refresh")) $("viz-refresh").addEventListener("click", () => refreshCockpit());
 if ($("viz-compile")) {
   $("viz-compile").addEventListener("click", async () => {
@@ -4277,6 +4488,38 @@ if ($("viz-compile")) {
     }
   });
 }
+if ($("viz-add-promise")) {
+  $("viz-add-promise").addEventListener("click", () => addCommitmentUi());
+}
+if ($("viz-capture-focus")) {
+  $("viz-capture-focus").addEventListener("click", () => captureIntentClaim());
+}
+if ($("viz-digest-preview")) {
+  $("viz-digest-preview").addEventListener("click", async () => {
+    const tenant = syncTenantFields(activeTenant());
+    const box = $("viz-digest-box");
+    try {
+      const d = await jfetch(
+        `/v3/tenants/${encodeURIComponent(tenant)}/commitments/digest`
+      );
+      if (box) {
+        box.classList.remove("hidden");
+        box.textContent = d.text || "No open commitments for the morning digest.";
+      }
+    } catch (e) {
+      if (box) {
+        box.classList.remove("hidden");
+        box.textContent = e.message || String(e);
+      }
+    }
+  });
+}
+document.querySelectorAll(".viz-filter").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    __vizCmtFilter = btn.getAttribute("data-filter") || "team";
+    if (typeof refreshCockpit === "function") refreshCockpit();
+  });
+});
 if ($("viz-people")) $("viz-people").addEventListener("click", () => showView("team"));
 if ($("viz-connect")) $("viz-connect").addEventListener("click", () => showView("connections"));
 if ($("viz-map")) $("viz-map").addEventListener("click", () => showView("graph"));

@@ -809,6 +809,33 @@ body.mode-simple #view-title {
   flex: 1;
   min-width: 5rem;
 }
+.viz-quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.85rem;
+  align-items: center;
+}
+.viz-quick-row .viz-filter.active {
+  background: #0f172a;
+  color: #fff;
+  border-color: #0f172a;
+}
+.viz-digest-preview {
+  background: #fff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  white-space: pre-wrap;
+  margin: 0 0 0.85rem;
+  font-size: 0.9rem;
+  color: #334155;
+}
+.viz-card-meta {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
 body.mode-simple code.small,
 body.mode-simple .kv {
   font-size: 12px;

@@ -522,7 +522,11 @@ pub fn build_plain_insights(
             "kind": "commitment",
             "priority": "high",
             "text": commitment_headline(c),
-            "action": format!("Ask {} if this is still open, or mark done when finished.", c.promiser),
+            // Use human label when known — never surface raw gu_* in plain-English actions
+            "action": format!(
+                "Ask {} if this is still open, or mark done when finished.",
+                c.promiser_display()
+            ),
             "id": c.id,
         }));
     }

@@ -168,6 +168,7 @@ pub fn infer_intent_source(event: &V1CanonicalEvent, about: &GraphNode) -> Strin
         if provider.contains("gitlab") {
             return "gitlab_mr".into();
         }
+        // github_pr for surface; intent engine also accepts github_rules alias
         return "github_pr".into();
     }
     if nt.contains("issue") || et.contains("issue") {

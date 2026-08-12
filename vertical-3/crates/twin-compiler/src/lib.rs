@@ -342,7 +342,8 @@ impl LedgerCompiler {
             items.push(it);
         }
 
-        // Open blockers from ACL-visible BLOCKS edges
+        // Open blockers from ACL-visible BLOCKS edges — exclude demo/seed theater
+        // (story-1 graph_story BLOCKS must not write "blocked" on real digests).
         for edge in view.blockers.iter().chain(
             view.edges
                 .iter()
@@ -351,11 +352,21 @@ impl LedgerCompiler {
                         || e.edge_type.eq_ignore_ascii_case("BLOCKED_BY")
                 }),
         ) {
+            if edge_is_demo_seed(edge, &view.nodes) {
+                continue;
+            }
             let target = if edge.edge_type.eq_ignore_ascii_case("BLOCKED_BY") {
                 edge.from_node_id.clone()
             } else {
                 edge.to_node_id.clone()
             };
+            // Also skip if either endpoint node is a known seed PR / demo intent
+            if node_id_is_demo_seed(&target)
+                || node_id_is_demo_seed(&edge.from_node_id)
+                || node_id_is_demo_seed(&edge.to_node_id)
+            {
+                continue;
+            }
             let summary = edge
                 .properties
                 .get("summary")
@@ -474,11 +485,93 @@ fn merge_graph_view(into: &mut GraphView, part: GraphView) {
     }
 }
 
+/// True when node id is known demo/seed theater (story-1, intent_demo, gu_demo).
+fn node_id_is_demo_seed(id: &str) -> bool {
+    let l = id.to_ascii_lowercase();
+    l.contains("/pr/story-1")
+        || l.contains("pr:neeljoshi18/ai-manager/pr/story-1")
+        || l.contains("gu_demo_")
+        || l.contains("demo-repo")
+        || l.contains("intent_demo")
+        || l.contains(":story-1")
+}
+
+/// Drop BLOCKS edges that come from seed graph_story / intent_demo theater.
+fn edge_is_demo_seed(edge: &GraphEdgeView, nodes: &[GraphNodeView]) -> bool {
+    let eid = edge.event_id.to_ascii_lowercase();
+    if eid.contains("story:blocks")
+        || eid.contains("seed:")
+        || eid.contains("intent_demo")
+        || eid.contains("graph_story")
+        || eid.starts_with("seed")
+    {
+        return true;
+    }
+    let props = &edge.properties;
+    if props.get("is_demo").and_then(|v| v.as_bool()) == Some(true) {
+        return true;
+    }
+    if let Some(seed) = props.get("seed").and_then(|v| v.as_str()) {
+        let s = seed.to_ascii_lowercase();
+        if s.contains("graph_story") || s.contains("intent_demo") || s.contains("demo") {
+            return true;
+        }
+    }
+    // Endpoint nodes tagged seed/demo
+    for nid in [&edge.from_node_id, &edge.to_node_id] {
+        if node_id_is_demo_seed(nid) {
+            return true;
+        }
+        if let Some(n) = nodes.iter().find(|n| &n.node_id == nid) {
+            if n.properties.get("is_demo").and_then(|v| v.as_bool()) == Some(true) {
+                return true;
+            }
+            if let Some(seed) = n.properties.get("seed").and_then(|v| v.as_str()) {
+                let s = seed.to_ascii_lowercase();
+                if s.contains("graph_story") || s.contains("intent_demo") || s == "seed" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use twin_core::ids::person_twin_id;
     use twin_core::store::InMemoryTwinStore;
+
+    #[test]
+    fn seed_blocks_edges_are_filtered() {
+        assert!(node_id_is_demo_seed(
+            "pr:neeljoshi18/AI-Manager/pr/story-1"
+        ));
+        assert!(!node_id_is_demo_seed("pr:neeljoshi18/AI-Manager/pr/42"));
+        let edge = GraphEdgeView {
+            edge_id: "e1".into(),
+            edge_type: "BLOCKS".into(),
+            from_node_id: "pr:neeljoshi18/AI-Manager/pr/story-1".into(),
+            to_node_id: "person:gu_x".into(),
+            event_id: "event:story:blocks1".into(),
+            properties: serde_json::json!({"seed": "graph_story"}),
+            is_private: false,
+            valid_from: None,
+        };
+        assert!(edge_is_demo_seed(&edge, &[]));
+        let live = GraphEdgeView {
+            edge_id: "e2".into(),
+            edge_type: "BLOCKS".into(),
+            from_node_id: "pr:neeljoshi18/AI-Manager/pr/99".into(),
+            to_node_id: "pr:other/repo/pr/1".into(),
+            event_id: "poll:pr:neeljoshi18/AI-Manager:99:2026-08-10".into(),
+            properties: serde_json::json!({}),
+            is_private: false,
+            valid_from: None,
+        };
+        assert!(!edge_is_demo_seed(&live, &[]));
+    }
 
     #[tokio::test]
     async fn compile_synthetic_items() {

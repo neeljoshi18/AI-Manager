@@ -83,8 +83,21 @@ COMMIT_TICK_CAP = int(os.environ.get("COMMIT_TICK_CAP", "40"))  # steady tick ca
 COMMIT_SEEN_FILE = os.environ.get(
     "COMMIT_SEEN_FILE", f"/var/lib/ai-manager/bridge_commits_seen_{TENANT}.txt"
 )
+# PR currency: open (+ recently updated closed) PRs → PullRequest + organic Intent (rules_v0).
+# Complements webhooks; commits alone cannot feed claim/conflict detectors.
+PR_POLL_SECS = float(os.environ.get("PR_POLL_SECS", "120"))
+PR_POLL_STATE = os.environ.get("PR_POLL_STATE", "all")  # open | closed | all
+PR_POLL_PAGES = int(os.environ.get("PR_POLL_PAGES", "2"))
+PR_BOOT_PAGES = int(os.environ.get("PR_BOOT_PAGES", "3"))
+PR_TICK_CAP = int(os.environ.get("PR_TICK_CAP", "40"))
+PR_BOOT_CAP = int(os.environ.get("PR_BOOT_CAP", "80"))
+PR_SEEN_FILE = os.environ.get(
+    "PR_SEEN_FILE", f"/var/lib/ai-manager/bridge_prs_seen_{TENANT}.txt"
+)
 _LAST_COMMIT_POLL = 0.0
 _COMMIT_BOOT_DONE = False
+_LAST_PR_POLL = 0.0
+_PR_BOOT_DONE = False
 _LAST_REPO_DISCOVER = 0.0
 REPO_DISCOVER_SECS = float(os.environ.get("GITHUB_REPOS_DISCOVER_SECS", "1800"))  # 30m
 
@@ -547,6 +560,219 @@ def synthetic_push_event(
     }
 
 
+def load_pr_seen() -> set[str]:
+    if not os.path.exists(PR_SEEN_FILE):
+        os.makedirs(os.path.dirname(PR_SEEN_FILE) or ".", exist_ok=True)
+        open(PR_SEEN_FILE, "a").close()
+        return set()
+    return {ln.strip() for ln in open(PR_SEEN_FILE) if ln.strip()}
+
+
+def mark_pr_seen(key: str, seen: set[str]) -> None:
+    with open(PR_SEEN_FILE, "a") as f:
+        f.write(key + "\n")
+    seen.add(key)
+
+
+def synthetic_pr_event(
+    repo: str,
+    number: int,
+    title: str,
+    body: str,
+    state: str,
+    draft: bool,
+    merged: bool,
+    labels: list,
+    login: str,
+    gh_id: str,
+    ts_iso: str,
+    gu: str,
+    html_url: str = "",
+    updated_at: str = "",
+    mergeable_state: str = "",
+) -> dict:
+    """V1-shaped pull_request event for V2 map_pull_request + rules_v0 intent attach."""
+    action = "opened"
+    st = (state or "").lower()
+    if merged or st == "merged":
+        action = "closed"
+        et = "pull_request.merged"  # map_pull_request → lifecycle MERGED
+    elif st == "closed":
+        action = "closed"
+        et = "pull_request.closed"
+    else:
+        et = "pull_request.opened"
+    # Re-project key includes updated_at so title/label changes re-classify intent
+    stamp = (updated_at or ts_iso or "")[:19]
+    eid = f"poll:pr:{repo}:{number}:{stamp}"
+    label_names: list[str] = []
+    for lab in labels or []:
+        if isinstance(lab, dict):
+            name = str(lab.get("name") or "").strip()
+            if name:
+                label_names.append(name)
+        elif isinstance(lab, str) and lab.strip():
+            label_names.append(lab.strip())
+    body_preview = (body or "")[:280]
+    return {
+        "event_id": eid,
+        "tenant_id": TENANT,
+        "provider": "github",
+        "category": "code",
+        "event_type": et,
+        "event_timestamp": ts_iso,
+        "ingested_at": ts_iso,
+        "actor": {
+            "global_user_id": gu,
+            "provider_user_id": gh_id or login,
+            "email": "",
+            "display_name": login or gh_id,
+        },
+        "acl": {
+            "tenant_id": TENANT,
+            "allowed_group_ids": ["grp_eng", "grp_default"],
+            "is_private": True,
+            "acl_version": 1,
+        },
+        "resource_id": f"{repo}/pr/{number}",
+        "parent_resource_id": repo,
+        "attributes": {
+            "title": (title or "")[:500],
+            "state": state or "open",
+            "draft": bool(draft),
+            "merged": bool(merged),
+            "labels": label_names,
+            "body": body_preview,
+            "body_preview": body_preview,
+            "html_url": html_url or "",
+            "updated_at": updated_at or ts_iso,
+            "mergeable_state": mergeable_state or "",
+            "number": number,
+            "source": "pr_poller",
+            "action": action,
+        },
+        "raw_payload_s3_uri": "",
+        "event_sequence_number": 0,
+    }
+
+
+def poll_github_pulls(seen_events: set[str], force: bool = False, boot: bool = False) -> int:
+    """Map repo PRs into V2 PullRequest + organic Intent (rules_v0) when webhooks miss."""
+    global _LAST_PR_POLL, _PR_BOOT_DONE
+    now = time.time()
+    if not force and (now - _LAST_PR_POLL) < PR_POLL_SECS:
+        return 0
+    _LAST_PR_POLL = now
+    if not v2_healthy():
+        return 0
+    discover_github_repos()
+    pages = PR_BOOT_PAGES if boot or not _PR_BOOT_DONE else PR_POLL_PAGES
+    cap = PR_BOOT_CAP if boot or not _PR_BOOT_DONE else PR_TICK_CAP
+    pr_seen = load_pr_seen()
+    projected = 0
+    hit_cap = False
+    for repo in GITHUB_REPOS:
+        for page in range(1, pages + 1):
+            url = (
+                f"https://api.github.com/repos/{repo}/pulls"
+                f"?state={PR_POLL_STATE}&per_page=50&page={page}&sort=updated&direction=desc"
+            )
+            try:
+                pulls = gh_get(url, timeout=45)
+            except Exception as e:
+                print(f"pr poll fail {repo} p{page}: {e}", flush=True)
+                break
+            if not isinstance(pulls, list) or not pulls:
+                break
+            for pr in pulls:
+                number = pr.get("number")
+                if number is None:
+                    continue
+                try:
+                    number = int(number)
+                except (TypeError, ValueError):
+                    continue
+                updated = str(pr.get("updated_at") or pr.get("created_at") or "")
+                stamp = updated[:19] if updated else ""
+                seen_key = f"{repo}#{number}:{stamp}"
+                if seen_key in pr_seen:
+                    continue
+                user = pr.get("user") or {}
+                login = str(user.get("login") or "")
+                gh_id = str(user.get("id") or "")
+                title = str(pr.get("title") or "")
+                body = str(pr.get("body") or "")
+                state = str(pr.get("state") or "open")
+                draft = bool(pr.get("draft"))
+                merged = bool(pr.get("merged"))
+                # list payload may omit merged; treat closed+merged_at
+                if not merged and pr.get("merged_at"):
+                    merged = True
+                labels = pr.get("labels") or []
+                html_url = str(pr.get("html_url") or "")
+                mergeable_state = str(pr.get("mergeable_state") or "")
+                ts = updated or str(pr.get("created_at") or "")
+                if not ts:
+                    continue
+                gu, provider, display = seed_actor_gu(login, gh_id)
+                ev = synthetic_pr_event(
+                    repo=repo,
+                    number=number,
+                    title=title,
+                    body=body,
+                    state=state,
+                    draft=draft,
+                    merged=merged,
+                    labels=labels,
+                    login=login or display,
+                    gh_id=provider,
+                    ts_iso=ts,
+                    gu=gu or "",
+                    html_url=html_url,
+                    updated_at=updated,
+                    mergeable_state=mergeable_state,
+                )
+                try:
+                    if not v2_healthy():
+                        break
+                    if ev["event_id"] in seen_events:
+                        mark_pr_seen(seen_key, pr_seen)
+                        continue
+                    project_event(ev)
+                    mark_seen(ev["event_id"], seen_events)
+                    mark_pr_seen(seen_key, pr_seen)
+                    projected += 1
+                    if projected >= cap:
+                        print(
+                            f"pr poll projected {projected} (cap={cap} boot={boot or not _PR_BOOT_DONE})",
+                            flush=True,
+                        )
+                        hit_cap = True
+                        break
+                except Exception as e:
+                    print(f"pr project fail {repo}#{number}: {e}", flush=True)
+                    note_v2_down()
+                    return projected
+            if hit_cap:
+                break
+            if len(pulls) < 50:
+                break
+        if hit_cap:
+            break
+    if not hit_cap:
+        _PR_BOOT_DONE = True
+    if projected:
+        print(
+            f"pr poll projected {projected} PRs from GitHub API "
+            f"(pages≤{pages} boot_done={_PR_BOOT_DONE})",
+            flush=True,
+        )
+    else:
+        _PR_BOOT_DONE = True
+        print("pr poll: no new PRs", flush=True)
+    return projected
+
+
 def discover_github_repos() -> list[str]:
     """List repos visible to the token (owner + collaborator + org membership)."""
     global GITHUB_REPOS, _LAST_REPO_DISCOVER
@@ -763,6 +989,11 @@ def main() -> None:
         flush=True,
     )
     print(
+        f"pr poller interval={PR_POLL_SECS}s state={PR_POLL_STATE} "
+        f"boot_pages={PR_BOOT_PAGES} steady_pages={PR_POLL_PAGES} cap={PR_TICK_CAP}",
+        flush=True,
+    )
+    print(
         f"bridge start tenant={TENANT} poll={POLL}s v1={V1} v2={V2} twin={TWIN} "
         f"slack_map={len(SLACK_MAP)} default_slack={'set' if DEFAULT_SLACK else 'none'} "
         f"max_per_tick={MAX_PER_TICK} recovery_max={RECOVERY_MAX_PER_TICK} "
@@ -790,6 +1021,11 @@ def main() -> None:
         poll_github_commits(seen, force=True, boot=True)
     except Exception as e:
         print(f"boot commit poll warn: {e}", flush=True)
+    # First-boot PRs → organic intent / conflict surface (not only commits)
+    try:
+        poll_github_pulls(seen, force=True, boot=True)
+    except Exception as e:
+        print(f"boot pr poll warn: {e}", flush=True)
     # Dual digests: ask twin-api to seed activity for empty person neighborhoods
     try:
         dual = post(
@@ -829,11 +1065,15 @@ def main() -> None:
                 print(f"reader seed warn: {e}", flush=True)
             refresh_team_map()
 
-            # Data currency: always try GitHub commit poller (webhook may drop)
+            # Data currency: always try GitHub commit + PR pollers (webhook may drop)
             try:
                 poll_github_commits(seen)
             except Exception as e:
                 print(f"commit poll loop warn: {e}", flush=True)
+            try:
+                poll_github_pulls(seen)
+            except Exception as e:
+                print(f"pr poll loop warn: {e}", flush=True)
 
             data = get(
                 f"{V1}/v1/tenants/{TENANT}/events?user_id={reader}&limit={event_limit}",

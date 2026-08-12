@@ -123,7 +123,7 @@ impl ClaimSource {
 
     pub fn parse(s: &str) -> Self {
         match s {
-            "github_pr" | "github" => Self::GithubPr,
+            "github_pr" | "github" | "github_rules" | "pr_poller" => Self::GithubPr,
             "github_issue" => Self::GithubIssue,
             "slack_channel" | "channel" => Self::SlackChannel,
             "slack_dm" | "dm" | "im" => Self::SlackDm,

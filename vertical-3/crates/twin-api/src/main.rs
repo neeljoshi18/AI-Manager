@@ -1089,12 +1089,13 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
             .unwrap_or_else(|| "bridge_reader".into());
 
         let v2 = st.cfg.v2_base_url.trim_end_matches('/');
+        // Request include_demo=true so we can split live vs demo (V2 defaults hide seeds).
         let conflicts_url = format!(
-            "{v2}/v2/tenants/{t}/conflicts?user_id={}&limit=30",
+            "{v2}/v2/tenants/{t}/conflicts?user_id={}&limit=50&include_demo=true",
             urlencoding_simple(&reader)
         );
         let intents_url = format!(
-            "{v2}/v2/tenants/{t}/intents?user_id={}&limit=50",
+            "{v2}/v2/tenants/{t}/intents?user_id={}&limit=80&include_demo=true",
             urlencoding_simple(&reader)
         );
         let conflicts = probe_json(&conflicts_url).await;
@@ -1163,7 +1164,16 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
                 "demo_count": demo_conflicts.len(),
                 "demo_cards": demo_conflicts,
                 "engine": "rules_v0",
-                "note": "Primary cards exclude intent_demo seed; demo_* fields keep Load intent demo visible; is_demo tags on cards",
+                "empty_reason": if conflict_count == 0 {
+                    if demo_conflicts.is_empty() {
+                        "no_friction"
+                    } else {
+                        "only_demo_seeds"
+                    }
+                } else {
+                    ""
+                },
+                "note": "Primary cards are live only; demo_* holds seed theater (include_demo split). empty_reason=no_friction|only_demo_seeds when count=0.",
             },
             "ingest": {
                 "v1_up": v1_health.is_some(),

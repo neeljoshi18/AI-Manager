@@ -869,9 +869,17 @@ async function refreshCockpit() {
     const confEl = $("ck-conflicts");
     if (confEl) {
       if (!cards.length) {
-        confEl.innerHTML = simple
-          ? `<p class="muted">No open friction right now. When people disagree on ship vs hold, it shows up here.</p>`
-          : `<p class="muted">No open live conflicts. Enrich story or ship real dual-owner PRs to surface SHIP/FREEZE.</p>`;
+        const emptyWhy = pulse.conflicts?.empty_reason || "";
+        const demoN = pulse.conflicts?.demo_count ?? 0;
+        let emptyMsg = simple
+          ? "No open friction right now. When people disagree on ship vs hold, it shows up here."
+          : "No open live conflicts (empty_reason=no_friction). Organic PRs feed this surface — not demo seeds.";
+        if (emptyWhy === "only_demo_seeds" || demoN > 0) {
+          emptyMsg = simple
+            ? "No live friction — only demo/seed examples exist (hidden from this list). Real ship-vs-hold needs dual owners on real PRs."
+            : `No live conflicts (empty_reason=only_demo_seeds, demo_count=${demoN}). Seeds excluded from primary cards.`;
+        }
+        confEl.innerHTML = `<p class="muted">${esc(emptyMsg)}</p>`;
       } else if (simple) {
         confEl.innerHTML =
           `<div class="ux-friction-list">` +

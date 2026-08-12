@@ -101,11 +101,42 @@ fn normalize_pr(v: &Value, ctx: &NormalizeContext, action: &str) -> CoreResult<C
             "deletions": i64_field(pr, "deletions").unwrap_or(0),
             "changed_files": i64_field(pr, "changed_files").unwrap_or(0),
             "html_url": str_field(pr, "html_url").unwrap_or(""),
+            // Labels + short body for rules_v0 intent classify (FREEZE/BLOCKED/SHIP) — not full patch.
+            "labels": pr_label_names(pr),
+            "body_preview": pr_body_preview(pr),
+            "body": pr_body_preview(pr),
+            "mergeable_state": str_field(pr, "mergeable_state").unwrap_or(""),
+            "updated_at": str_field(pr, "updated_at").unwrap_or(""),
             // Metadata only — no patch / diff / file contents.
         }),
     );
     event.acl.is_private = is_private;
     Ok(event)
+}
+
+/// Label names only (no ids) for intent rules.
+fn pr_label_names(pr: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(arr) = pr.get("labels").and_then(|v| v.as_array()) {
+        for lab in arr {
+            if let Some(name) = lab.get("name").and_then(|v| v.as_str()) {
+                if !name.is_empty() {
+                    out.push(name.to_string());
+                }
+            } else if let Some(s) = lab.as_str() {
+                if !s.is_empty() {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Truncate PR body for claim classification (≤280). Never store full markdown dumps.
+fn pr_body_preview(pr: &Value) -> String {
+    let body = str_field(pr, "body").unwrap_or("");
+    body.chars().take(280).collect()
 }
 
 fn normalize_issue(
@@ -140,6 +171,9 @@ fn normalize_issue(
             "title": str_field(issue, "title").unwrap_or(""),
             "state": str_field(issue, "state").unwrap_or(""),
             "html_url": str_field(issue, "html_url").unwrap_or(""),
+            "labels": pr_label_names(issue),
+            "body_preview": pr_body_preview(issue),
+            "body": pr_body_preview(issue),
         }),
     ))
 }

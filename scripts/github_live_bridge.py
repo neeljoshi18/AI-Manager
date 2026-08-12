@@ -590,6 +590,8 @@ def synthetic_pr_event(
     html_url: str = "",
     updated_at: str = "",
     mergeable_state: str = "",
+    check_conclusion: str = "",
+    ci_status: str = "",
 ) -> dict:
     """V1-shaped pull_request event for V2 map_pull_request + rules_v0 intent attach."""
     action = "opened"
@@ -650,6 +652,13 @@ def synthetic_pr_event(
             "number": number,
             "source": "pr_poller",
             "action": action,
+            # CI fields for graph-core detect_ci_failure / CiBlocked conflicts
+            "check_conclusion": check_conclusion or "",
+            "ci_status": ci_status or "",
+            "ci_failed": bool(check_conclusion == "failure" or ci_status in ("failure", "error")),
+            "checks_passing": True
+            if check_conclusion == "success" or ci_status == "success"
+            else (False if check_conclusion == "failure" else None),
         },
         "raw_payload_s3_uri": "",
         "event_sequence_number": 0,
@@ -714,6 +723,24 @@ def poll_github_pulls(seen_events: set[str], force: bool = False, boot: bool = F
                 ts = updated or str(pr.get("created_at") or "")
                 if not ts:
                     continue
+                # CI status for open PRs → check_conclusion on PR node (feeds CiBlocked vs SHIP)
+                check_conclusion = ""
+                ci_status = ""
+                if (state or "").lower() == "open" and not merged:
+                    head = (pr.get("head") or {}).get("sha") or ""
+                    if head:
+                        try:
+                            status_payload = gh_get(
+                                f"https://api.github.com/repos/{repo}/commits/{head}/status",
+                                timeout=15,
+                            )
+                            ci_status = str(status_payload.get("state") or "")  # success|pending|failure
+                            if ci_status in ("failure", "error"):
+                                check_conclusion = "failure"
+                            elif ci_status == "success":
+                                check_conclusion = "success"
+                        except Exception:
+                            pass
                 gu, provider, display = seed_actor_gu(login, gh_id)
                 ev = synthetic_pr_event(
                     repo=repo,
@@ -731,6 +758,8 @@ def poll_github_pulls(seen_events: set[str], force: bool = False, boot: bool = F
                     html_url=html_url,
                     updated_at=updated,
                     mergeable_state=mergeable_state,
+                    check_conclusion=check_conclusion,
+                    ci_status=ci_status,
                 )
                 try:
                     if not v2_healthy():

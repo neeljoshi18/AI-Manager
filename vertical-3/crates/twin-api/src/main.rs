@@ -3211,7 +3211,10 @@ async fn prune_team_duplicates(
 async fn seed_intent_demo_proxy(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
+    Query(q): Query<ActorQ>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let actor = q.actor.as_deref().or(q.actor_subject.as_deref());
+    require_champion(&st, &tenant_id, actor)?;
     let v2 = st.cfg.v2_base_url.trim_end_matches('/');
     let url = format!("{v2}/v2/tenants/{tenant_id}/seed/intent_demo");
     let client = reqwest::Client::builder()
@@ -3349,7 +3352,10 @@ fn urlencoding_subject(s: &str) -> String {
 async fn seed_graph_story(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
+    Query(q): Query<ActorQ>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let actor = q.actor.as_deref().or(q.actor_subject.as_deref());
+    require_champion(&st, &tenant_id, actor)?;
     let twins = st
         .store
         .list_twins(&tenant_id)
@@ -5264,6 +5270,47 @@ async fn build_follow_through(
             "is_demo": false,
         }));
     }
+    // Explicit + github_pr ledger claims (organic) with timestamps when present
+    let ledger = collect_intent_ledger(st, tenant_id, false, true).await;
+    for c in ledger {
+        if c.is_demo {
+            continue;
+        }
+        let owner = c.owner_subject.as_deref().unwrap_or("");
+        if !owner.is_empty() {
+            let ok = person_matches_keys(person, owner)
+                || person.aliases.iter().any(|a| owner.contains(a.as_str()))
+                || person.match_keys.iter().any(|a| owner.contains(a.as_str()));
+            if !ok {
+                continue;
+            }
+        }
+        let at = c.at.as_str();
+        if let Some(dt) = parse_time_flex(at) {
+            if Utc::now().signed_duration_since(dt) < Duration::hours(24) {
+                continue;
+            }
+        }
+        let itype = c.intent_type.as_str();
+        let sum = if c.summary.is_empty() {
+            c.text_preview.clone().unwrap_or_else(|| itype.to_string())
+        } else {
+            c.summary.clone()
+        };
+        intents.push(json!({
+            "id": c.claim_id,
+            "display_name": sum,
+            "intent_type": itype,
+            "properties": {
+                "intent_type": itype,
+                "stated_at": at,
+                "about_node_id": c.about_node_id,
+                "source": c.source,
+                "confidence": c.confidence,
+            },
+            "is_demo": false,
+        }));
+    }
     let (items, note) = compute_follow_through_items(person, &intents, &nodes, &edges);
     json!({
         "tenant_id": tenant_id,
@@ -7135,23 +7182,86 @@ fn default_roles_json() -> serde_json::Value {
     json!({
         "champions": [],
         "default_role": "champion",
-        "note": "Pilot: all seats act as champion until SSO. Set champions[] subject_ids for member-gated cockpit writes."
+        "note": "Pilot: all seats act as champion until champions[] is set. When champions is non-empty, only those subjects may perform cockpit writes (pass ?actor= or body.actor_subject). Members still Approve/Don't send their own digests."
     })
+}
+
+fn load_roles_config(st: &AppState, tenant_id: &str) -> serde_json::Value {
+    st.embedded_store
+        .as_ref()
+        .and_then(|s| s.get_tenant_kv(tenant_id, "roles"))
+        .unwrap_or_else(default_roles_json)
+}
+
+/// Pilot role gate. Empty champions[] = everyone is champion (open pilot).
+/// Non-empty champions[] = only listed logins/gu_* are champions; others are members.
+fn actor_is_champion(st: &AppState, tenant_id: &str, actor: Option<&str>) -> bool {
+    let roles = load_roles_config(st, tenant_id);
+    let champions: Vec<String> = roles
+        .get("champions")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if champions.is_empty() {
+        // Pilot default: open cockpit until champions list is configured.
+        return true;
+    }
+    let Some(actor) = actor.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let al = actor.to_ascii_lowercase();
+    champions.iter().any(|c| {
+        let cl = c.to_ascii_lowercase();
+        cl == al || al.contains(&cl) || cl.contains(&al)
+    })
+}
+
+/// Enforce champion write. Pass actor via query `actor` / `actor_subject` or JSON body fields.
+fn require_champion(
+    st: &AppState,
+    tenant_id: &str,
+    actor: Option<&str>,
+) -> Result<(), ApiError> {
+    if actor_is_champion(st, tenant_id, actor) {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "Champion role required for this write. Set roles.champions (empty = all open) and pass ?actor=<subject> or body.actor_subject. Members can still Approve/Don't send their own digests.",
+    ))
+}
+
+#[derive(Deserialize)]
+struct ActorQ {
+    actor: Option<String>,
+    actor_subject: Option<String>,
 }
 
 async fn get_roles(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
+    Query(q): Query<ActorQ>,
 ) -> impl IntoResponse {
-    let roles = st
-        .embedded_store
-        .as_ref()
-        .and_then(|s| s.get_tenant_kv(&tenant_id, "roles"))
-        .unwrap_or_else(default_roles_json);
+    let roles = load_roles_config(&st, &tenant_id);
+    let actor = q
+        .actor
+        .as_deref()
+        .or(q.actor_subject.as_deref());
+    let is_champ = actor_is_champion(&st, &tenant_id, actor);
     Json(json!({
         "tenant_id": tenant_id,
         "roles": roles,
         "delivery_adapter": st.delivery_adapter,
+        "caller": {
+            "actor": actor,
+            "is_champion": is_champ,
+            "note": "When champions[] is empty, is_champion is always true (pilot open).",
+        },
     }))
 }
 
@@ -7159,13 +7269,24 @@ async fn get_roles(
 struct RolesBody {
     champions: Option<Vec<String>>,
     default_role: Option<String>,
+    /// Who is performing the write (login / gu_* / subject id).
+    actor_subject: Option<String>,
+    actor: Option<String>,
 }
 
 async fn put_roles(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
+    Query(q): Query<ActorQ>,
     Json(body): Json<RolesBody>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let actor = body
+        .actor_subject
+        .as_deref()
+        .or(body.actor.as_deref())
+        .or(q.actor.as_deref())
+        .or(q.actor_subject.as_deref());
+    require_champion(&st, &tenant_id, actor)?;
     let champions = body.champions.unwrap_or_default();
     let default_role = body
         .default_role
@@ -7214,13 +7335,23 @@ async fn get_tomorrow_focus(
 struct TomorrowFocusBody {
     items: Vec<serde_json::Value>,
     note: Option<String>,
+    actor_subject: Option<String>,
+    actor: Option<String>,
 }
 
 async fn put_tomorrow_focus(
     State(st): State<AppState>,
     Path(tenant_id): Path<String>,
+    Query(q): Query<ActorQ>,
     Json(body): Json<TomorrowFocusBody>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let actor = body
+        .actor_subject
+        .as_deref()
+        .or(body.actor.as_deref())
+        .or(q.actor.as_deref())
+        .or(q.actor_subject.as_deref());
+    require_champion(&st, &tenant_id, actor)?;
     let value = json!({
         "items": body.items,
         "note": body.note.unwrap_or_else(|| "Pinned by champion".into()),
@@ -7272,6 +7403,12 @@ impl ApiError {
     fn not_found(m: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: m.into(),
+        }
+    }
+    fn forbidden(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: m.into(),
         }
     }

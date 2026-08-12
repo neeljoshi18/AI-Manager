@@ -152,6 +152,10 @@ impl LedgerCompiler {
             if is_person_endpoint(&node.node_id) {
                 continue;
             }
+            // Never put demo/seed theater work objects into digests (story-1, intent_demo PRs).
+            if node_view_is_demo_seed(node) {
+                continue;
+            }
             let ntype = node.node_type.as_str();
             let is_pr = ntype.eq_ignore_ascii_case("PullRequest")
                 || node.node_id.starts_with("pr:")
@@ -494,6 +498,31 @@ fn node_id_is_demo_seed(id: &str) -> bool {
         || l.contains("demo-repo")
         || l.contains("intent_demo")
         || l.contains(":story-1")
+}
+
+/// Full GraphNodeView check: id path + properties.seed / is_demo.
+fn node_view_is_demo_seed(n: &GraphNodeView) -> bool {
+    if node_id_is_demo_seed(&n.node_id) || node_id_is_demo_seed(&n.resource_id) {
+        return true;
+    }
+    if n.properties.get("is_demo").and_then(|v| v.as_bool()) == Some(true) {
+        return true;
+    }
+    if let Some(seed) = n.properties.get("seed").and_then(|v| v.as_str()) {
+        let s = seed.to_ascii_lowercase();
+        if s.contains("graph_story") || s.contains("intent_demo") || s.contains("demo") {
+            return true;
+        }
+    }
+    // Display name from seed story intents recycled as PR titles
+    let lab = n.display_name.to_ascii_lowercase();
+    if lab.contains("hold merge until demo")
+        || lab.contains("ready for pilot") && n.node_id.contains("story-1")
+        || lab.contains("waiting on partner review") && n.node_id.contains("story-1")
+    {
+        return true;
+    }
+    false
 }
 
 /// Drop BLOCKS edges that come from seed graph_story / intent_demo theater.

@@ -10,7 +10,7 @@ Ordered residual backlog from adequacy re-run + handoff. Mark status as work lan
 | 4 | Follow-through on organic claims | **DONE** | API returns supported SHIP/FIX; folds ledger + slack claims |
 | 5 | Role write-gates | **DONE** | `require_champion` on put_roles, put_tomorrow_focus, seed_graph_story, seed_intent_demo |
 | 6 | CI → CiBlocked path | **DONE** | PR poller attaches commit status → `check_conclusion` / `ci_status` on PR nodes |
-| 7 | Deploy + verify | in progress | |
+| 7 | Deploy + verify | **DONE** | `780d26a` deploy success; V1 recover_only after red; digests clean; roles 403/200 |
 
 ## Slack install checklist (human — not blocked for code)
 

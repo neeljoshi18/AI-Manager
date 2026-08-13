@@ -310,7 +310,7 @@ mod tests {
     async fn mock_teams_draft_dm_includes_actions() {
         let client = MockTeamsClient::new();
         let r = client
-            .post_draft_dm("29:user-aad", "dft_test", "• Shipped PR #1", "2026-08-05 12:00 UTC")
+            .post_draft_dm("29:user-aad", "dft_test", "• Shipped PR #1", "2026-08-05 17:30 IST")
             .await
             .unwrap();
         assert!(r.channel.contains("user-aad") || r.channel.contains("teams"));

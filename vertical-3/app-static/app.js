@@ -3,6 +3,69 @@ const $ = (id) => document.getElementById(id);
 /** Single product tenant for pilot sales path (not lab ten_demo). */
 const PILOT_TENANT = "ten_github";
 
+/**
+ * Display timezone: India Standard Time (IST = UTC+05:30, no DST).
+ * Never invents times — only converts real Date/ISO instants with exact offset.
+ */
+const IST_TZ = "Asia/Kolkata";
+const IST_LABEL = "IST";
+
+/** Parse ISO/RFC3339 (or Date) → Date; invalid → null (do not invent). */
+function parseInstant(input) {
+  if (input == null || input === "") return null;
+  if (input instanceof Date) {
+    return Number.isNaN(input.getTime()) ? null : input;
+  }
+  const s = String(input).trim();
+  if (!s) return null;
+  // Native Date parses Z / offsets correctly.
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+/** Format instant as listed IST wall time: `2026-08-13 17:30 IST`. */
+function fmtIst(input, opts) {
+  const d = parseInstant(input);
+  if (!d) return input == null || input === "" ? "—" : String(input);
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: IST_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const get = (t) => parts.find((p) => p.type === t)?.value || "";
+    const y = get("year");
+    const mo = get("month");
+    const day = get("day");
+    const h = get("hour");
+    const mi = get("minute");
+    if (opts?.compact) return `${mo}-${day} ${h}:${mi} ${IST_LABEL}`;
+    if (opts?.dateOnly) return `${y}-${mo}-${day} ${IST_LABEL}`;
+    if (opts?.withSeconds) {
+      const secParts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: IST_TZ,
+        second: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+      const sec = secParts.find((p) => p.type === "second")?.value || "00";
+      return `${y}-${mo}-${day} ${h}:${mi}:${sec} ${IST_LABEL}`;
+    }
+    return `${y}-${mo}-${day} ${h}:${mi} ${IST_LABEL}`;
+  } catch (_) {
+    return String(input);
+  }
+}
+
+/** Now listed in IST (from real clock). */
+function nowIstList() {
+  return fmtIst(new Date());
+}
+
 let state = {
   tenant: PILOT_TENANT,
   draftId: null,
@@ -949,11 +1012,11 @@ async function refreshCockpit() {
       if ($("ck-heat-insight")) {
         $("ck-heat-insight").textContent = simple
           ? act.insight
-              ? act.insight.replace(/UTC/g, "team time").replace(/Peak day/i, "Busiest day")
-              : "When the team usually ships work."
+              ? act.insight.replace(/UTC/g, "IST").replace(/Peak day/i, "Busiest day")
+              : "When the team usually ships work (IST)."
           : act.insight || "";
       }
-      const hod = act.hour_of_day_utc || {};
+      const hod = act.hour_of_day_ist || act.hour_of_day_utc || {};
       const counts = hod.counts || [];
       const labels = hod.labels || [];
       if ($("ck-heat-hours")) {
@@ -1132,7 +1195,7 @@ async function refreshCockpit() {
     if (msg) {
       msg.textContent = simple
         ? `Updated just now`
-        : `Updated ${new Date().toISOString().slice(11, 19)} UTC · tenant ${tenant}`;
+        : `Updated ${nowIstList()} · tenant ${tenant}`;
     }
   } catch (e) {
     if (msg) msg.textContent = "Cockpit failed: " + (e.message || e);
@@ -1410,13 +1473,14 @@ async function fillVisualHome(ctx) {
   if ($("viz-rhythm")) {
     const insight = ins?.activity?.insight;
     $("viz-rhythm").textContent = insight
-      ? insight.replace(/UTC/g, "team time").replace(/Peak day/i, "Busiest day")
-      : "Activity rhythm appears as the work map fills.";
+      ? insight.replace(/UTC/g, "IST").replace(/Peak day/i, "Busiest day")
+      : "Activity rhythm appears as the work map fills (IST).";
   }
   const bars = $("viz-rhythm-bars");
-  if (bars && ins?.activity?.hour_of_day_utc) {
-    const counts = ins.activity.hour_of_day_utc.counts || [];
-    const labels = ins.activity.hour_of_day_utc.labels || [];
+  const hodAct = ins?.activity?.hour_of_day_ist || ins?.activity?.hour_of_day_utc;
+  if (bars && hodAct) {
+    const counts = hodAct.counts || [];
+    const labels = hodAct.labels || [];
     const max = Math.max(...counts, 1);
     let html = "";
     for (let i = 0; i < counts.length; i++) {
@@ -2076,7 +2140,7 @@ function digestCell(m) {
       : d.empty_placeholder
         ? "empty"
         : "draft";
-  const when = (d.updated_at || "").toString().replace("T", " ").slice(0, 16);
+  const when = d.updated_at ? fmtIst(d.updated_at) : "";
   return `<span class="pill ${d.has_content ? "up" : "mid"}">${esc(st)} · ${content}</span> <span class="muted small">${esc(dm)}${when ? " · " + esc(when) : ""}</span>`;
 }
 
@@ -2892,7 +2956,7 @@ function renderGraphChrome(data) {
         `<span class="pill mid">edges ${returned.edges ?? graphState.edges.length}/${totals.edges ?? "—"}</span>`,
         data.truncated ? `<span class="pill mid">truncated</span>` : "",
         `<span class="pill mid">reader ${esc(data.reader || "—")}</span>`,
-        `<span class="pill mid">as_of ${esc((data.as_of || "").replace("T", " ").slice(0, 19))}</span>`,
+        `<span class="pill mid">as_of ${esc(fmtIst(data.as_of))}</span>`,
       ]
         .filter(Boolean)
         .join("");
@@ -3750,7 +3814,7 @@ function renderPersonProfile(p, hostEl) {
       <span class="pill up">${esc(sub.display_name || sub.subject_id || "?")}</span>
       <span class="pill mid">${esc(sub.subject_id || "")}</span>
       <span class="pill mid">confidence ${esc(String(Math.round((p.confidence_overall || 0) * 100)))}%</span>
-      <span class="pill mid">${esc((p.as_of || "").slice(0, 19))}Z</span>
+      <span class="pill mid">${esc(fmtIst(p.as_of))}</span>
     </div>
     <p class="muted small">${esc(p.doctrine || "")}</p>
     <div class="cockpit-grid" style="margin-top:0.5rem;">
@@ -3763,7 +3827,7 @@ function renderPersonProfile(p, hostEl) {
       <div>
         <h3 class="graph-side-h">Cadence</h3>
         <p class="muted small">${esc(cadence.notes || "")}</p>
-        <p class="muted small">Peak hour UTC: <strong>${esc(String(cadence.peak_hour_utc ?? "—"))}</strong> (${esc(String(cadence.peak_count ?? 0))})</p>
+        <p class="muted small">Peak hour IST: <strong>${esc(String(cadence.peak_hour_ist ?? cadence.peak_hour_utc ?? "—"))}</strong> (${esc(String(cadence.peak_count ?? 0))})</p>
         <h3 class="graph-side-h">Digests</h3>
         <ul class="item-list">${digHtml}</ul>
       </div>
@@ -4341,13 +4405,13 @@ function applyInsightsUxMode() {
   if (intro && intro.closest(".card") === view.querySelector(".card")) {
     intro.textContent = simple
       ? "When the pod is active — from real work on the map. Not who is “best.”"
-      : "Your engineering activity as currency — from the live graph (webhooks + commit poller). UTC clocks.";
+      : "Your engineering activity as currency — from the live graph (webhooks + commit poller). Times in IST.";
   }
   // Stat labels: plain English in Simple
   const labels = view.querySelectorAll(".stat-label");
   if (labels[0]) labels[0].textContent = simple ? "Recent commits" : "Commit nodes";
   if (labels[1]) labels[1].textContent = simple ? "Work links" : "Authored edges";
-  if (labels[2]) labels[2].textContent = simple ? "Busiest hour" : "Peak hour (UTC)";
+  if (labels[2]) labels[2].textContent = simple ? "Busiest hour (IST)" : "Peak hour (IST)";
   const byAuthor = Array.from(view.querySelectorAll("h2")).find((el) =>
     /by author|who is active/i.test(el.textContent || "")
   );
@@ -4648,11 +4712,11 @@ async function refreshDevInsights() {
     const g = d.graph || {};
     if ($("ins-commits")) $("ins-commits").textContent = String(g.commit_nodes ?? "—");
     if ($("ins-authored")) $("ins-authored").textContent = String(act.authored_edges ?? "—");
-    const hod = act.hour_of_day_utc || {};
+    const hod = act.hour_of_day_ist || act.hour_of_day_utc || {};
     if ($("ins-peak")) {
-      const h = hod.peak_hour_utc;
+      const h = hod.peak_hour_ist ?? hod.peak_hour_utc;
       $("ins-peak").textContent =
-        h == null ? "—" : `${String(h).padStart(2, "0")}:00`;
+        h == null ? "—" : `${String(h).padStart(2, "0")}:00 IST`;
     }
     if ($("ins-insight")) $("ins-insight").textContent = act.insight || "";
     if ($("ins-hours")) {

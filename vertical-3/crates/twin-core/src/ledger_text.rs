@@ -2,20 +2,22 @@
 //! Human-facing prose for scheduled status windows; evidence stays on ledger JSON.
 
 use crate::model::{ConfidenceTier, LedgerItem, StatusLedger};
+use crate::time_ist::{format_lookback_ist, ist_date_label};
 
 /// Render friendly status for a **batched window** — emphasize outcomes, not every micro-event.
 pub fn render_draft_text(ledger: &StatusLedger) -> String {
     let mut lines = Vec::new();
     let who = human_name(&ledger.person_id);
-    let day = ledger.period.end.date_naive();
+    // Calendar day in IST (exact UTC→IST offset), not invented.
+    let day = ist_date_label(ledger.period.end);
     let conf = match ledger.confidence_rollup {
         ConfidenceTier::High => "shipped / closed work",
         ConfidenceTier::Medium => "work in progress",
         ConfidenceTier::Blocker => "blocked — needs attention",
     };
-    let win = format_window(ledger.period.start, ledger.period.end);
+    let win = format_lookback_ist(ledger.period.start, ledger.period.end);
 
-    lines.push(format!("Status update for {who} · {day}"));
+    lines.push(format!("Status update for {who} · {day} IST"));
     lines.push(format!("Lookback: {win} · {conf}."));
     lines.push(String::new());
 
@@ -83,22 +85,6 @@ fn clean_summary(s: &str) -> String {
     s.trim().to_string()
 }
 
-fn format_window(start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>) -> String {
-    let secs = (end - start).num_seconds().max(0);
-    let label = if secs >= 86_400 {
-        format!("{}d", (secs + 43_200) / 86_400)
-    } else if secs >= 3600 {
-        format!("{}h", (secs + 1800) / 3600)
-    } else {
-        format!("{}m", (secs + 30) / 60)
-    };
-    format!(
-        "{label} ({} → {} UTC)",
-        start.format("%m-%d %H:%M"),
-        end.format("%m-%d %H:%M")
-    )
-}
-
 fn human_name(person_id: &str) -> String {
     let s = person_id
         .strip_prefix("gu_")
@@ -140,6 +126,8 @@ mod tests {
         };
         let t = render_draft_text(&ledger);
         assert!(t.contains("nothing invented"));
+        assert!(t.contains("IST"), "digest lookback must list IST, got: {t}");
+        assert!(!t.contains("UTC"), "digest must not list UTC: {t}");
     }
 
     #[test]

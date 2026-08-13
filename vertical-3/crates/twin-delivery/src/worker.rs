@@ -186,7 +186,7 @@ impl DeliveryService {
                 .await?;
                 let deadline_s = existing
                     .veto_deadline
-                    .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .map(|d| twin_core::format_ist_list(d))
                     .unwrap_or_else(|| "none".into());
                 match self
                     .delivery
@@ -359,7 +359,7 @@ impl DeliveryService {
             .await?;
 
             let deadline_s = veto_deadline
-                .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+                .map(|d| twin_core::format_ist_list(d))
                 .unwrap_or_else(|| "none".into());
             match self
                 .delivery
@@ -651,7 +651,7 @@ mod tests {
             twin_kind: TwinKind::Person,
             subject_id: "gu_a".into(),
             display_name: "A".into(),
-            timezone: "UTC".into(),
+            timezone: twin_core::DISPLAY_TIMEZONE.into(),
             channel_id: "C1".into(),
             shadow_until: None,
             high_auto_publish: false,

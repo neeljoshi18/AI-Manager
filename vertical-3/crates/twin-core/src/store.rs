@@ -504,7 +504,7 @@ mod persist_tests {
             twin_kind: TwinKind::Person,
             subject_id: "gu_a".into(),
             display_name: "A".into(),
-            timezone: "UTC".into(),
+            timezone: crate::time_ist::DISPLAY_TIMEZONE.into(),
             channel_id: "C1".into(),
             shadow_until: None,
             high_auto_publish: false,

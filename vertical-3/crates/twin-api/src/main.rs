@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::{Datelike, Duration, Timelike, Utc};
+use chrono::{Duration, Utc};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
@@ -251,7 +251,7 @@ async fn seed_team_from_env(store: &dyn TwinStore) {
             twin_kind: TwinKind::Person,
             subject_id: subject.clone(),
             display_name: display,
-            timezone: "UTC".into(),
+            timezone: twin_core::DISPLAY_TIMEZONE.into(),
             channel_id: channel.clone(),
             shadow_until: None,
             high_auto_publish: false,
@@ -1146,7 +1146,9 @@ async fn run_thin_monitors(st: &AppState) -> anyhow::Result<()> {
         let v1_health = probe_json(&format!("{v1_base}/healthz")).await;
         let pulse = json!({
             "tenant_id": t,
-            "as_of": Utc::now().to_rfc3339(),
+            "as_of": twin_core::format_ist_rfc3339(Utc::now()),
+            "timezone": twin_core::DISPLAY_TIMEZONE,
+            "timezone_label": "IST (UTC+05:30)",
             "team": {
                 "person_twins": person_twins.len(),
                 "slack_mapped": mapped,
@@ -2240,7 +2242,7 @@ async fn demo_simulate(
         twin_kind: TwinKind::Person,
         subject_id: user.clone(),
         display_name: name,
-        timezone: "UTC".into(),
+        timezone: twin_core::DISPLAY_TIMEZONE.into(),
         channel_id: channel,
         shadow_until: if body.skip_shadow.unwrap_or(true) {
             None
@@ -2681,7 +2683,7 @@ async fn upsert_team_member(
         timezone: existing
             .as_ref()
             .map(|t| t.timezone.clone())
-            .unwrap_or_else(|| "UTC".into()),
+            .unwrap_or_else(|| twin_core::DISPLAY_TIMEZONE.into()),
         channel_id: body
             .channel_id
             .or_else(|| existing.as_ref().map(|t| t.channel_id.clone()))
@@ -3150,7 +3152,7 @@ mod membership_helper_tests {
             twin_kind: TwinKind::Person,
             subject_id: subject.into(),
             display_name: subject.into(),
-            timezone: "UTC".into(),
+            timezone: twin_core::DISPLAY_TIMEZONE.into(),
             channel_id: "C1".into(),
             shadow_until: None,
             high_auto_publish: false,
@@ -3606,18 +3608,17 @@ async fn dev_insights(
             push_count += 1;
         }
         if let Some(vf) = e.get("valid_from").and_then(|x| x.as_str()) {
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(vf) {
-                let utc = dt.with_timezone(&chrono::Utc);
-                hour_hist[utc.hour() as usize] += 1;
-                // chrono weekday Mon=0..Sun=6 matches our array
-                dow_hist[utc.weekday().num_days_from_monday() as usize] += 1;
-                let day = utc.format("%Y-%m-%d").to_string();
+            // Edge timestamps are stored as UTC instants; bucket activity in IST wall time.
+            if let Some(utc) = twin_core::parse_as_utc(vf) {
+                hour_hist[twin_core::ist_hour(utc) as usize] += 1;
+                dow_hist[twin_core::ist_weekday_mon0(utc) as usize] += 1;
+                let day = twin_core::format_ist_day(utc);
                 *by_day.entry(day).or_insert(0) += 1;
             }
         }
     }
 
-    // Peak hour
+    // Peak hour (IST)
     let (peak_hour, peak_hour_n) = hour_hist
         .iter()
         .enumerate()
@@ -3679,10 +3680,13 @@ async fn dev_insights(
         }
     }
 
-    let hour_labels: Vec<String> = (0..24).map(|h| format!("{h:02}:00")).collect();
+    let hour_labels: Vec<String> = (0..24).map(|h| format!("{h:02}:00 IST")).collect();
+    let as_of_ist = twin_core::format_ist_rfc3339(Utc::now());
     Ok(Json(json!({
         "tenant_id": tenant_id,
-        "as_of": Utc::now().to_rfc3339(),
+        "as_of": as_of_ist,
+        "timezone": twin_core::DISPLAY_TIMEZONE,
+        "timezone_label": "IST (UTC+05:30)",
         "doctrine": "data_is_currency",
         "graph": {
             "nodes": nodes.len(),
@@ -3696,20 +3700,36 @@ async fn dev_insights(
             "push_edges": push_count,
             "by_author": authored_by,
             "by_day": by_day,
+            // Primary: IST wall buckets (converted exactly from UTC instants on edges).
+            "hour_of_day_ist": {
+                "labels": hour_labels,
+                "counts": hour_hist,
+                "peak_hour_ist": peak_hour,
+                "peak_count": peak_hour_n,
+            },
+            // Compat aliases (same IST data — not separate UTC re-bucket).
             "hour_of_day_utc": {
                 "labels": hour_labels,
                 "counts": hour_hist,
                 "peak_hour_utc": peak_hour,
                 "peak_count": peak_hour_n,
+                "note": "Buckets are IST; field name kept for older clients.",
+            },
+            "day_of_week_ist": {
+                "labels": dow_names,
+                "counts": dow_hist,
+                "peak_day": dow_names[peak_dow_i],
+                "peak_count": peak_dow_n,
             },
             "day_of_week_utc": {
                 "labels": dow_names,
                 "counts": dow_hist,
                 "peak_day": dow_names[peak_dow_i],
                 "peak_count": peak_dow_n,
+                "note": "Buckets are IST; field name kept for older clients.",
             },
             "insight": format!(
-                "Most active hour (UTC): {:02}:00 ({} events). Peak day: {} ({}).",
+                "Most active hour (IST): {:02}:00 ({} events). Peak day: {} ({}).",
                 peak_hour, peak_hour_n, dow_names[peak_dow_i], peak_dow_n
             ),
         },
@@ -3718,7 +3738,7 @@ async fn dev_insights(
             "people_with_content": content_people,
         },
         "recent_commits": recent_commits,
-        "note": "Stats derived from ACL-filtered graph edges (valid_from). Commit poller + webhooks fill the graph.",
+        "note": "Stats from ACL graph edges (valid_from UTC instants → IST wall buckets). Commit poller + webhooks fill the graph.",
     })))
 }
 
@@ -4206,7 +4226,7 @@ async fn upsert_twin(
         timezone: body
             .timezone
             .or_else(|| existing.as_ref().map(|t| t.timezone.clone()))
-            .unwrap_or_else(|| "UTC".into()),
+            .unwrap_or_else(|| twin_core::DISPLAY_TIMEZONE.into()),
         channel_id: body
             .channel_id
             .or_else(|| existing.as_ref().map(|t| t.channel_id.clone()))
@@ -6032,19 +6052,31 @@ async fn set_commitment_status(
 const COMMITMENT_DIGEST_KV: &str = "commitment_digest_meta";
 
 async fn maybe_send_morning_commitment_digest(st: &AppState) -> Result<(), String> {
-    let hour: u32 = std::env::var("COMMITMENT_DIGEST_HOUR_UTC")
+    // Prefer IST hour for India pilot; fall back to COMMITMENT_DIGEST_HOUR_UTC (interpreted as UTC hour).
+    let hour_ist: u32 = std::env::var("COMMITMENT_DIGEST_HOUR_IST")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(13);
+        .or_else(|| {
+            std::env::var("COMMITMENT_DIGEST_HOUR_UTC")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|h_utc| {
+                    // Exact convert: UTC hour h → IST wall hour (h+5:30) mod 24
+                    // At minute>=30 of UTC, IST has crossed to next hour; schedule checks hour only.
+                    (h_utc + 5) % 24
+                })
+        })
+        .unwrap_or(18); // default ~ morning-ish evening India = 18:00 IST (was 13 UTC)
     let now = Utc::now();
-    if now.hour() != hour {
+    let now_ist_hour = twin_core::ist_hour(now);
+    if now_ist_hour != hour_ist {
         return Ok(());
     }
     let tenant = std::env::var("DEFAULT_TENANT_ID")
         .or_else(|_| std::env::var("SEED_TEAM_TENANT"))
         .unwrap_or_else(|_| "ten_github".into());
-    let day = now.format("%Y-%m-%d").to_string();
-    // Once per day
+    // Once per IST calendar day (precise UTC→IST day boundary).
+    let day = twin_core::format_ist_day(now);
     if let Some(store) = &st.embedded_store {
         if let Some(meta) = store.get_tenant_kv(&tenant, COMMITMENT_DIGEST_KV) {
             if meta.get("last_day").and_then(|x| x.as_str()) == Some(day.as_str()) {
@@ -6057,7 +6089,11 @@ async fn maybe_send_morning_commitment_digest(st: &AppState) -> Result<(), Strin
         store.put_tenant_kv(
             &tenant,
             COMMITMENT_DIGEST_KV,
-            json!({ "last_day": day, "sent_at": now.to_rfc3339() }),
+            json!({
+                "last_day": day,
+                "sent_at": twin_core::format_ist_rfc3339(now),
+                "timezone": "Asia/Kolkata",
+            }),
         );
         persist_embedded(st);
     }
@@ -6446,7 +6482,8 @@ async fn get_person_profile(
         }
         if let Some(vf) = e.get("valid_from").and_then(|x| x.as_str()) {
             if let Some(dt) = parse_time_flex(vf) {
-                hour_hist[dt.hour() as usize] += 1;
+                // UTC instant → IST hour bucket (exact +05:30)
+                hour_hist[twin_core::ist_hour(dt) as usize] += 1;
             }
         }
     }
@@ -6658,18 +6695,22 @@ async fn get_person_profile(
             "resolved_from": subject_id,
             "graph_person_node_ids": person_node_ids.iter().cloned().collect::<Vec<_>>(),
         },
-        "as_of": as_of.to_rfc3339(),
+        "as_of": twin_core::format_ist_rfc3339(as_of),
+        "timezone": twin_core::DISPLAY_TIMEZONE,
+        "timezone_label": "IST (UTC+05:30)",
         "work_surface": {
             "repos": repo_list,
             "commit_sample": commit_sample,
             "authored_commit_count": authored_commit_ids.len(),
         },
         "cadence": {
+            "peak_hour_ist": peak_hour,
             "peak_hour_utc": peak_hour,
             "peak_count": peak_n,
+            "hour_of_day_ist": hour_hist,
             "hour_of_day_utc": hour_hist,
             "notes": if peak_n > 0 {
-                format!("Most active hour (UTC) for this person: {peak_hour:02}:00 ({peak_n} edge events). Not a ranking.")
+                format!("Most active hour (IST) for this person: {peak_hour:02}:00 ({peak_n} edge events). Not a ranking.")
             } else {
                 "Insufficient person-scoped activity edges for cadence.".into()
             },

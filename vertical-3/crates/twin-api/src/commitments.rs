@@ -13,10 +13,29 @@
 //! - what in plain English
 //! - open → done when chat or human says so
 
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
+
+fn ist() -> FixedOffset {
+    FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST")
+}
+
+/// Parse stored timestamp (any offset) → list as IST. Unparseable → original (no invention).
+fn ts_to_ist_rfc3339(s: &str) -> String {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
+        return dt.with_timezone(&ist()).to_rfc3339();
+    }
+    s.to_string()
+}
+
+fn ts_to_ist_list(s: &str) -> String {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
+        return dt.with_timezone(&ist()).format("%Y-%m-%d %H:%M IST").to_string();
+    }
+    s.to_string()
+}
 
 pub const COMMITMENTS_KV: &str = "commitment_ledger";
 pub const COMMITMENTS_MAX: usize = 300;
@@ -68,6 +87,12 @@ impl Commitment {
     }
 
     pub fn to_json(&self) -> Value {
+        // List times in IST (+05:30) from stored instants — never invent times.
+        let created_list = ts_to_ist_list(&self.created_at);
+        let resolved_list = self
+            .resolved_at
+            .as_deref()
+            .map(ts_to_ist_list);
         json!({
             "id": self.id,
             "tenant_id": self.tenant_id,
@@ -81,11 +106,15 @@ impl Commitment {
             "channel": self.channel,
             "evidence": self.evidence,
             "confidence": self.confidence,
-            "created_at": self.created_at,
-            "resolved_at": self.resolved_at,
+            "created_at": ts_to_ist_rfc3339(&self.created_at),
+            "created_at_ist": created_list,
+            "resolved_at": self.resolved_at.as_deref().map(ts_to_ist_rfc3339),
+            "resolved_at_ist": resolved_list,
             "resolve_evidence": self.resolve_evidence,
             "linear_issue_id": self.linear_issue_id,
             "linear_url": self.linear_url,
+            "timezone": "Asia/Kolkata",
+            "timezone_label": "IST (UTC+05:30)",
             // Plain English for UI
             "headline": commitment_headline(self),
             "for_promiser": format!("You said you'd: {}", self.text),
@@ -629,9 +658,14 @@ pub fn build_plain_insights(
         "Quiet board: no open commitments or live blockers in the ledger yet. Capture promises from Slack or the Capture button.".to_string()
     };
 
+    let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST");
+    let as_of_ist = Utc::now().with_timezone(&ist).to_rfc3339();
     json!({
         "tenant_id": tenant_id,
-        "as_of": Utc::now().to_rfc3339(),
+        // Same instant as UTC now, listed with explicit +05:30 (never invented).
+        "as_of": as_of_ist,
+        "timezone": "Asia/Kolkata",
+        "timezone_label": "IST (UTC+05:30)",
         "headline": headline,
         "act_on_today": act_now,
         "worth_watching": watch,

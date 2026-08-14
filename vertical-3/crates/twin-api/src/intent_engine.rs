@@ -186,7 +186,7 @@ impl IntentClaimRecord {
             "source": self.source,
             "is_demo": self.is_demo,
             "lifecycle": self.lifecycle,
-            "at": self.at,
+            "at": list_at(&self.at),
             "text_preview": self.text_preview,
             "channel": self.channel,
         })
@@ -541,6 +541,10 @@ pub fn merge_ledger(
         }
         true
     });
+    // List-time IST so stored UTC strings and +05:30 sort as the same offset.
+    for c in &mut all {
+        c.at = list_at(&c.at);
+    }
     // Newest first
     all.sort_by(|a, b| b.at.cmp(&a.at));
     all
@@ -639,5 +643,6 @@ mod tests {
         let m = merge_ledger(vec![demo], vec![], vec![live], false, true);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].intent_type, "FIX");
+        assert!(m[0].at.ends_with("+05:30"));
     }
 }

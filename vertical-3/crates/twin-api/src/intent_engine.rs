@@ -53,6 +53,15 @@ pub const EXPLICIT_CLAIMS_KV: &str = "intent_explicit_claims";
 pub const EXPLICIT_CLAIMS_MAX: usize = 200;
 pub const TEXT_PREVIEW_MAX: usize = 280;
 
+/// List a stored instant as RFC3339 +05:30. Empty → now (still a real clock instant).
+fn list_at(stored: &str) -> String {
+    if stored.trim().is_empty() {
+        twin_core::format_ist_rfc3339(Utc::now())
+    } else {
+        twin_core::reformat_stored_to_ist_rfc3339(stored)
+    }
+}
+
 /// Closed ontology (Oliv-style fixed question vocabulary for eng).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -231,7 +240,11 @@ pub fn classify_text(text: &str) -> (String, f32, String) {
             return (ty.as_str().to_string(), *conf, format!("text:{pat}"));
         }
     }
-    (IntentType::Other.as_str().to_string(), 0.25, "default:other".into())
+    (
+        IntentType::Other.as_str().to_string(),
+        0.25,
+        "default:other".into(),
+    )
 }
 
 pub fn truncate_preview(text: &str, max: usize) -> String {
@@ -375,11 +388,7 @@ pub fn claim_from_graph_intent(tenant_id: &str, intent: &Value) -> IntentClaimRe
         source,
         is_demo,
         lifecycle: "open".into(),
-        at: if at.is_empty() {
-            Utc::now().to_rfc3339()
-        } else {
-            at
-        },
+        at: list_at(&at),
         text_preview: None,
         channel: None,
     }
@@ -408,10 +417,7 @@ pub fn claim_from_slack_kv(tenant_id: &str, c: &Value) -> IntentClaimRecord {
         .and_then(|x| x.as_str())
         .unwrap_or("OTHER")
         .to_string();
-    let conf = c
-        .get("confidence")
-        .and_then(|x| x.as_f64())
-        .unwrap_or(0.5) as f32;
+    let conf = c.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32;
     let at = c
         .get("at")
         .and_then(|x| x.as_str())
@@ -439,7 +445,10 @@ pub fn claim_from_slack_kv(tenant_id: &str, c: &Value) -> IntentClaimRecord {
         about_node_id: None,
         confidence: conf,
         evidence: vec![
-            format!("slack_user:{}", c.get("slack_user").and_then(|x| x.as_str()).unwrap_or("")),
+            format!(
+                "slack_user:{}",
+                c.get("slack_user").and_then(|x| x.as_str()).unwrap_or("")
+            ),
             format!("channel:{channel}"),
             format!("ts:{}", c.get("ts").and_then(|x| x.as_str()).unwrap_or("")),
         ]
@@ -453,11 +462,7 @@ pub fn claim_from_slack_kv(tenant_id: &str, c: &Value) -> IntentClaimRecord {
             .and_then(|x| x.as_str())
             .unwrap_or("open")
             .to_string(),
-        at: if at.is_empty() {
-            Utc::now().to_rfc3339()
-        } else {
-            at
-        },
+        at: list_at(&at),
         text_preview: Some(truncate_preview(&preview, TEXT_PREVIEW_MAX)),
         channel: Some(channel.to_string()),
     }
@@ -499,7 +504,7 @@ pub fn build_explicit_claim(
         source: ClaimSource::Explicit.as_str().into(),
         is_demo: false,
         lifecycle: ClaimLifecycle::Open.as_api().into(),
-        at: Utc::now().to_rfc3339(),
+        at: twin_core::format_ist_rfc3339(Utc::now()),
         text_preview: Some(truncate_preview(sum, TEXT_PREVIEW_MAX)),
         channel: channel.map(|s| s.to_string()),
     }
@@ -573,6 +578,7 @@ pub fn ledger_stats(claims: &[IntentClaimRecord]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn classify_blocked() {
@@ -601,6 +607,27 @@ mod tests {
         assert!(!c.is_demo);
         assert!((c.confidence - 0.95).abs() < 0.01);
         assert_eq!(c.source, "explicit");
+        assert!(
+            c.at.ends_with("+05:30"),
+            "explicit claim at must be listed IST, got {}",
+            c.at
+        );
+    }
+
+    #[test]
+    fn graph_claim_relists_utc_as_ist() {
+        let rec = claim_from_graph_intent(
+            "ten_github",
+            &json!({
+                "id": "intent:test",
+                "intent_type": "SHIP",
+                "display_name": "ship it",
+                "source": "github_pr",
+                "at": "2026-08-12T12:00:00Z",
+            }),
+        );
+        assert!(rec.at.ends_with("+05:30"));
+        assert!(rec.at.starts_with("2026-08-12T17:30:00"));
     }
 
     #[test]

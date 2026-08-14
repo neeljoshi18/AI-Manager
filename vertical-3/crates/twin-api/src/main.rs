@@ -2474,7 +2474,7 @@ async fn get_team(
                 },
                 "dm_sent": !d.slack_dm_ts.is_empty(),
                 "slack_dm_ts": d.slack_dm_ts,
-                "updated_at": d.updated_at,
+                "updated_at": twin_core::format_ist_rfc3339(d.updated_at),
                 "preview": d.draft_text.chars().take(160).collect::<String>(),
                 "empty_placeholder": emptyish,
                 "approx_item_count": if emptyish { 0 } else { bullet_items },
@@ -2494,7 +2494,7 @@ async fn get_team(
             "slack_mapped": slack.is_some(),
             "chat_mapped": chat_mapped,
             "provider_aliases": aliases,
-            "shadow_until": t.shadow_until,
+            "shadow_until": t.shadow_until.map(twin_core::format_ist_rfc3339),
             "last_digest": last_digest,
         }));
     }
@@ -2939,8 +2939,8 @@ async fn compile_team(
             "item_summaries": item_summaries,
             "preview": outcome.draft_text.chars().take(200).collect::<String>(),
             "confidence": outcome.ledger.ledger.confidence_rollup.as_str(),
-            "activity_start": activity_start,
-            "activity_end": activity_end,
+            "activity_start": twin_core::format_ist_rfc3339(activity_start),
+            "activity_end": twin_core::format_ist_rfc3339(activity_end),
             "aliases_merged": aliases_merged,
             "acl_empty": outcome.acl_empty,
         }));
@@ -2962,8 +2962,8 @@ async fn compile_team(
         "force_notify": force,
         "notify_policy": "v1_change_only_daily_cap",
         "status_window_secs": st.cfg.status_window_secs,
-        "activity_start": activity_start,
-        "activity_end": activity_end,
+        "activity_start": twin_core::format_ist_rfc3339(activity_start),
+        "activity_end": twin_core::format_ist_rfc3339(activity_end),
         "results": results,
         "note": "force_notify=false respects change-only + daily cap. Empty ledgers never DM. Activity uses rolling lookback (STATUS_WINDOW_SECS).",
     })))
@@ -3842,7 +3842,9 @@ async fn get_graph_snapshot(
                 "returned": { "nodes": 0, "edges": 0 },
                 "team": { "members": [] },
                 "error": if v2_up { "snapshot_failed" } else { "v2_unreachable" },
-                "as_of": Utc::now().to_rfc3339(),
+                "as_of": twin_core::format_ist_rfc3339(Utc::now()),
+                "timezone": twin_core::DISPLAY_TIMEZONE,
+                "timezone_label": "IST (UTC+05:30)",
                 "live": true,
                 "include_demo": include_demo,
                 "poll_hint_secs": 5,
@@ -4116,6 +4118,14 @@ async fn get_graph_snapshot(
                 "GitHub work always on graph. StatusDigest nodes = Approve / Don't send outcomes from twin store. Check “Show unapproved” for don't-send + pending."
             ),
         );
+        let as_of = obj
+            .get("as_of")
+            .and_then(|v| v.as_str())
+            .map(twin_core::reformat_stored_to_ist_rfc3339)
+            .unwrap_or_else(|| twin_core::format_ist_rfc3339(Utc::now()));
+        obj.insert("as_of".into(), json!(as_of));
+        obj.insert("timezone".into(), json!(twin_core::DISPLAY_TIMEZONE));
+        obj.insert("timezone_label".into(), json!("IST (UTC+05:30)"));
     }
     Ok(Json(snap))
 }
@@ -5211,7 +5221,7 @@ fn compute_follow_through_items(
             "intent_type": itype,
             "said_or_implied": summary,
             "about_node_id": if about.is_empty() { serde_json::Value::Null } else { json!(about) },
-            "intent_at": intent_at.map(|t| t.to_rfc3339()),
+            "intent_at": intent_at.map(twin_core::format_ist_rfc3339),
             "later_signal": {
                 "authored_hits": later.len(),
                 "any_later_activity": any_later,
@@ -5336,6 +5346,9 @@ async fn build_follow_through(
         "tenant_id": tenant_id,
         "subject_id": person.subject_id,
         "twin_id": person.twin_id,
+        "as_of": twin_core::format_ist_rfc3339(Utc::now()),
+        "timezone": twin_core::DISPLAY_TIMEZONE,
+        "timezone_label": "IST (UTC+05:30)",
         "count": items.len(),
         "items": items,
         "note": note,
@@ -5476,6 +5489,9 @@ async fn intent_engine_status(
                 "Trajectory (commits/graph) is strong; live purpose claims are still sparse until organic PRs + channel/bot capture fill L1. Demo seeds are tagged and excluded from live ledger by default."
             ),
         );
+        obj.insert("as_of".into(), json!(twin_core::format_ist_rfc3339(Utc::now())));
+        obj.insert("timezone".into(), json!(twin_core::DISPLAY_TIMEZONE));
+        obj.insert("timezone_label".into(), json!("IST (UTC+05:30)"));
     }
     Json(manifest)
 }
@@ -5494,6 +5510,9 @@ async fn intent_ledger(
     let rows: Vec<serde_json::Value> = claims.iter().map(|c| c.to_json()).collect();
     Json(json!({
         "tenant_id": tenant_id,
+        "as_of": twin_core::format_ist_rfc3339(Utc::now()),
+        "timezone": twin_core::DISPLAY_TIMEZONE,
+        "timezone_label": "IST (UTC+05:30)",
         "include_demo": include_demo,
         "open_only": open_only,
         "stats": stats,
@@ -5602,7 +5621,7 @@ async fn intent_claim_supersede(
         if c.get("claim_id").and_then(|x| x.as_str()) == Some(claim_id.as_str()) {
             if let Some(obj) = c.as_object_mut() {
                 obj.insert("lifecycle".into(), json!("superseded"));
-                obj.insert("superseded_at".into(), json!(Utc::now().to_rfc3339()));
+                obj.insert("superseded_at".into(), json!(twin_core::format_ist_rfc3339(Utc::now())));
             }
             found = true;
         }
@@ -6387,8 +6406,8 @@ async fn get_person_profile(
                 "draft_id": d.draft_id,
                 "ledger_id": d.ledger_id,
                 "status": d.status.as_str(),
-                "updated_at": d.updated_at,
-                "created_at": d.created_at,
+                "updated_at": twin_core::format_ist_rfc3339(d.updated_at),
+                "created_at": twin_core::format_ist_rfc3339(d.created_at),
                 "preview": d.draft_text.chars().take(400).collect::<String>(),
                 "draft_text": d.draft_text,
             })
@@ -6877,7 +6896,7 @@ async fn slack_events(
                 if keyword_hit {
                     let preview = truncate_preview(&text_raw, TEXT_PREVIEW_MAX);
                     let claim = json!({
-                        "at": Utc::now().to_rfc3339(),
+                        "at": twin_core::format_ist_rfc3339(Utc::now()),
                         "slack_user": slack_uid,
                         "subject": subject,
                         "text_preview": preview,
@@ -7234,6 +7253,17 @@ fn load_roles_config(st: &AppState, tenant_id: &str) -> serde_json::Value {
         .unwrap_or_else(default_roles_json)
 }
 
+/// Relist a stored `updated_at` string as RFC3339 +05:30 (never invents).
+fn list_kv_updated_at_ist(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(at) = obj.get("updated_at").and_then(|x| x.as_str()) {
+            let listed = twin_core::reformat_stored_to_ist_rfc3339(at);
+            obj.insert("updated_at".into(), json!(listed));
+        }
+    }
+    value
+}
+
 /// Pilot role gate. Empty champions[] = everyone is champion (open pilot).
 /// Non-empty champions[] = only listed logins/gu_* are champions; others are members.
 fn actor_is_champion(st: &AppState, tenant_id: &str, actor: Option<&str>) -> bool {
@@ -7294,6 +7324,7 @@ async fn get_roles(
         .as_deref()
         .or(q.actor_subject.as_deref());
     let is_champ = actor_is_champion(&st, &tenant_id, actor);
+    let roles = list_kv_updated_at_ist(roles);
     Json(json!({
         "tenant_id": tenant_id,
         "roles": roles,
@@ -7340,7 +7371,7 @@ async fn put_roles(
     let value = json!({
         "champions": champions,
         "default_role": default_role,
-        "updated_at": Utc::now().to_rfc3339(),
+        "updated_at": twin_core::format_ist_rfc3339(Utc::now()),
     });
     if let Some(store) = &st.embedded_store {
         store.put_tenant_kv(&tenant_id, "roles", value.clone());
@@ -7369,6 +7400,7 @@ async fn get_tomorrow_focus(
                 "note": "Empty — cockpit suggestions can be pinned here."
             })
         });
+    let focus = list_kv_updated_at_ist(focus);
     Json(json!({ "tenant_id": tenant_id, "focus": focus }))
 }
 
@@ -7396,7 +7428,7 @@ async fn put_tomorrow_focus(
     let value = json!({
         "items": body.items,
         "note": body.note.unwrap_or_else(|| "Pinned by champion".into()),
-        "updated_at": Utc::now().to_rfc3339(),
+        "updated_at": twin_core::format_ist_rfc3339(Utc::now()),
     });
     if let Some(store) = &st.embedded_store {
         store.put_tenant_kv(&tenant_id, "tomorrow_focus", value.clone());

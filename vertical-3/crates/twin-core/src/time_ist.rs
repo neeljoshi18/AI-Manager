@@ -155,6 +155,14 @@ mod tests {
     #[test]
     fn unparseable_not_invented() {
         assert_eq!(reformat_stored_to_ist_list("not-a-date"), "not-a-date");
+        assert_eq!(reformat_stored_to_ist_rfc3339("not-a-date"), "not-a-date");
+    }
+
+    #[test]
+    fn stored_z_relists_plus_0530() {
+        let listed = reformat_stored_to_ist_rfc3339("2026-08-12T12:00:00Z");
+        assert!(listed.ends_with("+05:30"));
+        assert!(listed.starts_with("2026-08-12T17:30:00"));
     }
 
     #[test]

@@ -11,6 +11,8 @@ Ordered residual backlog from adequacy re-run + handoff. Mark status as work lan
 | 5 | Role write-gates | **DONE** | `require_champion` on put_roles, put_tomorrow_focus, seed_graph_story, seed_intent_demo |
 | 6 | CI → CiBlocked path | **DONE** | PR poller attaches commit status → `check_conclusion` / `ci_status` on PR nodes |
 | 7 | Deploy + verify | **DONE** | `780d26a` deploy success; V1 recover_only after red; digests clean; roles 403/200 |
+| 8 | Smoke stack + IST (2026-08-14) | **DONE** | v1/v2/v3/egress true · graph 327 · PR 13 · ledger_live github_pr 12 + explicit 2 · pulse `only_demo_seeds` · compile blockers=0 / medium / Lookback IST |
+| 9 | Close remaining listed-UTC leaks | **CODE** | ledger `at`, graph `as_of`, team/profile digest times, roles/focus `updated_at`, engine/follow_through `as_of` → `+05:30`; cache `20260814a` |
 
 ## Slack install checklist (human — not blocked for code)
 

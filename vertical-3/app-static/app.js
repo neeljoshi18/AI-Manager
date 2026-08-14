@@ -97,32 +97,31 @@ function setUxMode(mode, opts) {
   } catch (_) {}
   document.body.classList.remove("mode-simple", "mode-technical");
   document.body.classList.add(m === "technical" ? "mode-technical" : "mode-simple");
-  // Nav: friendly names in Simple, engineer names in Technical
+  // Page names stay the same in both modes — only update the label span (keep icons).
   document.querySelectorAll(".nav-item[data-label-simple]").forEach((btn) => {
     const s = btn.getAttribute("data-label-simple");
     const t = btn.getAttribute("data-label-tech");
-    if (s && t) btn.textContent = m === "simple" ? s : t;
+    const label = btn.querySelector(".nav-label");
+    const text = s || t;
+    if (label && text) label.textContent = text;
   });
   document.querySelectorAll(".ux-mode-btn").forEach((btn) => {
     btn.textContent = m === "technical" ? "Simple view" : "Technical view";
     btn.setAttribute("aria-pressed", m === "simple" ? "true" : "false");
     btn.title =
       m === "technical"
-        ? "Simple view: visual org story, plain English, low jargon"
-        : "Technical view: tags and denser operator console (ids behind the eye)";
+        ? "Simple view: visual story, plain English"
+        : "Technical view: same product, denser detail (ids behind the eye)";
   });
   if ($("settings-ux-mode")) {
     $("settings-ux-mode").textContent =
       m === "simple"
-        ? "Mode: Simple — visual, plain English. Same data; less intimidation."
+        ? "Mode: Simple — visual story, plain English. Same data."
         : "Mode: Technical — same data with tags and denser detail. Identifiers sit behind the eye.";
   }
-  if ($("nav-mode")) $("nav-mode").textContent = m === "simple" ? "simple view" : "technical view";
+  if ($("nav-mode")) $("nav-mode").textContent = m === "simple" ? "Simple view" : "Technical view";
   const navSub = document.querySelector(".nav-sub");
-  if (navSub) {
-    navSub.textContent =
-      m === "simple" ? "See your org clearly" : "Kill status meetings";
-  }
+  if (navSub) navSub.textContent = "What needs attention";
   if (opts?.rerender !== false) {
     try {
       rerenderActiveViewForUx();
@@ -279,12 +278,14 @@ function prettyRef(raw) {
 function prettyMaybe(raw) {
   const v = String(raw ?? "").trim();
   if (!v) return "";
+  const timeish = v.replace(/^at:/i, "");
+  if (/^\d{4}-\d{2}-\d{2}T/.test(timeish)) return esc(fmtIst(timeish));
   return isOpaqueToken(v) ? prettyRef(v) : esc(v);
 }
 
 /** Walk prose and tuck opaque tokens behind eyes. Input is plain text. */
 function scrubTextHtml(s) {
-  const raw = String(s ?? "");
+  const raw = scrubListedTimes(s ?? "");
   if (!raw) return "";
   const re = new RegExp(OPAQUE_TOKEN_RE.source, "g");
   let out = "";
@@ -305,6 +306,70 @@ function displayNameOrEye(name, fallbackId) {
   if (n && !isOpaqueToken(n)) return esc(n);
   if (fallbackId) return prettyRef(fallbackId);
   return n ? prettyRef(n) : "—";
+}
+
+/** Champion-facing owner — never dump person:gu_* inline. */
+function humanOwnerHtml(raw, members) {
+  const t = String(raw || "").trim();
+  if (!t) return "Someone";
+  const stripped = t.replace(/^(twin:person:|twin:|person:)/i, "");
+  const list = members || window.__ckMembers || [];
+  const hit = list.find((p) => {
+    const sid = String(p.subject_id || "");
+    const name = String(p.display_name || "");
+    return (
+      sid === t ||
+      sid === stripped ||
+      name === t ||
+      name === stripped ||
+      p.person_node_id === t ||
+      `person:${sid}` === t
+    );
+  });
+  if (hit?.display_name && !isOpaqueToken(hit.display_name)) {
+    return esc(hit.display_name);
+  }
+  if (isOpaqueToken(t) || /^(person:|twin:|gu_)/i.test(t) || t.includes(":gu_")) {
+    return prettyRef(t);
+  }
+  return esc(t);
+}
+
+function amRow({ title, meta, tone, actionsHtml }) {
+  const toneClass =
+    tone === "urgent"
+      ? "am-row--urgent"
+      : tone === "soon"
+        ? "am-row--soon"
+        : tone === "ok"
+          ? "am-row--ok"
+          : "am-row--open";
+  return `<div class="am-row ${toneClass}">
+    <div class="am-row-body">
+      <div class="am-row-title">${title}</div>
+      ${meta ? `<div class="am-row-meta">${meta}</div>` : ""}
+    </div>
+    ${actionsHtml ? `<div class="am-row-actions">${actionsHtml}</div>` : ""}
+  </div>`;
+}
+
+function heatBarsHtml(counts, labels) {
+  const arr = counts || [];
+  const labs = labels || [];
+  const max = Math.max(...arr, 1);
+  let html = `<div class="ux-heat-bars">`;
+  let any = false;
+  for (let i = 0; i < arr.length; i++) {
+    const n = arr[i] || 0;
+    if (!n) continue;
+    any = true;
+    const pct = Math.min(100, Math.round((n / max) * 100));
+    html += `<div class="ux-heat-row"><span class="ux-heat-lab">${esc(labs[i] || String(i))}</span>
+      <span class="ux-heat-bar" style="width:${pct}%"></span>
+      <span class="muted small">${n}</span></div>`;
+  }
+  html += `</div>`;
+  return any ? html : `<span class="muted">No activity yet.</span>`;
 }
 
 function activeTenant() {
@@ -351,9 +416,29 @@ function pill(name, up) {
 
 function fmtSecs(s) {
   if (s == null) return "—";
+  if (s >= 86400) return `${Math.round(s / 86400)}d`;
   if (s >= 3600) return `${Math.round(s / 3600)}h`;
   if (s >= 60) return `${Math.round(s / 60)}m`;
   return `${s}s`;
+}
+
+/** Rewrite listed ISO instants to IST wall time. Never invents. */
+function scrubListedTimes(s) {
+  return String(s ?? "").replace(
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g,
+    (m) => fmtIst(m)
+  );
+}
+
+function softenInsightCopy(s) {
+  return String(s ?? "")
+    .replace(/\bPeak day\b/gi, "Busiest day")
+    .replace(/\bUTC\b/g, "IST")
+    .replace(/\bdigests\b/gi, "updates")
+    .replace(/\bdigest\b/gi, "update")
+    .replace(/\bChampion:\s*/g, "")
+    .replace(/\bwork graph\b/gi, "map")
+    .replace(/\bmulti-person status\b/gi, "team status");
 }
 
 /** Human age for last ingest (Connections health). */
@@ -377,33 +462,54 @@ function showView(name) {
   if (btn) btn.classList.add("active");
   const simple = isSimpleMode();
   const titles = {
-    cockpit: simple
-      ? ["Home", "Your org at a glance — status, promises, friction"]
-      : ["Cockpit", "Operator console — digests, conflicts, heat, graph, ledgers"],
-    today: simple
-      ? ["Today", "Quick snapshot of the team"]
-      : ["Today", "Pulse + digests + blockers"],
-    status: simple
-      ? ["My update", "Review and send your status — or hold it"]
-      : ["My status", "Approve / edit / don't send · draft + ledger ids"],
-    team: simple
-      ? ["People", "Who's on the pod and their latest update"]
-      : ["Team", "Map subjects · bulk import · compile digests"],
-    graph: simple
-      ? ["Work map", "Who is connected to what work"]
-      : ["Graph", "Nodes · edges · intent types · filters"],
-    connections: simple
-      ? ["Connect", "Link chat and GitHub — health at a glance"]
-      : ["Connections", "OAuth · webhooks · service pills"],
-    settings: simple
-      ? ["Settings", "Simple vs Technical view · how updates work"]
-      : ["Settings", "Env cadence · metrics · Neon · health"],
-    insights: simple
-      ? ["Rhythm", "When the team is active — not rankings"]
-      : ["Dev insights", "Heat · authored edges · commit samples"],
-    lab: simple
-      ? ["Advanced", "Raw tools for engineers"]
-      : ["Lab", "Engineer console and raw JSON"],
+    cockpit: [
+      "Home",
+      simple
+        ? "What needs your attention — promises, status, and people"
+        : "Same picture as Simple — denser layout, tags when useful",
+    ],
+    today: [
+      "Today",
+      simple ? "A quick read of the team" : "Pulse, updates, and open friction",
+    ],
+    status: [
+      "My update",
+      simple
+        ? "Review and send — or hold it back"
+        : "Approve, edit, or hold this draft",
+    ],
+    team: [
+      "People",
+      simple
+        ? "Who’s on the team and how they’re doing"
+        : "Map people, import, write updates",
+    ],
+    graph: [
+      "Work map",
+      simple
+        ? "How people connect to the work"
+        : "People, work, and focuses — drag, zoom, filter",
+    ],
+    connections: [
+      "Connect",
+      simple
+        ? "Link chat and GitHub"
+        : "Chat, GitHub, health, and install steps",
+    ],
+    settings: [
+      "Settings",
+      simple
+        ? "How the product looks and how updates work"
+        : "Look, cadence, health, and the activity trail",
+    ],
+    insights: [
+      "Rhythm",
+      "When the team is active — not a ranking",
+    ],
+    lab: [
+      "Advanced",
+      simple ? "Operator tools" : "Operator tools and raw payloads",
+    ],
   };
   if (name === "cockpit") {
     refreshCockpit();
@@ -446,28 +552,40 @@ async function refreshHealth() {
   try {
     const h = await jfetch("/v3/demo/status");
     state.status = h;
-    $("conn-pills").innerHTML = [
-      pill("V3", true),
-      pill("V1", h.v1),
-      pill("V2", h.v2),
-      pill("egress", h.egress),
-    ].join("");
+    const simple = isSimpleMode();
+    $("conn-pills").innerHTML = simple
+      ? [
+          `<span class="pill up">App on</span>`,
+          `<span class="pill ${h.v1 ? "up" : "down"}">${h.v1 ? "Work stream on" : "Work stream off"}</span>`,
+          `<span class="pill ${h.v2 ? "up" : "down"}">${h.v2 ? "Map on" : "Map off"}</span>`,
+          `<span class="pill ${h.egress ? "up" : "down"}">${h.egress ? "Chat delivery on" : "Chat delivery off"}</span>`,
+        ].join("")
+      : [
+          pill("V3", true),
+          pill("V1", h.v1),
+          pill("V2", h.v2),
+          pill("egress", h.egress),
+        ].join("");
     const stackOk = h.v1 && h.v2;
     $("stat-stack").textContent = stackOk ? "Live" : "Partial";
     $("stat-stack-detail").textContent = stackOk
-      ? "V1 ingest + V2 graph reachable"
-      : "Start stack with ./scripts/dev_up.sh or docker compose -f deploy/docker-compose.app.yml up -d";
+      ? simple
+        ? "Work stream and map are reachable"
+        : "V1 ingest + V2 graph reachable"
+      : simple
+        ? "Part of the stack is down — recover from Settings or wait for auto-heal."
+        : "Start stack with ./scripts/dev_up.sh or docker compose -f deploy/docker-compose.app.yml up -d";
     $("stat-notify").textContent = fmtSecs(h.notify_interval_secs);
     $("stat-window").textContent = fmtSecs(h.status_window_secs);
     $("conn-detail").textContent = `Slack: ${h.slack_mode || "—"} · runtime ${h.mode || "—"} · notify ${h.notify_policy || "v1"}`;
     // Keep UX presentation mode in the foot (do not clobber with runtime mode)
     if ($("nav-mode")) {
-      const ux = isSimpleMode() ? "simple view" : "technical view";
-      $("nav-mode").textContent = `${ux} · ${h.slack_mode || "slack?"}`;
+      const ux = isSimpleMode() ? "Simple view" : "Technical view";
+      $("nav-mode").textContent = ux;
     }
-    $("cfg-window").textContent = String(h.status_window_secs ?? "—");
-    $("cfg-notify").textContent = String(h.notify_interval_secs ?? "—");
-    $("cfg-compile").textContent = String(h.compile_interval_secs ?? "—");
+    $("cfg-window").textContent = fmtSecs(h.status_window_secs);
+    $("cfg-notify").textContent = fmtSecs(h.notify_interval_secs);
+    $("cfg-compile").textContent = fmtSecs(h.compile_interval_secs);
     $("cfg-noc").textContent = String(h.notify_on_compile_default ?? "—");
     $("cfg-slack").textContent = h.slack_mode || "—";
 
@@ -527,9 +645,10 @@ async function refreshHealth() {
       }
     }
     if ($("conn-graph-detail")) {
-      const durability =
-        " Persistence: V1 events + ACL identity, V2 graph snapshot, V3 twins on disk (survive restarts).";
-      $("conn-graph-detail").textContent = (h.graph_message || "") + durability;
+      $("conn-graph-detail").textContent = isSimpleMode()
+        ? "The map refills from recent work after a restart. Nothing important is only in memory."
+        : (h.graph_message || "") +
+          " Persistence: V1 events + ACL identity, V2 graph snapshot, V3 twins on disk (survive restarts).";
     }
     if ($("conn-slack")) {
       $("conn-slack").textContent = h.egress
@@ -559,7 +678,7 @@ function draftStatusLabel(st) {
 function renderEvidenceLine(refs) {
   const list = (refs || []).filter(Boolean);
   if (!list.length) return `<div class="muted small">evidence: (none linked)</div>`;
-  return `<div class="muted small">evidence: ${list.map((r) => prettyRef(r)).join(" · ")}</div>`;
+  return `<div class="muted small">evidence: ${list.map((r) => prettyMaybe(r)).join(" · ")}</div>`;
 }
 
 function renderLatest(payload) {
@@ -843,12 +962,19 @@ async function refreshReadiness() {
     const multi = r.multi_person_ready === true;
     const content = r.content_people ?? 0;
     const a2 = r.checklist?.A2_multi_person_digests?.ok;
-    el.innerHTML = [
-      `<span class="pill ${soft || a2 ? "up" : "mid"}">sales: ${soft || a2 ? "ready" : "solo ok"}</span>`,
-      `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "yes" : "no"}</span>`,
-      `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">digests with content: ${content}</span>`,
-      `<span class="pill mid">${esc(r.note || "").slice(0, 80)}</span>`,
-    ].join(" ");
+    const simple = isSimpleMode();
+    el.innerHTML = simple
+      ? [
+          `<span class="pill ${soft || a2 ? "up" : "mid"}">${soft || a2 ? "Ready to show" : "Fine for one person"}</span>`,
+          `<span class="pill ${multi ? "up" : "mid"}">${multi ? "Team of 2+ mapped" : "Add another person"}</span>`,
+          `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">${content} update${content === 1 ? "" : "s"} with a story</span>`,
+        ].join(" ")
+      : [
+          `<span class="pill ${soft || a2 ? "up" : "mid"}">sales: ${soft || a2 ? "ready" : "solo ok"}</span>`,
+          `<span class="pill ${multi ? "up" : "mid"}">multi-person: ${multi ? "yes" : "no"}</span>`,
+          `<span class="pill ${content >= 2 ? "up" : content >= 1 ? "mid" : "down"}">updates with content: ${content}</span>`,
+          `<span class="pill mid">${esc(r.note || "").slice(0, 80)}</span>`,
+        ].join(" ");
   } catch (e) {
     el.innerHTML = `<span class="pill mid">readiness: ${esc(e.message || "n/a")}</span>`;
   }
@@ -866,7 +992,7 @@ async function refreshCockpit() {
       })),
       jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team`).catch(() => ({ members: [] })),
       jfetch(
-        `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=1`
+        `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=true`
       ).catch(() => ({ conflicts: { cards: [] }, intents: {} })),
       jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/insights/dev`).catch(() => null),
       jfetch(
@@ -940,6 +1066,7 @@ async function refreshCockpit() {
     }
 
     const members = team.members || [];
+    window.__ckMembers = members;
     const mapped = members.filter((m) => m.slack_mapped).length;
     const withContent = members.filter((m) => m.last_digest?.has_content).length;
     const cards = pulse.conflicts?.cards || [];
@@ -1021,8 +1148,8 @@ async function refreshCockpit() {
               <button type="button" class="ghost graph-filter-btn pod-row-btn dig-open"
                 data-draft="${esc(did)}" data-ledger="${esc(lid)}">
                 <strong>${displayNameOrEye(m.display_name, m.subject_id)}</strong>
-                <span class="muted small">${prettyMaybe(m.subject_id)}</span>
-                ${m.slack_mapped ? "" : " · <span class='muted'>unmapped chat</span>"}
+                ${m.subject_id && m.subject_id !== m.display_name ? `<span class="muted small"> · ${prettyMaybe(m.subject_id)}</span>` : ""}
+                ${m.slack_mapped ? "" : " · <span class='muted'>chat not linked</span>"}
               </button>
               <div class="muted small">${esc(dig)}${d?.preview ? " · " + scrubTextHtml(d.preview.slice(0, 72)) : ""}
               ${did ? ` · ${prettyRef(did)}` : ""}</div>
@@ -1055,7 +1182,7 @@ async function refreshCockpit() {
           : "No open live conflicts (empty_reason=no_friction). Organic PRs feed this surface — not demo seeds.";
         if (emptyWhy === "only_demo_seeds" || demoN > 0) {
           emptyMsg = simple
-            ? "No live friction — only demo/seed examples exist (hidden from this list). Real ship-vs-hold needs dual owners on real PRs."
+            ? "No live friction right now. Example stories stay hidden until two people disagree on real work."
             : `No live conflicts (empty_reason=only_demo_seeds, demo_count=${demoN}). Seeds excluded from primary cards.`;
         }
         confEl.innerHTML = `<p class="muted">${esc(emptyMsg)}</p>`;
@@ -1115,8 +1242,10 @@ async function refreshCockpit() {
         intentUl.innerHTML = sample
           .slice(0, 12)
           .map((n) => {
-            const ty = n.intent_type || n.type || "Intent";
-            return `<li><strong>${esc(ty)}</strong> ${prettyMaybe(n.label || n.title || "") || prettyRef(n.id)}</li>`;
+            const ty = n.intent_type || n.type || n.properties?.intent_type || "Intent";
+            const lab = (n.label || n.title || n.display_name || "")
+              .replace(/^(SHIP|BLOCKED|FREEZE|FIX|EXPLORE|REVIEW):\s*/i, "");
+            return `<li><span class="pill mid">${esc(ty)}</span> ${lab ? esc(lab.slice(0, 80)) : prettyRef(n.id || n.node_id || "")}</li>`;
           })
           .join("");
       }
@@ -1128,36 +1257,15 @@ async function refreshCockpit() {
       if ($("ck-heat-insight")) {
         $("ck-heat-insight").textContent = simple
           ? act.insight
-              ? act.insight.replace(/UTC/g, "IST").replace(/Peak day/i, "Busiest day")
+              ? softenInsightCopy(act.insight)
               : "When the team usually ships work (IST)."
-          : act.insight || "";
+          : softenInsightCopy(act.insight || "");
       }
       const hod = act.hour_of_day_ist || act.hour_of_day_utc || {};
       const counts = hod.counts || [];
       const labels = hod.labels || [];
       if ($("ck-heat-hours")) {
-        if (simple) {
-          let html = `<div class="ux-heat-bars">`;
-          for (let i = 0; i < counts.length; i++) {
-            const n = counts[i] || 0;
-            if (!n) continue;
-            const pct = Math.min(100, Math.round((n / Math.max(...counts, 1)) * 100));
-            html += `<div class="ux-heat-row"><span class="ux-heat-lab">${esc(labels[i] || String(i))}</span>
-              <span class="ux-heat-bar" style="width:${pct}%"></span>
-              <span class="muted small">${n}</span></div>`;
-          }
-          html += `</div>`;
-          $("ck-heat-hours").innerHTML = html || `<span class="muted">No activity heat yet.</span>`;
-        } else {
-          let lines = [];
-          for (let i = 0; i < counts.length; i++) {
-            const n = counts[i] || 0;
-            if (!n) continue;
-            const bar = "█".repeat(Math.min(28, n));
-            lines.push(`${labels[i] || i}: ${bar} ${n}`);
-          }
-          $("ck-heat-hours").textContent = lines.join("\n") || "No heat yet.";
-        }
+        $("ck-heat-hours").innerHTML = heatBarsHtml(counts, labels);
       }
       if ($("ck-heat-authors")) {
         const by = act.by_author || {};
@@ -1179,33 +1287,23 @@ async function refreshCockpit() {
       const nodes = (graph.nodes || []).length;
       const edges = (graph.edges || []).length;
       const by = graph.by_type || {};
-      if (simple) {
-        const friendly = {
-          Commit: "code updates",
-          Person: "people",
-          Repo: "repositories",
-          PullRequest: "pull requests",
-          Intent: "focus claims",
-          Issue: "issues",
-        };
-        const bits = Object.entries(by)
-          .map(([k, v]) => `${v} ${friendly[k] || k.toLowerCase()}`)
-          .join(" · ");
-        $("ck-graph-stats").textContent = bits
-          ? `Map has ${nodes} items and ${edges} links.\n${bits}`
-          : `Map has ${nodes} items and ${edges} links.`;
-      } else {
-        $("ck-graph-stats").textContent = JSON.stringify(
-          {
-            nodes,
-            edges,
-            by_type: by,
-            edge_by_type: graph.edge_by_type || {},
-          },
-          null,
-          2
-        );
-      }
+      const friendly = {
+        Commit: "code updates",
+        Person: "people",
+        Repo: "projects",
+        PullRequest: "reviews",
+        Intent: "focuses",
+        Issue: "issues",
+      };
+      const bits = Object.entries(by)
+        .map(([k, v]) => `<span class="pill mid">${v} ${esc(friendly[k] || k.toLowerCase())}</span>`)
+        .join(" ");
+      $("ck-graph-stats").innerHTML =
+        `<div class="meta-row" style="margin:0;">` +
+        `<span class="pill up">${nodes} items</span>` +
+        `<span class="pill mid">${edges} links</span>` +
+        bits +
+        `</div>`;
     }
 
     // Tomorrow focus — suggestions from conflicts, intents, digests + persisted pins
@@ -1281,10 +1379,10 @@ async function refreshCockpit() {
             .slice(0, 12)
             .map(
               (t) =>
-                `<li><span class="pill ${t.pinned ? "up" : "mid"}">${esc(t.kind)}${t.pinned ? " · pinned" : ""}</span> <strong>${esc(t.text)}</strong><div class="muted small">${esc(t.why)}</div></li>`
+                `<li><span class="pill ${t.pinned ? "up" : "mid"}">${esc(t.pinned ? "Pinned" : t.kind)}</span> <strong>${scrubTextHtml(t.text)}</strong><div class="muted small">${esc(t.why)}</div></li>`
             )
             .join("")
-        : `<li class="muted">No suggestions yet — compile digests or enrich story so open work appears.</li>`;
+        : `<li class="muted">No suggestions yet — write status updates or enrich the story so open work appears.</li>`;
     }
     if ($("ck-tomorrow-note")) {
       const nPin = pinnedItems.length;
@@ -1396,8 +1494,8 @@ async function fillVisualHome(ctx) {
   if ($("viz-headline")) $("viz-headline").textContent = headline;
   if ($("viz-sub")) {
     $("viz-sub").textContent = soft || multi
-      ? "Promises, focuses, and status — same product as Technical, told as a story. You approve what gets sent."
-      : "Connect GitHub and Slack, map the pod, then this board fills itself.";
+      ? "Promises, focuses, and status in one place. You approve what gets sent."
+      : "Connect chat and GitHub, add your people, then this board fills itself.";
   }
 
   // Attention cards
@@ -1406,8 +1504,8 @@ async function fillVisualHome(ctx) {
     const items = [];
     for (const a of act.slice(0, 6)) {
       items.push({
-        title: a.text || "Something needs a look",
-        action: a.action || "Open the thread and decide next step",
+        title: softenInsightCopy(a.text || "Something needs a look"),
+        action: softenInsightCopy(a.action || "Open the thread and decide next step"),
         tone: a.priority === "high" ? "urgent" : "soon",
         cmtId: a.kind === "commitment" ? a.id : null,
       });
@@ -1422,19 +1520,19 @@ async function fillVisualHome(ctx) {
       });
     }
     if (!items.length) {
-      att.innerHTML = `<div class="viz-empty">Nothing urgent. Enjoy the quiet.</div>`;
+      att.innerHTML = `<div class="am-empty">Nothing urgent. Enjoy the quiet.</div>`;
     } else {
       att.innerHTML = items
         .slice(0, 6)
-        .map(
-          (it) => `<div class="viz-card viz-card-${esc(it.tone)}">
-          <div class="viz-card-title">${esc(it.title)}</div>
-          <div class="viz-card-action">${esc(it.action)}${
-            it.cmtId
-              ? ` <button type="button" class="ghost viz-done" data-id="${esc(it.cmtId)}">Mark done</button>`
-              : ""
-          }</div>
-        </div>`
+        .map((it) =>
+          amRow({
+            title: esc(it.title),
+            meta: esc(it.action),
+            tone: it.tone === "urgent" ? "urgent" : "soon",
+            actionsHtml: it.cmtId
+              ? `<button type="button" class="ghost viz-done" data-id="${esc(it.cmtId)}">Mark done</button>`
+              : "",
+          })
         )
         .join("");
       att.querySelectorAll(".viz-done").forEach((btn) => {
@@ -1463,20 +1561,20 @@ async function fillVisualHome(ctx) {
           : __vizCmtFilter === "owed"
             ? "Nothing owed to you right now."
             : "No open promises. When someone says “I'll…”, it lands here — or tap Add a promise.";
-      pr.innerHTML = `<div class="viz-empty">${esc(filterHint)}</div>`;
+      pr.innerHTML = `<div class="am-empty">${esc(filterHint)}</div>`;
     } else {
       pr.innerHTML = cmts
         .slice(0, 8)
         .map((c) => {
           const who = c.promiser_label || c.promiser || "Someone";
           const to = c.promisee_label || c.promisee;
-          return `<div class="viz-card">
-            <div class="viz-card-title">${esc(c.headline || c.text || "")}</div>
-            <div class="viz-card-action">${esc(who)}${to ? " → " + esc(to) : ""}
-              <button type="button" class="primary viz-done" data-id="${esc(c.id)}">Done</button>
-              <button type="button" class="ghost viz-dismiss" data-id="${esc(c.id)}">Not doing</button>
-            </div>
-          </div>`;
+          return amRow({
+            title: esc(c.headline || c.text || ""),
+            meta: `${humanOwnerHtml(who)}${to ? " → " + humanOwnerHtml(to) : ""}`,
+            tone: "open",
+            actionsHtml: `<button type="button" class="primary viz-done" data-id="${esc(c.id)}">Done</button>
+              <button type="button" class="ghost viz-dismiss" data-id="${esc(c.id)}">Not doing</button>`,
+          });
         })
         .join("");
       pr.querySelectorAll(".viz-done").forEach((btn) => {
@@ -1512,7 +1610,7 @@ async function fillVisualHome(ctx) {
   const focusEl = $("viz-focus");
   if (focusEl) {
     if (!claims.length) {
-      focusEl.innerHTML = `<div class="viz-empty">No open focuses. Capture one, or wait for work signals.</div>`;
+      focusEl.innerHTML = `<div class="am-empty">No open focuses. Capture one, or wait for work to surface them.</div>`;
     } else {
       focusEl.innerHTML = claims
         .slice(0, 8)
@@ -1521,11 +1619,17 @@ async function fillVisualHome(ctx) {
           const sum = (c.summary || c.text_preview || "")
             .replace(/^(SHIP|BLOCKED|FREEZE|FIX|EXPLORE|REVIEW):\s*/i, "")
             .slice(0, 140);
-          const own = c.owner_subject || "Someone";
-          return `<div class="viz-card">
-            <div class="viz-card-title"><span class="pill mid">${esc(ty)}</span> ${esc(sum || ty)}</div>
-            <div class="viz-card-meta">${esc(own)}</div>
-          </div>`;
+          const own = humanOwnerHtml(
+            c.owner_label || c.owner_display || c.owner_subject || "",
+            members
+          );
+          const tone =
+            c.intent_type === "BLOCKED" || c.intent_type === "FREEZE" ? "urgent" : "open";
+          return amRow({
+            title: `${esc(sum || ty)}`,
+            meta: `<span class="pill mid">${esc(ty)}</span> ${own || "Someone"}`,
+            tone,
+          });
         })
         .join("");
     }
@@ -1535,15 +1639,16 @@ async function fillVisualHome(ctx) {
   const winsEl = $("viz-wins");
   if (winsEl) {
     if (!wins.length) {
-      winsEl.innerHTML = `<div class="viz-empty">Wins show up as motion and status land.</div>`;
+      winsEl.innerHTML = `<div class="am-empty">Good news shows up as work and status land.</div>`;
     } else {
       winsEl.innerHTML = wins
         .slice(0, 5)
-        .map(
-          (w) => `<div class="viz-card">
-          <div class="viz-card-title">${esc(w.text || "Progress")}</div>
-          <div class="viz-card-action">${esc(w.action || "")}</div>
-        </div>`
+        .map((w) =>
+          amRow({
+            title: esc(softenInsightCopy(w.text || "Progress")),
+            meta: esc(softenInsightCopy(w.action || "")),
+            tone: "ok",
+          })
         )
         .join("");
     }
@@ -1553,7 +1658,7 @@ async function fillVisualHome(ctx) {
   const pg = $("viz-people-grid");
   if (pg) {
     if (!members.length) {
-      pg.innerHTML = `<div class="viz-empty">No people yet — open People and add the pod.</div>`;
+      pg.innerHTML = `<div class="am-empty">No people yet — open People and add the team.</div>`;
     } else {
       pg.innerHTML = members
         .map((m) => {
@@ -1587,23 +1692,13 @@ async function fillVisualHome(ctx) {
   if ($("viz-rhythm")) {
     const insight = ins?.activity?.insight;
     $("viz-rhythm").textContent = insight
-      ? insight.replace(/UTC/g, "IST").replace(/Peak day/i, "Busiest day")
+      ? softenInsightCopy(insight)
       : "Activity rhythm appears as the work map fills (IST).";
   }
   const bars = $("viz-rhythm-bars");
   const hodAct = ins?.activity?.hour_of_day_ist || ins?.activity?.hour_of_day_utc;
   if (bars && hodAct) {
-    const counts = hodAct.counts || [];
-    const labels = hodAct.labels || [];
-    const max = Math.max(...counts, 1);
-    let html = "";
-    for (let i = 0; i < counts.length; i++) {
-      if (!counts[i]) continue;
-      const pct = Math.round((counts[i] / max) * 100);
-      html += `<div class="ux-heat-row"><span class="ux-heat-lab">${esc(labels[i] || i)}</span>
-        <span class="ux-heat-bar" style="width:${pct}%"></span><span class="muted small">${counts[i]}</span></div>`;
-    }
-    bars.innerHTML = html || "";
+    bars.innerHTML = heatBarsHtml(hodAct.counts || [], hodAct.labels || []);
   }
 }
 
@@ -1672,11 +1767,31 @@ async function refreshOnboarding() {
     for (const step of o.steps || []) {
       const li = document.createElement("li");
       li.className = step.done ? "done" : "todo";
-      li.innerHTML = `<span class="mark">${step.done ? "✓" : "○"}</span> <strong>${step.title}</strong> — <span class="muted">${step.detail || ""}</span>`;
+      const simple = isSimpleMode();
+      const title = simple
+        ? String(step.title || "")
+            .replace(/Stack running/i, "System ready")
+            .replace(/Egress vault/i, "Chat delivery")
+            .replace(/Shadow \/ batch notify/i, "Quiet updates")
+            .replace(/First status digests/i, "First updates sent")
+            .replace(/Non-empty digests.*/i, "Updates with a story")
+            .replace(/Map ≥2 people/i, "Team of 2+")
+        : step.title;
+      const detail = simple
+        ? String(step.detail || "")
+            .replace(/V1 \+ V2 reachable/i, "work stream and map are up")
+            .replace(/tokens stay in vault only/i, "tokens stay locked away")
+            .replace(/person twins on ten_github/i, "people on this workspace")
+            .replace(/notify every \d+s[^.]*$/i, "writes only when something changes")
+            .replace(/real digest content.*/i, "real status stories")
+        : step.detail || "";
+      li.innerHTML = `<span class="mark">${step.done ? "✓" : "○"}</span> <strong>${esc(title)}</strong> — <span class="muted">${esc(detail)}</span>`;
       el.appendChild(li);
     }
     if ($("onboard-note")) {
-      $("onboard-note").textContent = o.note || "";
+      $("onboard-note").textContent = isSimpleMode()
+        ? "Connecting Slack and GitHub needs a one-time install in the other tab."
+        : o.note || "";
     }
     // Enable OAuth buttons when server says ready (still may 501 if partial)
     const gh = $("btn-gh-app");
@@ -2028,8 +2143,13 @@ function handleConnectReturn() {
     const hash = (window.location.hash || "").replace(/^#/, "");
     const viewParam = params.get("view") || (hash.startsWith("view=") ? hash.slice(5) : null);
     const connected = params.get("connected");
-    if (viewParam === "connections" || connected === "slack" || connected === "github") {
-      showView("connections");
+    const modeParam = params.get("mode");
+    if (modeParam === "simple" || modeParam === "technical") {
+      setUxMode(modeParam, { rerender: false });
+    }
+    const known = ["cockpit", "today", "status", "team", "graph", "connections", "insights", "settings", "lab"];
+    if (known.includes(viewParam) || connected === "slack" || connected === "github") {
+      showView(known.includes(viewParam) ? viewParam : "connections");
       refreshConnectors().then(() => {
         if (connected === "slack") {
           showPostInstallCallout("slack");
@@ -2143,8 +2263,16 @@ async function refreshTeamDigestsToday() {
     }
     el.innerHTML =
       `<div class="meta-row" style="margin-bottom:0.5rem;">` +
-      `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">multi-person: ${team.multi_person_ready ? "ready" : "need ≥2"}</span>` +
-      `<span class="muted small" style="margin-left:0.5rem;">Click a person → My status (Approve / Don't send)</span>` +
+      `<span class="pill ${team.multi_person_ready ? "up" : "mid"}">${
+        isSimpleMode()
+          ? team.multi_person_ready
+            ? "Team of 2+ ready"
+            : "Add at least 2 people"
+          : team.multi_person_ready
+            ? "multi-person: ready"
+            : "need ≥2"
+      }</span>` +
+      `<span class="muted small" style="margin-left:0.5rem;">Click a person → My update</span>` +
       `</div><ul class="item-list">` +
       members
         .map((m) => {
@@ -2196,7 +2324,7 @@ async function refreshPulse() {
   try {
     await refreshTeamDigestsToday();
     const pulse = await jfetch(
-      `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=1`
+      `/v3/tenants/${encodeURIComponent(tenant)}/pulse?refresh=true`
     );
     const cards = pulse.conflicts?.cards || [];
     const count = pulse.conflicts?.count ?? cards.length;
@@ -2204,11 +2332,16 @@ async function refreshPulse() {
     const multi = pulse.team?.multi_person_ready;
     if (el) {
       if (!count) {
+        const simple = isSimpleMode();
         const demoNote =
           demoCount > 0
-            ? ` <span class="muted small">(${demoCount} intent-demo seed card(s) hidden — use <strong>Load intent demo</strong> then uncheck Graph “Hide demo” if you need them)</span>`
+            ? simple
+              ? ` Example stories stay hidden.`
+              : ` <span class="muted small">(${demoCount} example card(s) hidden)</span>`
             : "";
-        el.innerHTML = `<p class="muted">No open <em>live</em> conflicts for <code>${esc(tenant)}</code>. Multi-person ready: <strong>${multi ? "yes" : "no"}</strong> (${pulse.team?.unique_slack_users ?? pulse.team?.slack_mapped ?? 0} unique Slack).${demoNote}</p>`;
+        el.innerHTML = simple
+          ? `<p class="muted">No open friction right now.${demoNote}</p>`
+          : `<p class="muted">No open live conflicts. Multi-person ready: <strong>${multi ? "yes" : "no"}</strong> (${pulse.team?.unique_slack_users ?? pulse.team?.slack_mapped ?? 0} unique Slack).${demoNote}</p>`;
       } else {
         el.innerHTML =
           `<div class="meta-row"><span class="pill ${count ? "down" : "mid"}">${count} live conflict(s)</span>` +
@@ -2361,7 +2494,7 @@ async function compileTeamDigests() {
   const btn = $("btn-team-compile");
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "Compiling…";
+    btn.textContent = "Writing…";
   }
   try {
     const out = await jfetch(`/v3/tenants/${encodeURIComponent(tenant)}/team/compile`, {
@@ -2389,7 +2522,7 @@ async function compileTeamDigests() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Compile all digests";
+      btn.textContent = "Write all updates";
     }
   }
 }
@@ -3187,14 +3320,31 @@ function renderGraphChrome(data) {
   }
   const counts = $("graph-type-counts");
   if (counts) {
-    counts.textContent = JSON.stringify(
-      {
-        nodes: data.by_type || {},
-        edges: data.edge_by_type || {},
-      },
-      null,
-      2
-    );
+    const by = data.by_type || {};
+    if (isSimpleMode()) {
+      const friendly = {
+        Commit: "updates",
+        Person: "people",
+        Repo: "projects",
+        PullRequest: "reviews",
+        Intent: "focuses",
+        Issue: "issues",
+      };
+      counts.className = "meta-row";
+      counts.innerHTML = Object.entries(by)
+        .map(([k, v]) => `<span class="pill mid">${v} ${esc(friendly[k] || k)}</span>`)
+        .join(" ") || `<span class="muted">Nothing on the map yet.</span>`;
+    } else {
+      counts.className = "box small";
+      counts.textContent = JSON.stringify(
+        {
+          nodes: by,
+          edges: data.edge_by_type || {},
+        },
+        null,
+        2
+      );
+    }
   }
   if (graphState.selected) {
     const n = graphState.nodes.find((x) => x.id === graphState.selected);
@@ -3450,10 +3600,10 @@ function drawGraph() {
     if (isBlock) alpha = Math.max(alpha, 0.9);
     if (isClaim) alpha = Math.max(alpha, 0.75);
     ctx.strokeStyle = isBlock
-      ? `rgba(17,17,17,${alpha})`
+      ? `rgba(181,106,106,${alpha})`
       : isClaim
-        ? `rgba(82,82,82,${alpha})`
-        : `rgba(163,163,163,${alpha})`;
+        ? `rgba(59,111,120,${alpha})`
+        : `rgba(168,166,160,${alpha})`;
     ctx.lineWidth = (isBlock ? 2.2 : inSel ? 1.6 : 1.1) / graphState.scale;
     if (isClaim) ctx.setLineDash([5 / graphState.scale, 4 / graphState.scale]);
     else if (isBlock) ctx.setLineDash([3 / graphState.scale, 3 / graphState.scale]);
@@ -3468,7 +3618,7 @@ function drawGraph() {
       (visibleEdges.length < 30 && edgePriority(e) >= 1);
     if (showLabel) {
       ctx.font = `${10 / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = inSel || isBlock ? "#404040" : "#a3a3a3";
+      ctx.fillStyle = inSel || isBlock ? "#6b6b6b" : "#a8a6a0";
       ctx.textAlign = "center";
       ctx.fillText(e.type, mx, my - 4 / graphState.scale);
     }
@@ -3493,14 +3643,14 @@ function drawGraph() {
       visibleNodes.filter((x) => x.type === "Commit").length <= 10;
     if (showLabel) {
       ctx.font = `${(n.type === "Person" ? 12 : 11) / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = "#111";
+      ctx.fillStyle = "#1a1a1a";
       ctx.textAlign = "center";
       const maxLen = n.type === "Commit" ? 28 : n.type === "Person" ? 20 : 26;
       ctx.fillText(truncateLabel(n.label, maxLen), n.x, n.y + n.r + 14 / graphState.scale);
       if (n.type === "Intent" && n.meta?.intent_type) {
-        ctx.fillStyle = "#737373";
-        ctx.font = `${9 / graphState.scale}px ui-monospace, monospace`;
-        ctx.fillText(n.meta.intent_type, n.x, n.y + n.r + 24 / graphState.scale);
+        ctx.fillStyle = "#8a8a8a";
+        ctx.font = `${9 / graphState.scale}px Inter, ui-sans-serif, system-ui, sans-serif`;
+        ctx.fillText(plainIntentType(n.meta.intent_type), n.x, n.y + n.r + 24 / graphState.scale);
       }
     }
     ctx.globalAlpha = 1;
@@ -3529,8 +3679,8 @@ function drawGraph() {
     ctx.font = `${14 * dpr}px ui-sans-serif, system-ui, sans-serif`;
     ctx.textAlign = "center";
     const msg = !v2Up
-      ? "V2 graph-api is down — autoheal restarting; map will refill"
-      : "No graph nodes yet — bridge re-projecting ingested V1 events";
+      ? "The map service is recovering — this will refill on its own"
+      : "The map is still filling from recent work";
     ctx.fillText(msg, canvas.width / 2, canvas.height / 2);
   }
 }
@@ -3542,29 +3692,28 @@ function drawNodeShape(ctx, n, selected) {
   if (selected) {
     ctx.beginPath();
     ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
-    ctx.strokeStyle = "#111";
+    ctx.strokeStyle = "#3b6f78";
     ctx.lineWidth = 2 / graphState.scale;
     ctx.stroke();
   }
-  ctx.lineWidth = 1.5 / graphState.scale;
-  ctx.strokeStyle = "#111";
-  ctx.fillStyle = "#fff";
+  ctx.lineWidth = 1.4 / graphState.scale;
+  ctx.strokeStyle = "#1c1b17";
+  ctx.fillStyle = "#ffffff";
 
   if (n.type === "Person") {
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    // head+shoulders glyph
     ctx.beginPath();
     ctx.arc(0, -r * 0.25, r * 0.28, 0, Math.PI * 2);
-    ctx.fillStyle = "#111";
+    ctx.fillStyle = "#1c1b17";
     ctx.fill();
     ctx.beginPath();
     ctx.arc(0, r * 0.55, r * 0.55, Math.PI, 0);
     ctx.fill();
   } else if (n.type === "PullRequest") {
-    ctx.fillStyle = "#111";
+    ctx.fillStyle = "#1c1b17";
     ctx.fillRect(-r * 0.7, -r * 0.7, r * 1.4, r * 1.4);
     ctx.strokeRect(-r * 0.7, -r * 0.7, r * 1.4, r * 1.4);
   } else if (n.type === "Issue" || n.type === "Ticket") {
@@ -3586,9 +3735,9 @@ function drawNodeShape(ctx, n, selected) {
     ctx.lineTo(-r, 0);
     ctx.closePath();
     ctx.fillStyle =
-      d === "approved" ? "#dcfce7" : d === "dont_send" ? "#fee2e2" : "#fef9c3";
+      d === "approved" ? "#eef3ef" : d === "dont_send" ? "#f6eeee" : "#f3f3f1";
     ctx.fill();
-    ctx.strokeStyle = d === "approved" ? "#16a34a" : d === "dont_send" ? "#dc2626" : "#ca8a04";
+    ctx.strokeStyle = d === "approved" ? "#5f8466" : d === "dont_send" ? "#b56a6a" : "#8a8a8a";
     ctx.lineWidth = selected ? 2.5 : 1.5;
     ctx.stroke();
   } else if (n.type === "Intent") {
@@ -3601,7 +3750,7 @@ function drawNodeShape(ctx, n, selected) {
   } else if (n.type === "Repo") {
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#e5e5e5";
+    ctx.fillStyle = "#e8e8e6";
     ctx.fill();
     ctx.stroke();
   } else {
@@ -4234,7 +4383,7 @@ async function loadPlainInsights() {
     const ins = await jfetch(
       `/v3/tenants/${encodeURIComponent(tenant)}/intent/insights`
     );
-    if (head) head.textContent = ins.headline || "—";
+    if (head) head.textContent = softenInsightCopy(ins.headline || "—");
     const renderList = (el, items, empty) => {
       if (!el) return;
       const arr = items || [];
@@ -4242,13 +4391,15 @@ async function loadPlainInsights() {
         el.innerHTML = `<p class="muted small">${esc(empty)}</p>`;
         return;
       }
-      el.innerHTML = `<ul class="item-list">${arr
-        .map((it) => {
-          const prio = it.priority === "high" ? "down" : it.priority === "info" ? "up" : "mid";
-          return `<li><span class="pill ${prio}">${esc(it.kind || "note")}</span> ${scrubTextHtml(it.text || "")}
-            <div class="muted small">${scrubTextHtml(it.action || "")}</div></li>`;
-        })
-        .join("")}</ul>`;
+      el.innerHTML = arr
+        .map((it) =>
+          amRow({
+            title: scrubTextHtml(softenInsightCopy(it.text || "")),
+            meta: scrubTextHtml(softenInsightCopy(it.action || "")),
+            tone: it.priority === "high" ? "urgent" : it.priority === "info" ? "ok" : "soon",
+          })
+        )
+        .join("");
     };
     renderList(act, ins.act_on_today, "Nothing urgent right now.");
     renderList(watch, ins.worth_watching, "Nothing on the watch list.");
@@ -4306,32 +4457,18 @@ async function loadCommitments(mode) {
             const lin = c.linear_url
               ? `<a class="cmt-linear" href="${esc(c.linear_url)}" target="_blank" rel="noopener">Open in Linear ↗</a>`
               : "";
-            if (simple) {
-              return `<li class="ux-card ux-cmt-card">
-                <div class="ux-cmt-main">
-                  <span class="ux-avatar">${esc((who || "?").slice(0, 1).toUpperCase())}</span>
-                  <div>
-                    <strong>${esc(c.headline || c.text || "")}</strong>
-                    <div class="muted small">${to ? esc(who) + " → " + esc(to) : esc(who)}</div>
-                    ${lin ? `<div class="muted small">${lin}</div>` : ""}
-                  </div>
-                </div>
-                <div class="actions-inline" style="margin-top:0.35rem;">
-                  <button type="button" class="primary cmt-done" data-id="${esc(id)}">Done</button>
+            return `<li class="ux-card ux-cmt-card">
+              ${amRow({
+                title: esc(c.headline || c.text || ""),
+                meta:
+                  `${humanOwnerHtml(who)}${to ? " → " + humanOwnerHtml(to) : ""}` +
+                  (simple ? "" : ` · ${esc(c.source || "")} ${prettyRef(id)}`) +
+                  (lin ? ` · ${lin}` : ""),
+                tone: "open",
+                actionsHtml: `<button type="button" class="primary cmt-done" data-id="${esc(id)}">Done</button>
                   <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Not doing</button>
-                  <button type="button" class="ghost cmt-linear-btn" data-id="${esc(id)}">Send to Linear</button>
-                </div>
-              </li>`;
-            }
-            return `<li>
-              <strong>${esc(c.headline || c.text || "")}</strong>
-              <div class="muted small">${esc(who)}${to ? " → " + esc(to) : ""} · ${esc(c.source || "")}
-              · ${prettyRef(id)} ${lin}</div>
-              <div class="actions-inline" style="margin-top:0.25rem;">
-                <button type="button" class="ghost cmt-done" data-id="${esc(id)}">Mark done</button>
-                <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Dismiss</button>
-                <button type="button" class="ghost cmt-linear-btn" data-id="${esc(id)}">Export to Linear</button>
-              </div>
+                  <button type="button" class="ghost cmt-linear-btn" data-id="${esc(id)}">Send to Linear</button>`,
+              })}
             </li>`;
           })
           .join("");
@@ -4521,17 +4658,13 @@ setTimeout(() => {
 }, 50);
 
 function applyStatusUxMode() {
-  const simple = isSimpleMode();
   const view = $("view-status");
   if (!view) return;
-  view.querySelectorAll("code, pre.box").forEach((el) => {
-    el.classList.toggle("ux-hide-simple", simple);
+  // Keep the draft body visible in both modes — it is the page.
+  view.querySelectorAll("code").forEach((el) => {
+    if (el.closest("#st-text")) return;
+    el.classList.toggle("ux-hide-simple", isSimpleMode());
   });
-  const h = view.querySelector("h2");
-  // soft label hints only
-  if (simple && $("view-sub")) {
-    /* titles already set in showView */
-  }
 }
 
 function applyInsightsUxMode() {
@@ -4539,29 +4672,17 @@ function applyInsightsUxMode() {
   const view = $("view-insights");
   if (!view) return;
   const h2 = view.querySelector("h2");
-  if (h2) h2.textContent = simple ? "Team rhythm" : "Dev insights";
+  if (h2) h2.textContent = "Team rhythm";
   const intro = view.querySelector("p.muted.small");
   if (intro && intro.closest(".card") === view.querySelector(".card")) {
     intro.textContent = simple
-      ? "When the pod is active — from real work on the map. Not who is “best.”"
-      : "Your engineering activity as currency — from the live graph (webhooks + commit poller). Times in IST.";
+      ? "When the team is active — from real work on the map. Not who is “best.” Times in IST."
+      : "When the team is active — from the live map. Times in IST. Not a ranking.";
   }
-  // Stat labels: plain English in Simple
   const labels = view.querySelectorAll(".stat-label");
-  if (labels[0]) labels[0].textContent = simple ? "Recent commits" : "Commit nodes";
-  if (labels[1]) labels[1].textContent = simple ? "Work links" : "Authored edges";
-  if (labels[2]) labels[2].textContent = simple ? "Busiest hour (IST)" : "Peak hour (IST)";
-  const byAuthor = Array.from(view.querySelectorAll("h2")).find((el) =>
-    /by author|who is active/i.test(el.textContent || "")
-  );
-  if (byAuthor) byAuthor.textContent = simple ? "Who is active" : "By author";
-  const recent = Array.from(view.querySelectorAll("h2")).find((el) =>
-    /recent commits/i.test(el.textContent || "")
-  );
-  if (recent) recent.textContent = simple ? "Latest work on the map" : "Recent commits on graph";
-  view.querySelectorAll("pre, code").forEach((el) => {
-    el.classList.toggle("ux-hide-simple", simple);
-  });
+  if (labels[0]) labels[0].textContent = "Recent commits";
+  if (labels[1]) labels[1].textContent = simple ? "Work links" : "Authored links";
+  if (labels[2]) labels[2].textContent = "Busiest hour (IST)";
 }
 
 /** Soften People / Work map / Connect chrome for Simple presentation (same features). */
@@ -4571,34 +4692,34 @@ function applyChromeUxMode() {
   const teamView = $("view-team");
   if (teamView) {
     const h = teamView.querySelector("h2");
-    if (h) h.textContent = simple ? "Your people" : "Multi-person Slack map";
+    if (h) h.textContent = "Your people";
     const p = teamView.querySelector(".card > p.muted.small");
     if (p) {
       p.textContent = simple
-        ? "Map at least two people so status updates cover the whole pod. Chat ids link digests — we never read private 1:1s."
-        : "Map ≥2 humans for multi-member digests. Bridge merges this map with SLACK_USER_MAP (never DMs — ingest only). Embedded twin state persists to disk so maps survive restarts.";
+        ? "Map at least two people so status updates cover the whole team. Chat ids link delivery — we never read private one-to-ones."
+        : "Map at least two people for team updates. Chat ids link delivery only — never private one-to-ones. Maps persist across restarts.";
     }
     const intentsH = Array.from(teamView.querySelectorAll("h2")).find((el) =>
       /intents|focus/i.test(el.textContent || "")
     );
-    if (intentsH) intentsH.textContent = simple ? "Open focuses" : "Intents (rules v0)";
+    if (intentsH) intentsH.textContent = "Open focuses";
     const intentsP = intentsH?.parentElement?.querySelector("p.muted.small");
     if (intentsP) {
       intentsP.textContent = simple
         ? "What people are trying to do — stuck, ship, hold — from work titles and labels."
-        : "Classified from PR/issue titles & labels — SHIP / BLOCKED / FIX / …";
+        : "Purpose claims from work titles and labels — same list, with tags in this view.";
     }
   }
   // Work map
   const graphView = $("view-graph");
   if (graphView) {
     const h = graphView.querySelector("h2");
-    if (h) h.textContent = simple ? "Work map" : "Live context map";
+    if (h) h.textContent = "Work map";
     const p = graphView.querySelector(".graph-toolbar p.muted.small");
     if (p) {
       p.textContent = simple
         ? "People connected to the work they touch. Drag, zoom, click a node for the story."
-        : "People → work → intents/conflicts. Hierarchical layout (not a hairball). Recent commits only by default; scroll to zoom, drag canvas or nodes.";
+        : "People connected to work and focuses. Drag, zoom, click a node. Recent work only by default.";
     }
   }
   // Connect
@@ -4618,9 +4739,7 @@ function applyChromeUxMode() {
   if (todayView) {
     const prefer = todayView.querySelector(".card > p.muted.small");
     if (prefer) {
-      prefer.innerHTML = simple
-        ? `Prefer <strong>Home</strong> for the full org story. Path: status updates → My update → Work map.`
-        : `Prefer <strong>Cockpit</strong> for the full champion view. Path: digests → My status → Graph.`;
+      prefer.innerHTML = `Prefer <strong>Home</strong> for the full picture. Path: status → My update → Work map.`;
     }
   }
 }
@@ -4874,17 +4993,9 @@ async function refreshDevInsights() {
       $("ins-peak").textContent =
         h == null ? "—" : `${String(h).padStart(2, "0")}:00 IST`;
     }
-    if ($("ins-insight")) $("ins-insight").textContent = act.insight || "";
+    if ($("ins-insight")) $("ins-insight").textContent = softenInsightCopy(act.insight || "");
     if ($("ins-hours")) {
-      const counts = hod.counts || [];
-      const labels = hod.labels || [];
-      let lines = [];
-      for (let i = 0; i < counts.length; i++) {
-        const n = counts[i] || 0;
-        const bar = "█".repeat(Math.min(40, n)) + (n ? ` ${n}` : "");
-        lines.push(`${labels[i] || i}: ${bar || "·"}`);
-      }
-      $("ins-hours").textContent = lines.join("\n");
+      $("ins-hours").innerHTML = heatBarsHtml(hod.counts || [], hod.labels || []);
     }
     if ($("ins-authors")) {
       const by = act.by_author || {};
@@ -4900,10 +5011,13 @@ async function refreshDevInsights() {
     }
     if ($("ins-days")) {
       const by = act.by_day || {};
-      const lines = Object.entries(by)
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([d, n]) => `${d}: ${"█".repeat(Math.min(30, n))} ${n}`);
-      $("ins-days").textContent = lines.join("\n") || "No day activity yet.";
+      const entries = Object.entries(by).sort((a, b) => a[0].localeCompare(b[0]));
+      $("ins-days").innerHTML = entries.length
+        ? heatBarsHtml(
+            entries.map(([, n]) => n),
+            entries.map(([d]) => d.slice(5))
+          )
+        : `<span class="muted">No day activity yet.</span>`;
     }
     if ($("ins-recent")) {
       const rec = d.recent_commits || [];
@@ -4920,9 +5034,9 @@ async function refreshDevInsights() {
         : `<li class="muted">No commit nodes on graph yet.</li>`;
     }
     if (msg) {
-      msg.textContent = `Graph ${g.nodes || 0} nodes · ${g.edges || 0} edges · digests content ${
-        (d.digests && d.digests.people_with_content) || 0
-      }/${(d.digests && d.digests.person_twins) || 0}`;
+      const people = (d.digests && d.digests.people_with_content) || 0;
+      const twins = (d.digests && d.digests.person_twins) || 0;
+      msg.textContent = `${g.nodes || 0} items on the map · ${people} of ${twins} people have a status story`;
     }
   } catch (e) {
     if (msg) msg.textContent = "Insights failed: " + (e.message || e);

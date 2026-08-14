@@ -4,57 +4,83 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260814d" />
-  <script>window.__APP_JS_V="20260814d";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260815a" />
+  <script>window.__APP_JS_V="20260815a";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
   <div class="shell">
     <aside class="nav">
       <div class="nav-brand">
-        <div class="logo">AI</div>
+        <div class="logo">AM</div>
         <div>
           <div class="nav-title">AI Manager</div>
-          <div class="nav-sub">Kill status meetings</div>
+          <div class="nav-sub">What needs attention</div>
         </div>
       </div>
       <nav>
-        <button class="nav-item active" data-view="cockpit" data-label-simple="Home" data-label-tech="Cockpit">Home</button>
-        <button class="nav-item" data-view="today" data-label-simple="Today" data-label-tech="Today">Today</button>
-        <button class="nav-item" data-view="status" data-label-simple="My update" data-label-tech="My status">My update</button>
-        <button class="nav-item" data-view="team" data-label-simple="People" data-label-tech="Team">People</button>
-        <button class="nav-item" data-view="graph" data-label-simple="Work map" data-label-tech="Graph">Work map</button>
-        <button class="nav-item" data-view="connections" data-label-simple="Connect" data-label-tech="Connections">Connect</button>
-        <button class="nav-item" data-view="insights" data-label-simple="Rhythm" data-label-tech="Dev insights">Rhythm</button>
-        <button class="nav-item" data-view="settings" data-label-simple="Settings" data-label-tech="Settings">Settings</button>
-        <button class="nav-item lab" data-view="lab" data-label-simple="Advanced" data-label-tech="Lab">Advanced</button>
+        <button class="nav-item active" data-view="cockpit" data-label-simple="Home" data-label-tech="Home">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 8.4 10 3.2l6.5 5.2V16a1 1 0 0 1-1 1h-3.4v-4.2H7.9V17H4.5a1 1 0 0 1-1-1V8.4Z"/></svg>
+          <span class="nav-label">Home</span>
+        </button>
+        <button class="nav-item" data-view="today" data-label-simple="Today" data-label-tech="Today">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3.2" y="4.5" width="13.6" height="12.2" rx="1.6"/><path d="M3.2 8.2h13.6M7 3.2v2.6M13 3.2v2.6"/></svg>
+          <span class="nav-label">Today</span>
+        </button>
+        <button class="nav-item" data-view="status" data-label-simple="My update" data-label-tech="My update">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.2 3.4h6.4L16 7.8v8.8a1 1 0 0 1-1 1H5.2a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1Z"/><path d="M11.5 3.5v4.4H16M6.6 11.2h6.8M6.6 14h4.6"/></svg>
+          <span class="nav-label">My update</span>
+        </button>
+        <button class="nav-item" data-view="team" data-label-simple="People" data-label-tech="People">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7.2" cy="7" r="2.2"/><path d="M3.4 15.2c.3-2.4 1.8-3.6 3.8-3.6s3.5 1.2 3.8 3.6"/><circle cx="13.4" cy="7.4" r="1.8"/><path d="M12.2 11.8c1.8 0 3.2 1 3.6 3.2"/></svg>
+          <span class="nav-label">People</span>
+        </button>
+        <button class="nav-item" data-view="graph" data-label-simple="Work map" data-label-tech="Work map">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5.2" cy="5.4" r="2"/><circle cx="14.8" cy="6.2" r="2"/><circle cx="10" cy="14.6" r="2.2"/><path d="M6.8 6.6 8.6 13M13.2 7.6 11.4 12.8"/></svg>
+          <span class="nav-label">Work map</span>
+        </button>
+        <button class="nav-item" data-view="connections" data-label-simple="Connect" data-label-tech="Connect">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.2 11.8 6.6 13.4a2.6 2.6 0 1 1-3.7-3.7l2.2-2.2a2.6 2.6 0 0 1 3.7 0"/><path d="M11.8 8.2 13.4 6.6a2.6 2.6 0 1 1 3.7 3.7l-2.2 2.2a2.6 2.6 0 0 1-3.7 0"/></svg>
+          <span class="nav-label">Connect</span>
+        </button>
+        <button class="nav-item" data-view="insights" data-label-simple="Rhythm" data-label-tech="Rhythm">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.6 10.4h2.4l1.6-4.4 2.6 8.6 2.2-6.4 1.4 2.2h4.6"/></svg>
+          <span class="nav-label">Rhythm</span>
+        </button>
+        <button class="nav-item" data-view="settings" data-label-simple="Settings" data-label-tech="Settings">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.2"/><path d="M10 3.4v1.6M10 15v1.6M3.4 10h1.6M15 10h1.6M5.4 5.4l1.1 1.1M13.5 13.5l1.1 1.1M14.6 5.4l-1.1 1.1M6.5 13.5l-1.1 1.1"/></svg>
+          <span class="nav-label">Settings</span>
+        </button>
+        <button class="nav-item lab" data-view="lab" data-label-simple="Advanced" data-label-tech="Advanced">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="1.2" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.2" fill="currentColor" stroke="none"/></svg>
+          <span class="nav-label">Advanced</span>
+        </button>
       </nav>
       <div class="nav-foot">
+        <button type="button" id="btn-ux-mode" class="ghost ux-mode-btn" title="Same product — Simple is the visual story, Technical is a denser operator view">Technical view</button>
         <span id="nav-mode" class="muted">—</span>
-        <button type="button" id="btn-ux-mode" class="ghost ux-mode-btn" title="Same features — Simple is visual/plain English, Technical shows tags and IDs">Technical view</button>
       </div>
     </aside>
 
     <main class="main">
       <header class="top">
         <div>
-          <h1 id="view-title">Champion cockpit</h1>
-          <p class="muted" id="view-sub">What needs attention · commitments · digests</p>
+          <h1 id="view-title">Home</h1>
+          <p class="muted" id="view-sub">What needs attention — promises, status, and people</p>
         </div>
         <div class="top-actions">
-          <button type="button" id="btn-ux-mode-top" class="ghost ux-mode-btn" title="Same features — Simple is visual/plain English, Technical shows tags and IDs">Technical view</button>
+          <button type="button" id="btn-ux-mode-top" class="ghost ux-mode-btn" title="Same product — Simple is the visual story, Technical is a denser operator view">Technical view</button>
           <button id="btn-refresh" class="ghost">Refresh</button>
         </div>
       </header>
 
-      <!-- CHAMPION COCKPIT / HOME -->
+      <!-- HOME -->
       <section id="view-cockpit" class="view">
-        <!-- SIMPLE: visual org story (same data, non-intimidating) -->
         <div id="ck-visual-home" class="simple-panel">
           <div class="viz-hero">
-            <p class="viz-kicker">Your organization at a glance</p>
-            <h2 class="viz-headline" id="viz-headline">Loading your team story…</h2>
-            <p class="viz-sub" id="viz-sub">One place for status, promises, and friction — no standup theater.</p>
+            <p class="viz-kicker">This morning</p>
+            <h2 class="viz-headline" id="viz-headline">Loading your team…</h2>
+            <p class="viz-sub" id="viz-sub">One place for status, promises, and what needs a decision — no standup theater.</p>
             <div class="viz-actions">
               <button type="button" id="viz-refresh" class="primary">Refresh</button>
               <button type="button" id="viz-compile" class="ghost">Write status updates</button>
@@ -71,7 +97,7 @@
           <div class="viz-quick-row">
             <button type="button" id="viz-add-promise" class="primary">Add a promise</button>
             <button type="button" id="viz-capture-focus" class="ghost">Capture a focus</button>
-            <button type="button" id="viz-digest-preview" class="ghost">Morning digest preview</button>
+            <button type="button" id="viz-digest-preview" class="ghost">Morning note preview</button>
             <button type="button" id="viz-filter-mine" class="ghost viz-filter" data-filter="mine">I owe</button>
             <button type="button" id="viz-filter-owed" class="ghost viz-filter" data-filter="owed">Owed to me</button>
             <button type="button" id="viz-filter-team" class="ghost viz-filter active" data-filter="team">Team</button>
@@ -90,7 +116,7 @@
           <div class="viz-columns">
             <div class="viz-col">
               <h3 class="viz-col-h">Open focuses</h3>
-              <p class="muted small" style="margin:0 0 0.5rem;">Same purpose claims as Technical — plain English here.</p>
+              <p class="muted small" style="margin:0 0 0.5rem;">What people are trying to do right now.</p>
               <div id="viz-focus" class="viz-stack"><div class="muted">…</div></div>
             </div>
             <div class="viz-col">
@@ -112,67 +138,66 @@
           </div>
         </div>
 
-        <!-- TECHNICAL: operator console (same data, denser) -->
         <div id="ck-ops-stack" class="tech-panel">
         <div class="card cockpit-hero">
           <div class="cockpit-hero-row">
             <div>
-              <h2 style="margin:0;">Champion cockpit</h2>
+              <h2 style="margin:0;">Home</h2>
               <p class="muted small" style="margin:0.35rem 0 0;">
-                Eng pod pulse — digests, conflicts, heat, graph. Not LOC rankings.
-                Map people under <strong>Team</strong>; digests land in chat (Slack default · Teams adapter ready).
+                Status, promises, friction, and rhythm — same facts as Simple, denser layout.
+                Map people under People. Updates land in chat.
               </p>
             </div>
             <div class="actions-inline cockpit-actions">
-              <button type="button" id="ck-compile" class="primary">Compile digests</button>
+              <button type="button" id="ck-compile" class="primary">Write updates</button>
               <button type="button" id="ck-enrich" class="ghost">Enrich story</button>
-              <button type="button" id="ck-connect" class="ghost">Connect Slack/GH</button>
-              <button type="button" id="ck-graph" class="ghost">Open graph</button>
-              <button type="button" id="ck-team" class="ghost">Map people</button>
+              <button type="button" id="ck-connect" class="ghost">Connect</button>
+              <button type="button" id="ck-graph" class="ghost">Work map</button>
+              <button type="button" id="ck-team" class="ghost">People</button>
               <button type="button" id="ck-refresh" class="ghost">Refresh</button>
             </div>
           </div>
           <div class="meta-row" id="ck-readiness" style="margin-top:0.75rem;"><span class="pill mid">loading…</span></div>
-          <div class="meta-row" id="ck-flywheel" style="margin-top:0.5rem;"><span class="pill mid">data flywheel…</span></div>
+          <div class="meta-row" id="ck-flywheel" style="margin-top:0.5rem;"><span class="pill mid">checking the work stream…</span></div>
           <p class="muted small" id="ck-msg" style="margin:0.4rem 0 0;"></p>
           <p class="muted small" id="ck-flywheel-note" style="margin:0.35rem 0 0;">
-            Sales proof: continuous GitHub → graph → digests. More commits = more insight surface.
+            Work writes the first draft. You review what gets sent.
           </p>
         </div>
 
         <div class="grid3" id="ck-stats">
           <div class="stat card">
-            <div class="stat-label">Pod mapped</div>
+            <div class="stat-label">People mapped</div>
             <div class="stat-value" id="ck-stat-mapped">—</div>
-            <div class="muted small" id="ck-stat-mapped-d">people with chat map</div>
+            <div class="muted small" id="ck-stat-mapped-d">linked to chat</div>
           </div>
           <div class="stat card">
-            <div class="stat-label">Digests with content</div>
+            <div class="stat-label">Updates with a story</div>
             <div class="stat-value" id="ck-stat-content">—</div>
-            <div class="muted small" id="ck-stat-content-d">non-empty status</div>
+            <div class="muted small" id="ck-stat-content-d">real status, not empty windows</div>
           </div>
           <div class="stat card">
-            <div class="stat-label">Live conflicts</div>
+            <div class="stat-label">Live friction</div>
             <div class="stat-value" id="ck-stat-conflicts">—</div>
-            <div class="muted small" id="ck-stat-conflicts-d">work conflicts, not people scores</div>
+            <div class="muted small" id="ck-stat-conflicts-d">where the team is mixed or stuck</div>
           </div>
         </div>
 
         <div class="cockpit-grid">
           <div class="card">
             <div class="cockpit-card-h">
-              <h2 style="margin:0;">Eng pod</h2>
-              <span class="muted small">Click → My status (Approve / Don't send)</span>
+              <h2 style="margin:0;">People</h2>
+              <span class="muted small">Open someone to review their update</span>
             </div>
             <ul id="ck-pod" class="item-list"><li class="muted">Loading…</li></ul>
           </div>
           <div class="card">
             <div class="cockpit-card-h">
               <h2 style="margin:0;">Work friction</h2>
-              <span class="muted small">Where the team is stuck or mixed on ship vs hold</span>
+              <span class="muted small">Stuck, mixed signals, or unclear ownership</span>
             </div>
             <div id="ck-conflicts" class="empty-hint">Loading…</div>
-            <h3 class="graph-side-h">Intents sample (tags)</h3>
+            <h3 class="graph-side-h">Open focuses</h3>
             <ul id="ck-intents" class="item-list"><li class="muted">—</li></ul>
           </div>
         </div>
@@ -181,44 +206,44 @@
           <div class="card">
             <div class="cockpit-card-h">
               <h2 style="margin:0;">Team heat</h2>
-              <span class="muted small">When the pod ships — not individual rankings</span>
+              <span class="muted small">When the team ships — not a ranking</span>
             </div>
             <p id="ck-heat-insight" class="muted"></p>
-            <pre id="ck-heat-hours" class="box" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow:auto;"></pre>
+            <div id="ck-heat-hours" class="box" style="white-space:normal;font-size:13px;max-height:200px;overflow:auto;"></div>
             <p class="muted small" id="ck-heat-authors"></p>
           </div>
           <div class="card">
             <div class="cockpit-card-h">
-              <h2 style="margin:0;">Graph snapshot</h2>
-              <span class="muted small">Permissioned context map</span>
+              <h2 style="margin:0;">Work map snapshot</h2>
+              <span class="muted small">People linked to the work they touch</span>
             </div>
-            <pre id="ck-graph-stats" class="box small">{}</pre>
+            <div id="ck-graph-stats" class="box small">—</div>
             <div class="actions-inline" style="margin-top:0.5rem;">
-              <button type="button" id="ck-graph-2" class="ghost">Open full graph</button>
-              <button type="button" id="ck-insights" class="ghost">Dev insights</button>
+              <button type="button" id="ck-graph-2" class="ghost">Open full map</button>
+              <button type="button" id="ck-insights" class="ghost">Rhythm</button>
             </div>
           </div>
         </div>
 
         <div class="card">
           <div class="cockpit-card-h">
-            <h2 style="margin:0;">Tomorrow focus <span class="pill mid">suggestions + pinned</span></h2>
-            <span class="muted small">Human-gated — from open conflicts, intents, and digests. Pin assignments for the pod.</span>
+            <h2 style="margin:0;">Tomorrow’s focus <span class="pill mid">suggestions + pins</span></h2>
+            <span class="muted small">From open friction, focuses, and status. Pin what the team should carry.</span>
           </div>
           <ul id="ck-tomorrow" class="item-list"><li class="muted">Loading…</li></ul>
           <div class="actions-inline" style="margin-top:0.5rem;">
             <button type="button" id="ck-tomorrow-save" class="primary">Pin focus board</button>
             <button type="button" id="ck-tomorrow-clear" class="ghost">Clear pins</button>
           </div>
-          <p class="muted small" id="ck-tomorrow-note">Suggestions merge with saved pins (tenant state). Champion role can pin; members see the board.</p>
+          <p class="muted small" id="ck-tomorrow-note">Suggestions merge with saved pins. Anyone can see the board.</p>
         </div>
 
         <div class="card" id="ck-insights-card">
           <div class="cockpit-card-h">
             <h2 style="margin:0;">What needs attention</h2>
-            <span class="muted small">Plain English · act on today · no jargon</span>
+            <span class="muted small">Act on today — plain language</span>
           </div>
-          <p class="muted small" id="ck-insights-headline" style="margin:0.4rem 0;font-weight:600;">Loading…</p>
+          <p class="muted small" id="ck-insights-headline" style="margin:0.4rem 0;font-weight:500;">Loading…</p>
           <div id="ck-insights-act" class="item-list"></div>
           <h3 class="graph-side-h" style="margin-top:0.75rem;">Worth watching</h3>
           <div id="ck-insights-watch" class="item-list"></div>
@@ -230,20 +255,19 @@
 
         <div class="card" id="ck-commitments-card">
           <div class="cockpit-card-h">
-            <h2 style="margin:0;">Commitments</h2>
-            <span class="muted small">Who promised what · open loops · not Jira tickets</span>
+            <h2 style="margin:0;">Promises</h2>
+            <span class="muted small">Who said they’d do what — not tickets</span>
           </div>
           <p class="muted small" style="margin:0.35rem 0 0.5rem;">
-            When someone says “I’ll send…” we track it. When they say done/shipped/sent (or you mark done), it closes.
-            Champion sees the team; employees filter “I owe” vs “owed to me”.
+            When someone says “I’ll send…”, it lives here. When they say done — or you mark it — it closes.
           </p>
           <div class="meta-row" id="ck-cmt-stats" style="margin-bottom:0.5rem;"><span class="pill mid">…</span></div>
           <div class="actions-inline" style="margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">
             <button type="button" id="ck-cmt-refresh" class="primary">Refresh</button>
-            <button type="button" id="ck-cmt-add" class="ghost">Add commitment…</button>
+            <button type="button" id="ck-cmt-add" class="ghost">Add a promise…</button>
             <button type="button" id="ck-cmt-mine" class="ghost">I owe</button>
             <button type="button" id="ck-cmt-owed" class="ghost">Owed to me</button>
-            <button type="button" id="ck-cmt-team" class="ghost">Team open</button>
+            <button type="button" id="ck-cmt-team" class="ghost">Team</button>
             <button type="button" id="ck-cmt-digest" class="ghost">Morning digest preview</button>
             <button type="button" id="ck-cmt-digest-send" class="ghost">Send digest now</button>
           </div>
@@ -254,18 +278,18 @@
 
         <div class="card" id="ck-intent-engine-card">
           <div class="cockpit-card-h">
-            <h2 style="margin:0;" data-simple-title="Focus list" data-tech-title="Intent ledger">Focus list</h2>
-            <span class="muted small">Same claims — Simple shows plain language; Technical shows SHIP/BLOCKED tags</span>
+            <h2 style="margin:0;" data-simple-title="Focus list" data-tech-title="Focus list">Focus list</h2>
+            <span class="muted small">Same claims — Simple uses everyday words; Technical shows tags</span>
           </div>
           <p class="muted small" style="margin:0.35rem 0 0.5rem;">
-            Purpose claims from work and chat. Toggle Simple/Technical above to switch how this is worded.
+            Purpose claims from work and chat. Switch Simple / Technical to change how this is worded.
           </p>
-          <div class="meta-row" id="ck-intent-stats" style="margin-bottom:0.5rem;"><span class="pill mid">loading ledger…</span></div>
+          <div class="meta-row" id="ck-intent-stats" style="margin-bottom:0.5rem;"><span class="pill mid">loading…</span></div>
           <div class="actions-inline" style="margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">
-            <button type="button" id="ck-intent-refresh" class="primary">Refresh ledger</button>
-            <button type="button" id="ck-intent-capture" class="ghost">Capture claim…</button>
+            <button type="button" id="ck-intent-refresh" class="primary">Refresh</button>
+            <button type="button" id="ck-intent-capture" class="ghost">Capture a focus…</button>
             <label class="muted small" style="display:inline-flex;align-items:center;gap:0.35rem;">
-              <input type="checkbox" id="ck-intent-demo" /> show demo seeds
+              <input type="checkbox" id="ck-intent-demo" /> show examples
             </label>
           </div>
           <ul id="ck-intent-ledger" class="item-list"><li class="muted">—</li></ul>
@@ -274,17 +298,17 @@
 
         <div class="card" id="ck-person-profile-card">
           <div class="cockpit-card-h">
-            <h2 style="margin:0;">Person profile</h2>
-            <span class="muted small">Developer-evaluator view · facts + claims + follow-through · no rankings</span>
+            <h2 style="margin:0;">Person</h2>
+            <span class="muted small">Facts, focuses, and follow-through — never a ranking</span>
           </div>
           <div class="actions-inline" style="margin-top:0.35rem;flex-wrap:wrap;gap:0.4rem;">
-            <label class="muted small" for="ck-profile-subject">Subject</label>
-            <input type="text" id="ck-profile-subject" value="neeljoshi18" placeholder="github login / gu_* / twin id" style="min-width:12rem;" />
-            <button type="button" id="ck-profile-load" class="primary">Load profile</button>
+            <label class="muted small" for="ck-profile-subject">Person</label>
+            <input type="text" id="ck-profile-subject" value="neeljoshi18" placeholder="name or login" style="min-width:12rem;" />
+            <button type="button" id="ck-profile-load" class="primary">Load</button>
             <button type="button" id="ck-profile-follow" class="ghost">Follow-through only</button>
           </div>
           <p class="muted small" id="ck-profile-msg" style="margin:0.4rem 0 0;">
-            Channel intent claims appear only when the bot is invited to a team channel — not a private 1:1 wiretap.
+            Channel notes appear only when the bot is invited to a team channel.
           </p>
           <div id="ck-profile-body" class="profile-body" style="margin-top:0.75rem;"></div>
         </div>
@@ -295,82 +319,81 @@
       <section id="view-today" class="view hidden">
         <div class="card" style="margin-bottom:0.75rem;">
           <div class="meta-row" id="today-readiness"><span class="pill mid">checking readiness…</span></div>
-          <p class="muted small" style="margin:0.4rem 0 0;">Prefer <strong>Cockpit</strong> for the full champion view. Path: digests → My status → Graph.</p>
+          <p class="muted small" style="margin:0.4rem 0 0;">Prefer <strong>Home</strong> for the full picture. Path: status → My update → Work map.</p>
         </div>
         <div class="grid3">
           <div class="stat card">
-            <div class="stat-label">Stack</div>
+            <div class="stat-label">System</div>
             <div class="stat-value" id="stat-stack">…</div>
             <div class="muted small" id="stat-stack-detail"></div>
           </div>
           <div class="stat card">
-            <div class="stat-label">Notify cadence</div>
+            <div class="stat-label">How often we write</div>
             <div class="stat-value" id="stat-notify">…</div>
-            <div class="muted small">Not every webhook — digests only</div>
+            <div class="muted small">Not every event — only when something changes</div>
           </div>
           <div class="stat card">
             <div class="stat-label">Status window</div>
             <div class="stat-value" id="stat-window">…</div>
-            <div class="muted small">Aligned ledger period</div>
+            <div class="muted small">The period each update covers</div>
           </div>
         </div>
         <div class="card">
-          <h2>Product pitch</h2>
+          <h2>How this works</h2>
           <ul class="pitch">
-            <li><strong>Ingest everything</strong> that is ACL-safe (GitHub, later Jira/Slack channels).</li>
-            <li><strong>Message rarely</strong> — change-only digests; you <strong>Approve / Edit / Don't send</strong>.</li>
-            <li><strong>Evidence-backed</strong> — no invented work items; no LOC rankings.</li>
+            <li><strong>Read the work</strong> that is already visible (GitHub, later tickets and team channels).</li>
+            <li><strong>Write rarely</strong> — a short update you <strong>Approve, edit, or hold</strong>.</li>
+            <li><strong>Stay honest</strong> — no invented work items, no productivity scores.</li>
           </ul>
         </div>
         <div class="card">
-          <h2>Team blockers &amp; conflicts</h2>
-          <p class="muted small">Rules v0 — dual owners, BLOCKS, SHIP vs FREEZE. Human-gated; not auto-resolved. Prefer real-team story over alice/bob demo.</p>
+          <h2>Blockers &amp; mixed signals</h2>
+          <p class="muted small">Where people are stuck or disagree. You decide — nothing auto-resolves. Prefer the real team over examples.</p>
           <div class="actions actions-inline" style="margin-bottom:0.5rem;">
-            <button type="button" id="btn-seed-story" class="primary">Enrich real-team story</button>
-            <button type="button" id="btn-seed-intent" class="ghost">Lab: alice/bob intent demo</button>
+            <button type="button" id="btn-seed-story" class="primary">Enrich the real-team story</button>
+            <button type="button" id="btn-seed-intent" class="ghost">Load an example story</button>
           </div>
           <p class="muted small" id="seed-intent-msg"></p>
-          <div id="today-conflicts" class="empty-hint">Loading pulse…</div>
+          <div id="today-conflicts" class="empty-hint">Loading…</div>
         </div>
         <div class="card">
-          <h2>Team digests</h2>
-          <p class="muted small">Latest draft per mapped person. <strong>Click a name</strong> to open Approve / Don't send.</p>
-          <div id="today-team-digests" class="empty-hint">Loading team digests…</div>
+          <h2>Team updates</h2>
+          <p class="muted small">Latest draft per person. <strong>Click a name</strong> to approve or hold.</p>
+          <div id="today-team-digests" class="empty-hint">Loading team updates…</div>
         </div>
         <div class="card">
-          <h2>Latest status snapshot</h2>
-          <div id="today-latest" class="empty-hint">No status yet. Open <strong>My status</strong> or send a test under <strong>Connections</strong>.</div>
+          <h2>Latest snapshot</h2>
+          <div id="today-latest" class="empty-hint">No status yet. Open <strong>My update</strong> or send a test under <strong>Connect</strong>.</div>
         </div>
       </section>
 
-      <!-- GRAPH -->
+      <!-- WORK MAP -->
       <section id="view-graph" class="view hidden">
         <div class="card graph-toolbar">
           <div class="graph-toolbar-row">
             <div>
-              <h2 style="margin:0;">Live context map</h2>
+              <h2 style="margin:0;">Work map</h2>
               <p class="muted small" style="margin:0.25rem 0 0;">
-                People → work → intents/conflicts. Hierarchical layout (not a hairball).
-                Recent commits only by default; scroll to zoom, drag canvas or nodes.
+                People connected to the work they touch. Drag to rearrange, scroll to zoom, click a node for the story.
               </p>
             </div>
             <div class="graph-toolbar-actions">
-              <label class="inline-label">Tenant
+              <label class="inline-label">Workspace
                 <input id="graph-tenant" value="ten_github" />
               </label>
               <label class="inline-label">Live
                 <input type="checkbox" id="graph-live" checked />
               </label>
-              <label class="inline-label" title="Only show the newest commits (avoids circle hairball)">
-                Recent commits
+              <label class="inline-label" title="Only show the newest commits">
+                Recent work
                 <input type="checkbox" id="graph-recent-commits" checked />
               </label>
-              <label class="inline-label" title="Hide alice/bob intent-demo theater">
-                Hide demo
+              <label class="inline-label" title="Hide example story nodes">
+                Hide examples
                 <input type="checkbox" id="graph-hide-demo" checked />
               </label>
-              <label class="inline-label" title="Show Don't send + pending digests (approved always shown)">
-                Show unapproved digests
+              <label class="inline-label" title="Show held and pending updates (approved always shown)">
+                Show unsent updates
                 <input type="checkbox" id="graph-show-unapproved" />
               </label>
               <button id="btn-graph-story" class="primary" type="button">Enrich story</button>
@@ -384,77 +407,77 @@
         </div>
         <div class="graph-layout">
           <div class="card graph-canvas-card">
-            <canvas id="graph-canvas" width="1100" height="680" aria-label="Context graph canvas"></canvas>
+            <canvas id="graph-canvas" width="1100" height="680" aria-label="Work map"></canvas>
             <div class="graph-legend" id="graph-legend"></div>
           </div>
           <div class="card graph-side">
             <h2>Selection</h2>
-            <div id="graph-detail" class="empty-hint">Click a node to inspect. Drag to rearrange. Scroll to zoom. Use <strong>Enrich story</strong> for dual-person intents on the real team.</div>
+            <div id="graph-detail" class="empty-hint">Click a node to inspect. Drag to rearrange. Use <strong>Enrich story</strong> to add dual-person context on the real team.</div>
             <h3 class="graph-side-h">People</h3>
             <ul id="graph-people" class="item-list muted"><li class="muted">—</li></ul>
-            <h3 class="graph-side-h">Recent edges</h3>
+            <h3 class="graph-side-h">Recent links</h3>
             <ul id="graph-edges" class="item-list"><li class="muted">—</li></ul>
-            <h3 class="graph-side-h">Type counts</h3>
+            <h3 class="graph-side-h">What’s on the map</h3>
             <pre id="graph-type-counts" class="box small">{}</pre>
           </div>
         </div>
       </section>
 
-      <!-- TEAM -->
+      <!-- PEOPLE -->
       <section id="view-team" class="view hidden">
         <div class="card">
-          <h2>Multi-person Slack map</h2>
-          <p class="muted small">Map ≥2 humans for multi-member digests. Bridge merges this map with <code>SLACK_USER_MAP</code> (never DMs — ingest only). Embedded twin state persists to disk so maps survive restarts.</p>
-          <label>Tenant <input id="team-tenant" value="ten_github" /></label>
+          <h2>Your people</h2>
+          <p class="muted small">Map at least two people so updates cover the whole team. Chat ids link delivery — we never read private one-to-ones.</p>
+          <label>Workspace <input id="team-tenant" value="ten_github" /></label>
           <div class="actions" style="margin-top:0.75rem;">
-            <button id="btn-team-refresh" class="ghost">Refresh team</button>
-            <button id="btn-team-prune" class="ghost" type="button">Prune duplicate people</button>
-            <button id="btn-team-compile" class="primary" type="button">Compile all digests</button>
+            <button id="btn-team-refresh" class="ghost">Refresh</button>
+            <button id="btn-team-prune" class="ghost" type="button">Clean up duplicates</button>
+            <button id="btn-team-compile" class="primary" type="button">Write all updates</button>
           </div>
-          <p class="muted small" id="team-compile-msg">Compile all = recompute status for every mapped person. Slack only if Notify Policy v1 allows (not force).</p>
+          <p class="muted small" id="team-compile-msg">Write all = refresh status for every mapped person. Chat only when something actually changed.</p>
           <div id="team-ready" class="meta-row" style="margin-top:0.75rem;"></div>
           <table class="kv" id="team-table">
             <thead>
-              <tr><th>Name</th><th>Subject / provider</th><th>Slack</th><th>Mapped</th><th>Last digest</th></tr>
+              <tr><th>Name</th><th>Who they are</th><th>Chat</th><th>Linked</th><th>Last update</th></tr>
             </thead>
             <tbody id="team-body">
-              <tr><td colspan="5" class="muted">Load team…</td></tr>
+              <tr><td colspan="5" class="muted">Load people…</td></tr>
             </tbody>
           </table>
         </div>
         <div class="card">
-          <h2>Add / update member</h2>
-          <p class="muted small">Path A mapping (live): one person at a time. Chat id is Slack today; Teams id when adapter ships.</p>
-          <label>Subject id (global_user_id) <input id="tm-subject" placeholder="gu_… or provider key" /></label>
+          <h2>Add someone</h2>
+          <p class="muted small">One person at a time. Chat id is Slack today.</p>
+          <label>Person id <input id="tm-subject" placeholder="login or person id" /></label>
           <label>Display name <input id="tm-name" placeholder="Alex" /></label>
-          <label>Slack user ID <input id="tm-slack" placeholder="U0…" /></label>
-          <label>Provider aliases (comma: github login, numeric id)
-            <input id="tm-aliases" placeholder="alice, 123456" />
+          <label>Chat user id <input id="tm-slack" placeholder="U0…" /></label>
+          <label>Other names (comma-separated)
+            <input id="tm-aliases" placeholder="alex, 123456" />
           </label>
           <label>Team channel (optional) <input id="tm-channel" placeholder="C0…" /></label>
           <div class="actions">
-            <button id="btn-team-add" class="primary">Save member</button>
+            <button id="btn-team-add" class="primary">Save person</button>
           </div>
           <p class="muted small" id="team-add-msg"></p>
         </div>
         <div class="card">
-          <h2>Bulk map (eng pod)</h2>
-          <p class="muted small">One person per line: <code>display_name | github_login | slack_user_id | optional_subject</code>. Example: <code>Alex | alexdev | U0ABC |</code></p>
+          <h2>Add several people</h2>
+          <p class="muted small">One person per line: <code>display name | github login | chat id | optional id</code>. Example: <code>Alex | alexdev | U0ABC |</code></p>
           <textarea id="tm-bulk" rows="6" placeholder="Alex | alexdev | U0123ABC |
-Sam | samcodes | U0456DEF |" style="width:100%;font-family:ui-monospace,monospace;font-size:12px;"></textarea>
+Sam | samcodes | U0456DEF |" style="width:100%;font-family:inherit;font-size:14px;"></textarea>
           <div class="actions" style="margin-top:0.5rem;">
             <button type="button" id="btn-team-bulk" class="primary">Import lines</button>
           </div>
           <p class="muted small" id="team-bulk-msg"></p>
         </div>
         <div class="card">
-          <h2>Intents (rules v0)</h2>
-          <p class="muted small">Classified from PR/issue titles &amp; labels — SHIP / BLOCKED / FIX / …</p>
-          <ul id="team-intents" class="item-list"><li class="muted">Refresh team to load pulse</li></ul>
+          <h2>Open focuses</h2>
+          <p class="muted small">What people are trying to do — stuck, ship, hold — from work titles and labels.</p>
+          <ul id="team-intents" class="item-list"><li class="muted">Refresh people to load focuses</li></ul>
         </div>
       </section>
 
-      <!-- STATUS -->
+      <!-- MY UPDATE -->
       <section id="view-status" class="view hidden">
         <div class="card">
           <h2>Current draft</h2>
@@ -465,78 +488,74 @@ Sam | samcodes | U0456DEF |" style="width:100%;font-family:ui-monospace,monospac
           </div>
           <pre id="st-text" class="box">No draft loaded.
 
-Send a test status from Connections, or wait for a scheduled window
-(default: every 30 minutes — not every GitHub event).
-Empty ledgers never DM. Same open PR does not re-DM.</pre>
+Send a test from Connect, or wait for the next status window.
+Empty windows never message anyone.</pre>
           <div id="st-empty-banner" class="graph-banner hidden" style="margin-top:0.75rem;"></div>
-          <h3>Items &amp; evidence</h3>
+          <h3>What’s in this update</h3>
           <ul id="st-items" class="item-list"></ul>
           <p class="muted small" id="st-actions-help">
-            <strong>Approve</strong> = share this status digest to chat (team channel if bot is a member; else DM).
-            Recorded in twin store + event log; shows as <em>StatusDigest / approved</em> on Graph.
-            <strong>Don't send</strong> = reject (never posts) but keep metadata — enable Graph → “Show unapproved digests”.
-            <strong>GitHub work</strong> (commits/PRs) always lives on the graph regardless of Approve.
-            Slack DM: type <code>approve</code> or <code>don't send</code> as a reply.
-            If the button seems dead, open a person from Team first (need a loaded draft_id).
+            <strong>Approve</strong> shares this update in chat (team channel if the bot is a member; otherwise a direct message).
+            <strong>Don’t send</strong> keeps it on file without posting.
+            Work on the map always comes from GitHub — it is not gated by Approve.
+            If the buttons seem idle, open a person from People first.
           </p>
           <div class="actions">
             <button id="btn-publish" class="ok">Approve</button>
             <button id="btn-edit" class="ghost">Edit…</button>
-            <button id="btn-veto" class="danger">Don't send</button>
+            <button id="btn-veto" class="danger">Don’t send</button>
             <button id="btn-silence" class="ghost">Silence → auto-share (medium only)</button>
           </div>
         </div>
       </section>
 
-      
-      <!-- DEV INSIGHTS -->
+      <!-- RHYTHM -->
       <section id="view-insights" class="view hidden">
         <div class="card">
-          <h2>Dev insights</h2>
-          <p class="muted small">Your engineering activity as currency — from the live graph (webhooks + commit poller). Times in IST (UTC+05:30).</p>
+          <h2>Team rhythm</h2>
+          <p class="muted small">When the team is active — from real work on the map. Times in IST. Not a ranking.</p>
           <div class="actions">
-            <button type="button" id="btn-insights-refresh" class="primary">Refresh insights</button>
+            <button type="button" id="btn-insights-refresh" class="primary">Refresh</button>
           </div>
           <p id="insights-msg" class="muted small"></p>
         </div>
         <div class="grid3">
           <div class="stat card">
-            <div class="stat-label">Commit nodes</div>
+            <div class="stat-label">Recent commits</div>
             <div class="stat-value" id="ins-commits">—</div>
           </div>
           <div class="stat card">
-            <div class="stat-label">Authored edges</div>
+            <div class="stat-label">Work links</div>
             <div class="stat-value" id="ins-authored">—</div>
           </div>
           <div class="stat card">
-            <div class="stat-label">Peak hour (IST)</div>
+            <div class="stat-label">Busiest hour (IST)</div>
             <div class="stat-value" id="ins-peak">—</div>
           </div>
         </div>
         <div class="card">
           <h2>When you are most active</h2>
           <p id="ins-insight" class="muted"></p>
-          <pre id="ins-hours" class="box" style="white-space:pre-wrap;font-size:12px;"></pre>
+          <div id="ins-hours" class="box" style="white-space:normal;font-size:13px;"></div>
         </div>
         <div class="card">
-          <h2>By author</h2>
+          <h2>Who is active</h2>
           <ul id="ins-authors" class="item-list"></ul>
         </div>
         <div class="card">
           <h2>By day</h2>
-          <pre id="ins-days" class="box" style="white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto;"></pre>
+          <div id="ins-days" class="box" style="white-space:normal;font-size:13px;max-height:240px;overflow:auto;"></div>
         </div>
         <div class="card">
-          <h2>Recent commits on graph</h2>
+          <h2>Latest work on the map</h2>
           <ul id="ins-recent" class="item-list"></ul>
         </div>
       </section>
 
-      <!-- CONNECTIONS -->
+      <!-- CONNECT -->
       <section id="view-connections" class="view hidden">
         <div class="card">
-          <h2>Onboarding</h2>
-          <p class="muted small">Tenant → Slack → GitHub → batch notify → first digest. Server checks stack; OAuth needs human secrets.</p>
+          <h2>Get set up</h2>
+          <p class="muted small">Link chat and GitHub, paste the Slack Events URL, map the team, then status writes itself.</p>
           <ol id="onboard-steps" class="onboard-steps">
             <li class="muted">Loading…</li>
           </ol>
@@ -544,63 +563,62 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         </div>
         <div class="grid2">
           <div class="card">
-            <h2>Services</h2>
+            <h2>Health</h2>
             <div id="conn-pills" class="pills">loading…</div>
             <p class="muted small" id="conn-detail"></p>
             <div id="conn-ingest" class="meta-row" style="margin-top:0.75rem;"></div>
             <div id="conn-graph" class="meta-row" style="margin-top:0.5rem;"></div>
             <p class="muted small" id="conn-graph-detail"></p>
-            <p class="muted small">Health = process up <em>and</em> last successful ingest when available. Graph empty after restart is not a mystery — bridge recovery re-projects. After sleep: <code>./scripts/dev_up.sh</code>. Partner install: <code>starting-out-documents/Design Partner_ Install Runbook.md</code>.</p>
+            <p class="muted small">Health is process up <em>and</em> last successful ingest when available. An empty map after a restart is expected — it refills from the work stream.</p>
           </div>
           <div class="card">
-            <h2>Send test status</h2>
-            <p class="muted small">On-demand (one DM). Live GitHub ingests without spamming Slack.</p>
-            <label>Tenant <input id="tenant" value="ten_github" /></label>
-            <label>Person id <input id="user" value="neeljoshi18" /></label>
+            <h2>Send a test update</h2>
+            <p class="muted small">On-demand, once. Live work never spams chat.</p>
+            <label>Workspace <input id="tenant" value="ten_github" /></label>
+            <label>Person <input id="user" value="neeljoshi18" /></label>
             <label>Display name <input id="name" value="neeljoshi18" /></label>
-            <label>Slack user ID <input id="slack_user" value="U0APK7W1X99" /></label>
+            <label>Chat user id <input id="slack_user" value="U0APK7W1X99" /></label>
             <label>Team channel <input id="channel" value="C0APN754MQV" /></label>
-            <button id="btn-sim" class="primary">Send test status DM</button>
+            <button id="btn-sim" class="primary">Send test update</button>
           </div>
         </div>
         <div class="card">
           <h2>Connectors</h2>
-          <p class="muted small"><strong>Slack = delivery</strong> (digests, Approve / Edit / Don't send). <strong>GitHub = work</strong> (PRs, issues, pushes → graph). Tokens never sit on twin-api env (ADR-012). No LOC rankings.</p>
+          <p class="muted small"><strong>Slack</strong> delivers updates. <strong>GitHub</strong> is the work. Tokens stay in the vault.</p>
           <div class="meta-row" id="conn-oauth-status" style="margin-bottom:0.75rem;"><span class="pill mid">checking install status…</span></div>
-          <div class="card" style="background:var(--surface-2, #f6f7f9); margin-bottom:0.75rem; padding:0.75rem 1rem;" id="conn-guide">
-            <strong>Sales-call path:</strong> Connect Slack → paste Events URL → invite bot to team channel (channel claims) → Install GitHub App → map pod under Team → open Cockpit.
-            ICs mostly only see Slack digests.
+          <div class="card" style="background:var(--bg-soft); margin-bottom:0.75rem; padding:0.75rem 1rem;" id="conn-guide">
+            <strong>Typical path:</strong> Connect Slack → paste Events URL → invite the bot to the team channel → install GitHub → map people → open Home.
           </div>
-          <div id="conn-post-install" class="card hidden" style="background:#ecfdf5; border:1px solid #86efac; margin-bottom:0.75rem; padding:0.75rem 1rem;">
-            <strong id="conn-post-install-title">Post-install</strong>
+          <div id="conn-post-install" class="card hidden" style="margin-bottom:0.75rem; padding:0.75rem 1rem;">
+            <strong id="conn-post-install-title">After install</strong>
             <p class="muted small" id="conn-post-install-body" style="margin:0.35rem 0 0;"></p>
           </div>
           <ol class="muted small" id="conn-checklist" style="margin:0 0 0.75rem 1.1rem;">
-            <li id="conn-step-slack">Connect Slack — bot install OAuth (opens Slack)</li>
-            <li id="conn-step-events">Paste Slack Events Request URL (ambient claims)</li>
-            <li id="conn-step-channel">Invite bot to team channel (needed for channel claims)</li>
-            <li id="conn-step-gh">Install GitHub App — org/repos (opens GitHub)</li>
-            <li id="conn-step-map">Map pod under Team (Slack user ids)</li>
-            <li id="conn-step-graph">Graph healthy + digests compiling</li>
+            <li id="conn-step-slack">Connect Slack</li>
+            <li id="conn-step-events">Paste Slack Events Request URL</li>
+            <li id="conn-step-channel">Invite the bot to the team channel</li>
+            <li id="conn-step-gh">Install GitHub</li>
+            <li id="conn-step-map">Map people</li>
+            <li id="conn-step-graph">Work map healthy + updates writing</li>
           </ol>
           <div class="actions-inline" style="margin-bottom:0.75rem;">
             <button type="button" class="ghost" id="conn-refresh-after">I finished install — refresh status</button>
           </div>
           <div class="grid2">
             <div>
-              <p><strong>GitHub</strong> <span class="muted small">= work signals</span></p>
-              <p class="muted small" id="conn-github">Ingest via V1 webhooks. Last event age above when V1 is up.</p>
+              <p><strong>GitHub</strong> <span class="muted small">= work</span></p>
+              <p class="muted small" id="conn-github">Ingest via webhooks. Last event age above when the work stream is up.</p>
               <p class="muted small">Webhook URL (always copyable):</p>
               <p style="word-break:break-all;"><code id="conn-gh-webhook">—</code></p>
               <div class="actions-inline">
-                <button type="button" class="primary" id="btn-gh-app">Install GitHub App…</button>
+                <button type="button" class="primary" id="btn-gh-app">Install GitHub…</button>
                 <button type="button" class="ghost" id="btn-gh-webhook-copy">Copy webhook URL</button>
               </div>
             </div>
             <div>
-              <p><strong>Slack</strong> <span class="muted small">= delivery (default)</span></p>
-              <p class="muted small" id="conn-slack">Outbound digests via egress vault only (ADR-012). Batched notify (ADR-014).</p>
-              <p class="muted small">Events Request URL (ambient claims — copy into Slack app → Event Subscriptions):</p>
+              <p><strong>Slack</strong> <span class="muted small">= delivery</span></p>
+              <p class="muted small" id="conn-slack">Outbound updates via the vault. Batched, change-only.</p>
+              <p class="muted small">Events Request URL (copy into Slack → Event Subscriptions):</p>
               <p style="word-break:break-all;"><code id="conn-slack-events">—</code></p>
               <div class="actions-inline">
                 <button type="button" class="primary" id="btn-slack-oauth">Connect Slack…</button>
@@ -609,24 +627,24 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
               <p class="muted small" id="conn-slack-manual" style="margin-top:0.5rem;"></p>
               <p class="muted small" id="conn-slack-channel-hint" style="margin-top:0.35rem;">
                 After connect: paste the Events URL, then invite the bot to the team channel so “blocked on…” / “I’ll send…” become claims.
-                Digests still DM mapped people if the bot is not in a channel. Never private 1:1 wiretap.
+                Updates still reach mapped people if the bot is not in a channel.
               </p>
             </div>
           </div>
           <div style="margin-top:0.75rem;">
-            <p><strong>Microsoft Teams</strong> <span class="muted small">secondary (default stays Slack)</span></p>
-            <p class="muted small" id="conn-teams-note">Same digests + Adaptive Cards (Approve / Edit / Don't send). Vault: TEAMS_BOT_TOKEN.</p>
+            <p><strong>Microsoft Teams</strong> <span class="muted small">secondary — Slack stays the default</span></p>
+            <p class="muted small" id="conn-teams-note">Same updates, Adaptive Cards for approve / edit / hold.</p>
             <div class="actions-inline">
               <button type="button" class="primary" id="btn-teams-connect">Connect Teams…</button>
             </div>
             <p class="muted small" id="conn-teams-manual" style="margin-top:0.5rem;"></p>
           </div>
-          <p class="muted small" style="margin-top:0.75rem;" id="conn-sso-note">Google/SSO: identity plane (roadmap with multi-tenant packaging). Still Connect chat + GitHub for data.</p>
+          <p class="muted small" style="margin-top:0.75rem;" id="conn-sso-note">Sign-in is a later packaging step. You still connect chat and GitHub for data.</p>
         </div>
         <div class="card">
-          <h2>Roles (champion vs member)</h2>
-          <p class="muted small">Pilot-SSO pilot: default everyone is champion. List champion subject ids to treat others as members (own status only).</p>
-          <label>Champion subject ids (comma-separated)
+          <h2>Who can change what</h2>
+          <p class="muted small">By default everyone can write. List champion names to treat others as members (own status only).</p>
+          <label>Champion names (comma-separated)
             <input id="roles-champions" placeholder="neeljoshi18, paneerjeera" />
           </label>
           <div class="actions-inline" style="margin-top:0.5rem;">
@@ -641,40 +659,40 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       <section id="view-settings" class="view hidden">
         <div class="card">
           <h2>How the app looks</h2>
-          <p class="muted small"><strong>Every feature is in both views.</strong> Simple = plain English and visual cards. Technical = same data with tags and denser detail. Identifiers (commit hashes, record ids) sit behind a small eye — hover to read, click to copy. Like light/dark — only presentation changes.</p>
+          <p class="muted small">Every feature is in both views. Simple is the visual story. Technical is the same data with tags and denser detail. Identifiers sit behind a small eye — hover to read, click to copy.</p>
           <div class="actions-inline">
             <button type="button" id="btn-ux-simple" class="primary">Simple view</button>
             <button type="button" id="btn-ux-technical" class="ghost">Technical view</button>
           </div>
           <p class="muted small" id="settings-ux-mode" style="margin-top:0.5rem;">Mode: —</p>
-          <p class="muted small" style="margin-top:0.75rem;"><strong>Morning digest</strong> — optional Slack channel via <code>COMMITMENT_DIGEST_CHANNEL</code> at <code>COMMITMENT_DIGEST_HOUR_IST</code> (preferred) or <code>COMMITMENT_DIGEST_HOUR_UTC</code>. <strong>Linear</strong> — optional export with <code>LINEAR_API_KEY</code> + <code>LINEAR_TEAM_ID</code>.</p>
+          <p class="muted small" style="margin-top:0.75rem;">Morning digest can go to an optional Slack channel. Linear export is optional — promises stay here either way.</p>
         </div>
         <div class="card">
-          <h2>Cadence (server env)</h2>
+          <h2>Cadence</h2>
           <table class="kv">
-            <tr><td>STATUS_WINDOW_SECS</td><td id="cfg-window">—</td></tr>
-            <tr><td>NOTIFY_INTERVAL_SECS</td><td id="cfg-notify">—</td></tr>
-            <tr><td>COMPILE_INTERVAL_SECS</td><td id="cfg-compile">—</td></tr>
-            <tr><td>NOTIFY_ON_COMPILE</td><td id="cfg-noc">—</td></tr>
-            <tr><td>Slack delivery</td><td id="cfg-slack">—</td></tr>
+            <tr><td>Status window</td><td id="cfg-window">—</td></tr>
+            <tr><td>Notify interval</td><td id="cfg-notify">—</td></tr>
+            <tr><td>Compile interval</td><td id="cfg-compile">—</td></tr>
+            <tr><td>Notify on compile</td><td id="cfg-noc">—</td></tr>
+            <tr><td>Chat delivery</td><td id="cfg-slack">—</td></tr>
           </table>
-          <p class="muted small">Change via env when starting twin-api. See plans/2026-07-23_demo-to-product-m5.md.</p>
+          <p class="muted small">Changed on the server when the product starts.</p>
         </div>
         <div class="card">
-          <h2>Pilot metrics</h2>
+          <h2>How we’re doing</h2>
           <table class="kv">
             <tr><td>Notify policy</td><td id="met-policy">—</td></tr>
-            <tr><td>DMs sent</td><td id="met-dms">—</td></tr>
-            <tr><td>DMs suppressed (no spam)</td><td id="met-suppress">—</td></tr>
-            <tr><td>Don't-send rate</td><td id="met-veto">—</td></tr>
+            <tr><td>Messages sent</td><td id="met-dms">—</td></tr>
+            <tr><td>Messages held back</td><td id="met-suppress">—</td></tr>
+            <tr><td>Don’t-send rate</td><td id="met-veto">—</td></tr>
             <tr><td>Empty windows</td><td id="met-empty">—</td></tr>
-            <tr><td>Conflict hits</td><td id="met-conflicts">—</td></tr>
+            <tr><td>Friction hits</td><td id="met-conflicts">—</td></tr>
           </table>
-          <p class="muted small">From <code>/metrics</code>. Learning-window scorecard uses these. Suppressed ≫ sent means anti-spam is working.</p>
+          <p class="muted small">Held back ≫ sent means we are not noisy.</p>
         </div>
         <div class="card">
-          <h2>System health (staging)</h2>
-          <p class="muted small">Public stack probe — no SSH. Green = process up; data still lives on droplet volumes until Neon/Postgres is wired.</p>
+          <h2>System health</h2>
+          <p class="muted small">Public stack probe. Green means the process is up.</p>
           <div class="actions-inline">
             <button type="button" id="btn-stack-health" class="primary">Probe stack</button>
           </div>
@@ -682,12 +700,12 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <pre id="stack-health-raw" class="box small" style="max-height:220px;overflow:auto;">{}</pre>
         </div>
         <div class="card">
-          <h2>Live event trail + Neon DB</h2>
-          <p class="muted small">Approve / Don't send / compile dual-write to Neon continuously when connected. Optional button re-upserts everything (idempotent). Graph export is periodic + on-demand (SQL insights; Graph UI remains primary).</p>
+          <h2>Activity trail</h2>
+          <p class="muted small">Approve / Don’t send / compile are recorded when the database is connected.</p>
           <div class="actions-inline">
             <button type="button" id="btn-events-refresh" class="primary">Refresh events</button>
-            <button type="button" id="btn-sync-db" class="ghost">Force full re-sync → Neon</button>
-            <button type="button" id="btn-sync-graph-db" class="ghost">Export graph → Neon</button>
+            <button type="button" id="btn-sync-db" class="ghost">Force full re-sync</button>
+            <button type="button" id="btn-sync-graph-db" class="ghost">Export map</button>
           </div>
           <p class="muted small" id="events-meta"></p>
           <pre id="events-log" class="box small" style="max-height:320px;overflow:auto;">{}</pre>
@@ -695,30 +713,30 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
         <div class="card">
           <h2>What we don’t build</h2>
           <ul class="pitch">
-            <li>Glean-style document search / vectors</li>
-            <li>Silent private 1:1 Slack wiretaps</li>
-            <li>LOC / productivity rankings</li>
-            <li>Multiplayer agent OS as core product</li>
+            <li>Document search across the whole company</li>
+            <li>Silent reading of private one-to-one messages</li>
+            <li>Productivity rankings or line-count scoreboards</li>
+            <li>Agents that act on unreviewed claims</li>
           </ul>
         </div>
       </section>
 
-      <!-- LAB -->
+      <!-- ADVANCED -->
       <section id="view-lab" class="view hidden">
         <div class="card">
-          <h2>Engineer lab</h2>
-          <p class="muted">Raw JSON and experiment UI (previous demo console).</p>
+          <h2>Advanced</h2>
+          <p class="muted">Operator tools and raw payloads. Same product — just more of the machinery.</p>
           <a class="primary linkbtn" href="/demo/">Open lab console →</a>
           <pre id="lab-raw" class="box small">{}</pre>
         </div>
         <div class="card" style="margin-top:0.75rem;">
-          <h2>Person profile (shadow)</h2>
+          <h2>Person (raw)</h2>
           <p class="muted small">
-            Same API as Cockpit. Channel intents only when bot is in-channel; no silent private DM read.
+            Same data as Home. Channel notes only when the bot is in-channel.
           </p>
           <div class="actions-inline" style="flex-wrap:wrap;gap:0.4rem;">
-            <input type="text" id="lab-profile-subject" value="neeljoshi18" placeholder="subject" style="min-width:12rem;" />
-            <button type="button" id="lab-profile-load" class="primary">Fetch profile JSON</button>
+            <input type="text" id="lab-profile-subject" value="neeljoshi18" placeholder="person" style="min-width:12rem;" />
+            <button type="button" id="lab-profile-load" class="primary">Fetch profile</button>
           </div>
           <p class="muted small" id="lab-profile-msg"></p>
           <pre id="lab-profile-raw" class="box small" style="max-height:420px;overflow:auto;">{}</pre>
@@ -726,6 +744,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260814d"></script>
+  <script src="/app/app.js?v=20260815a"></script>
 </body>
 </html>

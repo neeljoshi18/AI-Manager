@@ -13,7 +13,7 @@ Ordered residual backlog from adequacy re-run + handoff. Mark status as work lan
 | 7 | Deploy + verify | **DONE** | `780d26a` deploy success; V1 recover_only after red; digests clean; roles 403/200 |
 | 8 | Smoke stack + IST (2026-08-14) | **DONE** | v2/v3/egress true · graph 329 · PR 13 · ledger_live github_pr 12 + explicit 2 · pulse `only_demo_seeds` · compile blockers=0 / medium / Lookback IST |
 | 9 | Close remaining listed-UTC leaks | **DONE** | `8750165` + `72e41d3` live · cache `20260814a` · ledger/profile/team/roles/focus listed times `+05:30` · V1 recovered (`v1=true`, accepted resets on recreate) |
-| 10 | Slack Events install surface + OAuth scopes | **CODE** | Connections copyable Events URL; OAuth scopes match manifest (`channels:history` etc.); cache `20260814b` |
+| 10 | Slack Events install surface + OAuth scopes | **DONE** | `81183a6` live · cache `20260814b` · `/v3/oauth/status` `events_url` + channel-history scopes · recover_only after deploy |
 
 ## Slack install checklist (human — not blocked for code)
 

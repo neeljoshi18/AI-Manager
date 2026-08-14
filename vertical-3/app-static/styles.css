@@ -962,3 +962,75 @@ body.mode-technical #ck-intent-ledger code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
+
+/* Opaque ids sit behind a circled eye — hover/focus reveals, click copies */
+.id-peek {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  white-space: nowrap;
+}
+.id-eye-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.id-eye {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  margin: 0 0.05rem;
+  border: none;
+  border-radius: 999px;
+  background: #f4f4f5;
+  color: #404040;
+  cursor: help;
+  vertical-align: -0.15em;
+  flex: 0 0 auto;
+}
+.id-eye:hover,
+.id-eye:focus-visible {
+  background: #111;
+  color: #fff;
+  outline: none;
+}
+.id-eye-tip {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 40;
+  min-width: 8rem;
+  max-width: 22rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  background: #111;
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-all;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+.id-eye:hover .id-eye-tip,
+.id-eye:focus-visible .id-eye-tip {
+  display: block;
+}
+.id-eye-tip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-top-color: #111;
+}

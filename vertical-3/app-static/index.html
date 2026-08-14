@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260814b" />
-  <script>window.__APP_JS_V="20260814b";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260814c" />
+  <script>window.__APP_JS_V="20260814c";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -461,7 +461,7 @@ Sam | samcodes | U0456DEF |" style="width:100%;font-family:ui-monospace,monospac
           <div class="meta-row">
             <span id="st-conf" class="pill mid">confidence: —</span>
             <span id="st-status" class="pill mid">draft: —</span>
-            <code id="st-ids" class="muted small"></code>
+            <span id="st-ids" class="muted small id-eye-row"></span>
           </div>
           <pre id="st-text" class="box">No draft loaded.
 
@@ -556,7 +556,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
             <h2>Send test status</h2>
             <p class="muted small">On-demand (one DM). Live GitHub ingests without spamming Slack.</p>
             <label>Tenant <input id="tenant" value="ten_github" /></label>
-            <label>Person id <input id="user" value="gu_ec3cab86-2a3c-4737-bb04-d1f2deeae9f8" /></label>
+            <label>Person id <input id="user" value="neeljoshi18" /></label>
             <label>Display name <input id="name" value="neeljoshi18" /></label>
             <label>Slack user ID <input id="slack_user" value="U0APK7W1X99" /></label>
             <label>Team channel <input id="channel" value="C0APN754MQV" /></label>
@@ -641,7 +641,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       <section id="view-settings" class="view hidden">
         <div class="card">
           <h2>How the app looks</h2>
-          <p class="muted small"><strong>Every feature is in both views.</strong> Simple = plain English and visual cards. Technical = same data with tags, IDs, and raw detail. Like light/dark — only presentation changes.</p>
+          <p class="muted small"><strong>Every feature is in both views.</strong> Simple = plain English and visual cards. Technical = same data with tags and denser detail. Identifiers (commit hashes, record ids) sit behind a small eye — hover to read, click to copy. Like light/dark — only presentation changes.</p>
           <div class="actions-inline">
             <button type="button" id="btn-ux-simple" class="primary">Simple view</button>
             <button type="button" id="btn-ux-technical" class="ghost">Technical view</button>
@@ -726,6 +726,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260814b"></script>
+  <script src="/app/app.js?v=20260814c"></script>
 </body>
 </html>

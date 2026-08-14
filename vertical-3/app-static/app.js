@@ -109,13 +109,13 @@ function setUxMode(mode, opts) {
     btn.title =
       m === "technical"
         ? "Simple view: visual org story, plain English, low jargon"
-        : "Technical view: tags, IDs, denser operator console";
+        : "Technical view: tags and denser operator console (ids behind the eye)";
   });
   if ($("settings-ux-mode")) {
     $("settings-ux-mode").textContent =
       m === "simple"
         ? "Mode: Simple — visual, plain English. Same data; less intimidation."
-        : "Mode: Technical — same data with machine tags, IDs, and raw detail.";
+        : "Mode: Technical — same data with tags and denser detail. Identifiers sit behind the eye.";
   }
   if ($("nav-mode")) $("nav-mode").textContent = m === "simple" ? "simple view" : "technical view";
   const navSub = document.querySelector(".nav-sub");
@@ -204,6 +204,107 @@ function shortHumanId(id) {
   const s = String(id);
   if (s.length <= 14) return s;
   return s.slice(0, 8) + "…";
+}
+
+/** Opaque machine ids/hashes — never printed as first-view text. */
+const OPAQUE_TOKEN_RE =
+  /(?:[A-Za-z][\w-]*:(?:[^\s,;<>"'()[\]{}]{6,}))|(?:(?:gu|dft|led|cmt|cfl|evt)_[0-9A-Fa-f-]{8,})|(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})|(?:\b[0-9A-Fa-f]{7,40}\b)|(?:\b[UCDW][A-Z0-9]{8,}\b)/g;
+
+function isOpaqueToken(s) {
+  const t = String(s || "").trim();
+  if (!t || t.length < 7) return false;
+  if (/^\d+$/.test(t)) return false;
+  if (/^ten_[a-z0-9_]+$/i.test(t)) return false;
+  if (/^(SHIP|BLOCKED|FIX|EXPLORE|REVIEW|FREEZE|OTHER|HIGH|MEDIUM|LOW)$/i.test(t)) {
+    return false;
+  }
+  if (/^(gu_|dft_|led_|cmt:|cfl_|twin:|intent:|commit:|event:|edge:|explicit:|person:|pr:|slack:)/i.test(t)) {
+    return true;
+  }
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)) {
+    return true;
+  }
+  if (/^[0-9a-f]{7,40}$/i.test(t) && /[a-f]/i.test(t)) return true;
+  if (/^[UCDW][A-Z0-9]{8,}$/.test(t)) return true;
+  if (/^[a-z]{2,10}_[0-9a-f-]{8,}$/i.test(t)) return true;
+  return false;
+}
+
+function idKindLabel(raw) {
+  const s = String(raw || "");
+  const pr = s.match(/\/pr\/(\d+)/i);
+  if (pr || /^pr:/i.test(s)) return pr ? `PR #${pr[1]}` : "Pull request";
+  if (/^commit:/i.test(s) || (/^[0-9a-f]{7,40}$/i.test(s) && /[a-f]/i.test(s))) {
+    return "Commit";
+  }
+  if (/^intent:/i.test(s)) return "Intent";
+  if (/^person:|^gu_/i.test(s)) return "Person";
+  if (/^dft_/i.test(s)) return "Draft";
+  if (/^led_/i.test(s)) return "Ledger";
+  if (/^cmt:/i.test(s)) return "Promise";
+  if (/^cfl_/i.test(s)) return "Conflict";
+  if (/^twin:/i.test(s)) return "Record";
+  if (/^explicit:/i.test(s)) return "Claim";
+  if (/^event:|^edge:/i.test(s)) return "Evidence";
+  if (/^U[A-Z0-9]{8,}$/.test(s)) return "Slack user";
+  if (/^C[A-Z0-9]{8,}$/.test(s)) return "Channel";
+  if (/^D[A-Z0-9]{8,}$/.test(s)) return "DM";
+  if (/^W[A-Z0-9]{8,}$/.test(s)) return "Workspace";
+  return "ID";
+}
+
+function idEye(raw) {
+  const v = String(raw ?? "").trim();
+  if (!v) return "";
+  return (
+    `<button type="button" class="id-eye" data-id="${esc(v)}" title="Reveal identifier" aria-label="Reveal ${esc(idKindLabel(v))}">` +
+    `<svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">` +
+    `<circle cx="10" cy="10" r="8.4" fill="none" stroke="currentColor" stroke-width="1.5"/>` +
+    `<ellipse cx="10" cy="10" rx="5" ry="3.15" fill="none" stroke="currentColor" stroke-width="1.45"/>` +
+    `<circle cx="10" cy="10" r="1.35" fill="currentColor"/>` +
+    `</svg>` +
+    `<span class="id-eye-tip" role="tooltip">${esc(v)}</span>` +
+    `</button>`
+  );
+}
+
+/** Readable words + hoverable eye. Never dumps the raw token inline. */
+function prettyRef(raw) {
+  const v = String(raw ?? "").trim();
+  if (!v) return "";
+  if (!isOpaqueToken(v)) return esc(v);
+  return `<span class="id-peek">${esc(idKindLabel(v))}${idEye(v)}</span>`;
+}
+
+function prettyMaybe(raw) {
+  const v = String(raw ?? "").trim();
+  if (!v) return "";
+  return isOpaqueToken(v) ? prettyRef(v) : esc(v);
+}
+
+/** Walk prose and tuck opaque tokens behind eyes. Input is plain text. */
+function scrubTextHtml(s) {
+  const raw = String(s ?? "");
+  if (!raw) return "";
+  const re = new RegExp(OPAQUE_TOKEN_RE.source, "g");
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(raw))) {
+    const tok = m[0];
+    out += esc(raw.slice(last, m.index));
+    out += isOpaqueToken(tok) ? prettyRef(tok) : esc(tok);
+    last = m.index + tok.length;
+  }
+  out += esc(raw.slice(last));
+  return out;
+}
+
+function displayNameOrEye(name, fallbackId) {
+  const n = String(name || "").trim();
+  if (n && !isOpaqueToken(n)) return esc(n);
+  if (fallbackId) return prettyRef(fallbackId);
+  return n ? prettyRef(n) : "—";
 }
 
 function activeTenant() {
@@ -458,7 +559,7 @@ function draftStatusLabel(st) {
 function renderEvidenceLine(refs) {
   const list = (refs || []).filter(Boolean);
   if (!list.length) return `<div class="muted small">evidence: (none linked)</div>`;
-  return `<div class="muted small">evidence: ${list.map((r) => esc(r)).join(" · ")}</div>`;
+  return `<div class="muted small">evidence: ${list.map((r) => prettyRef(r)).join(" · ")}</div>`;
 }
 
 function renderLatest(payload) {
@@ -476,8 +577,19 @@ function renderLatest(payload) {
   $("st-status").textContent = `draft: ${stLabel}`;
   $("st-status").className =
     "pill " + (st === "vetoed" ? "down" : st === "published" || st === "Published" ? "up" : "mid");
-  $("st-ids").textContent = `ledger=${state.ledgerId || "—"}  draft=${state.draftId || "—"}`;
-  $("st-text").textContent = payload.draft?.draft_text || "(no text)";
+  if ($("st-ids")) {
+    $("st-ids").innerHTML = [
+      state.ledgerId ? prettyRef(state.ledgerId) : "",
+      state.draftId ? prettyRef(state.draftId) : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  if ($("st-text")) {
+    const rawText = payload.draft?.draft_text || "(no text)";
+    $("st-text").dataset.raw = rawText;
+    $("st-text").innerHTML = scrubTextHtml(rawText);
+  }
 
   const items = payload.ledger?.items || [];
   const blockers = payload.ledger?.open_blockers || [];
@@ -485,15 +597,15 @@ function renderLatest(payload) {
   for (const it of items) {
     const li = document.createElement("li");
     li.innerHTML =
-      `<strong>[${esc(it.confidence)}]</strong> ${esc(it.summary)}` +
-      (it.resource_id ? ` <span class="muted small">(${esc(it.resource_id)})</span>` : "") +
+      `<strong>[${esc(it.confidence)}]</strong> ${scrubTextHtml(it.summary)}` +
+      (it.resource_id ? ` ${prettyRef(it.resource_id)}` : "") +
       renderEvidenceLine(it.evidence_refs);
     $("st-items").appendChild(li);
   }
   for (const b of blockers) {
     const li = document.createElement("li");
     li.innerHTML =
-      `<strong>[blocker]</strong> ${esc(b.summary)}` + renderEvidenceLine(b.evidence_refs);
+      `<strong>[blocker]</strong> ${scrubTextHtml(b.summary)}` + renderEvidenceLine(b.evidence_refs);
     $("st-items").appendChild(li);
   }
   const emptyBanner = $("st-empty-banner");
@@ -515,7 +627,7 @@ function renderLatest(payload) {
       <span class="pill mid">confidence: ${esc(conf)}</span>
       <span class="pill mid">draft: ${esc(stLabel)}</span>
     </div>
-    <pre class="box">${esc(payload.draft?.draft_text || "(no text)")}</pre>
+    <pre class="box">${scrubTextHtml(payload.draft?.draft_text || "(no text)")}</pre>
   `;
   if ($("lab-raw")) $("lab-raw").textContent = JSON.stringify(payload, null, 2);
 }
@@ -599,6 +711,7 @@ async function loadLatest() {
   }
   // Empty state for sales path
   if ($("st-text")) {
+    $("st-text").dataset.raw = "";
     $("st-text").textContent =
       "No draft yet for this tenant. Open Team → Compile all digests, or click a person on Today.";
   }
@@ -651,7 +764,10 @@ async function act(kind) {
   if (help) help.textContent = `${label}…`;
   try {
     if (kind === "edit") {
-      const text = prompt("Edited status text:", $("st-text").textContent);
+      const text = prompt(
+        "Edited status text:",
+        $("st-text")?.dataset?.raw || $("st-text")?.textContent || ""
+      );
       if (text == null) {
         if (help) help.textContent = "";
         return;
@@ -860,7 +976,7 @@ async function refreshCockpit() {
         pod.innerHTML = members
           .map((m) => {
             const d = m.last_digest;
-            const name = m.display_name || m.subject_id;
+            const name = m.display_name || "";
             const dig = plainDigestStatus(d);
             const preview = d?.preview
               ? d.preview
@@ -878,9 +994,9 @@ async function refreshCockpit() {
               <button type="button" class="ghost dig-open ux-card-btn" data-draft="${esc(did)}" data-ledger="${esc(lid)}">
                 <span class="ux-avatar">${esc((name || "?").slice(0, 1).toUpperCase())}</span>
                 <span class="ux-card-body">
-                  <strong>${esc(name)}</strong>
+                  <strong>${displayNameOrEye(name, m.subject_id)}</strong>
                   <span class="pill ${tone}">${esc(dig)}</span>
-                  ${preview ? `<div class="muted small">${esc(preview)}</div>` : ""}
+                  ${preview ? `<div class="muted small">${scrubTextHtml(preview)}</div>` : ""}
                   ${!m.slack_mapped ? `<div class="muted small">Chat not connected yet</div>` : ""}
                 </span>
               </button>
@@ -904,12 +1020,12 @@ async function refreshCockpit() {
             return `<li>
               <button type="button" class="ghost graph-filter-btn pod-row-btn dig-open"
                 data-draft="${esc(did)}" data-ledger="${esc(lid)}">
-                <strong>${esc(m.display_name || m.subject_id)}</strong>
-                <span class="muted small">${esc(shortHumanId(m.subject_id))}</span>
+                <strong>${displayNameOrEye(m.display_name, m.subject_id)}</strong>
+                <span class="muted small">${prettyMaybe(m.subject_id)}</span>
                 ${m.slack_mapped ? "" : " · <span class='muted'>unmapped chat</span>"}
               </button>
-              <div class="muted small">${esc(dig)}${d?.preview ? " · " + esc(d.preview.slice(0, 72)) : ""}
-              ${did ? ` · <code>${esc(shortHumanId(did))}</code>` : ""}</div>
+              <div class="muted small">${esc(dig)}${d?.preview ? " · " + scrubTextHtml(d.preview.slice(0, 72)) : ""}
+              ${did ? ` · ${prettyRef(did)}` : ""}</div>
             </li>`;
           })
           .join("");
@@ -1000,7 +1116,7 @@ async function refreshCockpit() {
           .slice(0, 12)
           .map((n) => {
             const ty = n.intent_type || n.type || "Intent";
-            return `<li><strong>${esc(ty)}</strong> ${esc(n.label || n.title || n.id || "")}</li>`;
+            return `<li><strong>${esc(ty)}</strong> ${prettyMaybe(n.label || n.title || "") || prettyRef(n.id)}</li>`;
           })
           .join("");
       }
@@ -1048,13 +1164,11 @@ async function refreshCockpit() {
         const top = Object.entries(by)
           .sort((a, b) => b[1] - a[1])
           .slice(0, 6);
-        $("ck-heat-authors").textContent = simple
-          ? top.length
-            ? `Most active on the map: ${top.map(([k, v]) => `${k} (${v})`).join(", ")} — context only, not a ranking.`
-            : ""
-          : top.length
-            ? `Authored volume (context, not rank): ${top.map(([k, v]) => `${k}: ${v}`).join(" · ")}`
-            : "";
+        $("ck-heat-authors").innerHTML = top.length
+          ? (simple
+              ? `Most active on the map: ${top.map(([k, v]) => `${prettyMaybe(k)} (${v})`).join(", ")} — context only, not a ranking.`
+              : `Authored volume (context, not rank): ${top.map(([k, v]) => `${prettyMaybe(k)}: ${v}`).join(" · ")}`)
+          : "";
       }
     } else if ($("ck-heat-insight")) {
       $("ck-heat-insight").textContent = simple ? "Rhythm data not available yet" : "Heat unavailable";
@@ -1443,14 +1557,14 @@ async function fillVisualHome(ctx) {
     } else {
       pg.innerHTML = members
         .map((m) => {
-          const name = m.display_name || m.subject_id || "?";
+          const name = m.display_name || "";
           const dig = plainDigestStatus(m.last_digest);
           const ok = m.last_digest?.has_content;
           const did = m.last_digest?.draft_id || "";
           const lid = m.last_digest?.ledger_id || "";
           return `<button type="button" class="viz-person dig-open" data-draft="${esc(did)}" data-ledger="${esc(lid)}">
-            <span class="ux-avatar">${esc(name.slice(0, 1).toUpperCase())}</span>
-            <span class="viz-person-name">${esc(name)}</span>
+            <span class="ux-avatar">${esc((name || "?").slice(0, 1).toUpperCase())}</span>
+            <span class="viz-person-name">${displayNameOrEye(name, m.subject_id)}</span>
             <span class="pill ${ok ? "up" : "mid"}">${esc(dig)}</span>
           </button>`;
         })
@@ -2047,7 +2161,7 @@ async function refreshTeamDigestsToday() {
                   : d.approx_item_count > 0
                     ? `${d.approx_item_count} item(s)`
                     : "draft";
-            dig = `<strong>${esc(d.status_label || d.status)}</strong> · ${content} · ${d.dm_sent ? "DM sent" : "no DM"} · <span class="muted small">${esc((d.preview || "").slice(0, 80))}</span>`;
+            dig = `<strong>${esc(d.status_label || d.status)}</strong> · ${content} · ${d.dm_sent ? "DM sent" : "no DM"} · <span class="muted small">${scrubTextHtml((d.preview || "").slice(0, 80))}</span>`;
           }
           const did = d?.draft_id || "";
           const lid = d?.ledger_id || "";
@@ -2107,7 +2221,7 @@ async function refreshPulse() {
             .slice(0, 12)
             .map(
               (c) =>
-                `<li><strong>[${esc(c.severity || c.kind)}]</strong> ${esc(c.summary)} <span class="muted small">${esc(c.kind)}</span></li>`
+                `<li><strong>[${esc(c.severity || c.kind)}]</strong> ${scrubTextHtml(c.summary)} <span class="muted small">${esc(c.kind)}</span></li>`
             )
             .join("") +
           `</ul>`;
@@ -2127,7 +2241,7 @@ async function refreshPulse() {
               n.properties?.intent_type ||
               n.intent_type ||
               "?";
-            return `<li><strong>[${esc(ty)}]</strong> ${esc(n.display_name || n.node_id)}</li>`;
+            return `<li><strong>[${esc(ty)}]</strong> ${prettyMaybe(n.display_name) || prettyRef(n.node_id)}</li>`;
           })
           .join("");
       }
@@ -2193,10 +2307,11 @@ async function refreshTeam() {
         simpleHost.innerHTML = members.length
           ? members
               .map((m) => {
-                const name = m.display_name || m.subject_id;
+                const name = m.display_name || "";
+                const letter = (name || "?").slice(0, 1).toUpperCase();
                 return `<div class="viz-person">
-                  <span class="ux-avatar">${esc(name.slice(0, 1).toUpperCase())}</span>
-                  <span class="viz-person-name">${esc(name)}</span>
+                  <span class="ux-avatar">${esc(letter)}</span>
+                  <span class="viz-person-name">${displayNameOrEye(name, m.subject_id)}</span>
                   <span class="pill ${m.slack_mapped ? "up" : "mid"}">${m.slack_mapped ? "Chat linked" : "No chat yet"}</span>
                   <span class="pill ${m.last_digest?.has_content ? "up" : "mid"}">${esc(plainDigestStatus(m.last_digest))}</span>
                 </div>`;
@@ -2215,18 +2330,16 @@ async function refreshTeam() {
       } else {
         body.innerHTML = members
           .map((m) => {
-            const aliases = Array.isArray(m.provider_aliases)
-              ? m.provider_aliases.join(", ")
-              : "";
+            const aliases = (Array.isArray(m.provider_aliases) ? m.provider_aliases : [])
+              .map((a) => prettyMaybe(a))
+              .join(" ");
             const sub = simple
-              ? esc(m.display_name || m.subject_id)
-              : aliases
-                ? `${esc(m.subject_id)} <span class="muted">(${esc(aliases)})</span>`
-                : esc(m.subject_id);
+              ? displayNameOrEye(m.display_name, m.subject_id)
+              : `${prettyMaybe(m.subject_id)}${aliases ? ` <span class="muted">${aliases}</span>` : ""}`;
             return `<tr>
-              <td>${esc(m.display_name || "—")}</td>
-              <td class="${simple ? "" : ""}">${simple ? sub : `<code class="small">${sub}</code>`}</td>
-              <td><code class="small">${esc(m.slack_user_id || "—")}</code></td>
+              <td>${displayNameOrEye(m.display_name, m.subject_id)}</td>
+              <td>${sub}</td>
+              <td>${m.slack_user_id ? prettyRef(m.slack_user_id) : "—"}</td>
               <td>${m.slack_mapped ? "✓" : "○"}</td>
               <td>${digestCell(m)}</td>
             </tr>`;
@@ -2754,16 +2867,24 @@ function displayLabel(n, type) {
   if (type === "Commit") {
     const msg = (n.title || n.message || "").toString().trim();
     const sha = (n.label || "").toString();
-    if (msg && msg !== sha) return msg.slice(0, 36);
-    return sha || n.id;
+    if (msg && msg !== sha && !isOpaqueToken(msg)) return msg.slice(0, 48);
+    return "Commit";
   }
   if (type === "Intent") {
-    return n.intent_type || n.label || n.id;
+    const lab = n.intent_type || n.label || "";
+    if (lab && !isOpaqueToken(lab)) return lab;
+    return "Intent";
   }
   if (type === "PullRequest") {
-    return (n.title || n.label || "PR").toString().slice(0, 40);
+    const t = (n.title || n.label || "").toString();
+    if (t && !isOpaqueToken(t)) return t.slice(0, 48);
+    return "Pull request";
   }
-  return n.label || n.id;
+  const lab = (n.label || "").toString();
+  if (lab && !isOpaqueToken(lab)) return lab;
+  if (type === "Person") return "Person";
+  if (type === "Repo") return "Repo";
+  return type || "Item";
 }
 
 /** Place people on top row, repo center, work mid, intents near work, commits fan under author. */
@@ -3059,7 +3180,7 @@ function renderGraphChrome(data) {
       ? sample
           .map(
             (e) =>
-              `<li><code class="small">${esc(e.type)}</code> <span class="muted">${esc(shortId(e.from))} → ${esc(shortId(e.to))}</span></li>`
+              `<li>${esc(e.type)} <span class="muted">${prettyRef(e.from)} → ${prettyRef(e.to)}</span></li>`
           )
           .join("")
       : `<li class="muted">No edges yet</li>`;
@@ -3094,15 +3215,17 @@ function renderGraphDetail(n) {
   const neighbors = linked.map((e) => (e.from === n.id ? e.to : e.from));
   const uniq = [...new Set(neighbors)];
   const intent = n.meta?.intent_type || "";
+  const byId = new Map(graphState.nodes.map((x) => [x.id, x]));
+  const title = n.label && !isOpaqueToken(n.label) ? n.label : displayLabel(n.meta || n, n.type);
   el.innerHTML = `
     <div class="meta-row">
       <span class="graph-node-chip">${esc(n.type)}</span>
       ${intent ? `<span class="graph-node-chip">${esc(intent)}</span>` : ""}
       ${n.meta?.from_team_map ? `<span class="graph-node-chip">team map</span>` : ""}
+      ${idEye(n.id)}
     </div>
-    <p style="margin:0.6rem 0 0.2rem;font-weight:600;">${esc(n.label)}</p>
-    <p class="muted small" style="margin:0;word-break:break-all;"><code>${esc(n.id)}</code></p>
-    ${n.meta?.resource_id ? `<p class="muted small">resource: <code>${esc(n.meta.resource_id)}</code></p>` : ""}
+    <p style="margin:0.6rem 0 0.2rem;font-weight:600;">${esc(title)}</p>
+    ${n.meta?.resource_id && isOpaqueToken(n.meta.resource_id) ? `<p class="muted small">${prettyRef(n.meta.resource_id)}</p>` : n.meta?.resource_id && !isOpaqueToken(n.meta.resource_id) ? `<p class="muted small">${esc(n.meta.resource_id)}</p>` : ""}
     <p class="muted small" style="margin-top:0.75rem;">${linked.length} edge(s) · ${uniq.length} neighbor(s)</p>
     <ul class="item-list">
       ${linked
@@ -3110,7 +3233,11 @@ function renderGraphDetail(n) {
         .map((e) => {
           const other = e.from === n.id ? e.to : e.from;
           const dir = e.from === n.id ? "→" : "←";
-          return `<li><code class="small">${esc(e.type)}</code> ${dir} ${esc(shortId(other))}</li>`;
+          const on = byId.get(other);
+          const onLab = on
+            ? displayLabel(on.meta || on, on.type)
+            : idKindLabel(other);
+          return `<li>${esc(e.type)} ${dir} ${esc(onLab)} ${idEye(other)}</li>`;
         })
         .join("") || "<li class='muted'>No edges</li>"}
     </ul>
@@ -3765,7 +3892,7 @@ function renderPersonProfile(p, hostEl) {
     .slice(0, 8)
     .map(
       (c) =>
-        `<li><code>${esc(c.sha7 || c.id || "?")}</code> ${esc((c.message || "").slice(0, 90))}</li>`
+        `<li>${prettyRef(c.sha7 || c.id || "")} ${scrubTextHtml((c.message || "").slice(0, 90))}</li>`
     )
     .join("") || `<li class="muted">No commit sample</li>`;
   const digHtml = digests.length
@@ -3773,7 +3900,7 @@ function renderPersonProfile(p, hostEl) {
         .slice(0, 3)
         .map(
           (d) =>
-            `<li><span class="pill mid">${esc(d.status || "")}</span> <pre class="box small" style="white-space:pre-wrap;max-height:120px;overflow:auto;margin:0.25rem 0 0;">${esc((d.preview || d.draft_text || "").slice(0, 500))}</pre></li>`
+            `<li><span class="pill mid">${esc(d.status || "")}</span> <pre class="box small" style="white-space:pre-wrap;max-height:120px;overflow:auto;margin:0.25rem 0 0;">${scrubTextHtml((d.preview || d.draft_text || "").slice(0, 500))}</pre></li>`
         )
         .join("")
     : `<li class="muted">No digests for this twin yet — compile digests first</li>`;
@@ -3784,7 +3911,7 @@ function renderPersonProfile(p, hostEl) {
           const ty = i.intent_type || i.properties?.intent_type || "Intent";
           const lab = i.display_name || i.label || i.title || i.id || "";
           const demo = i.is_demo ? ` <span class="pill mid">demo</span>` : "";
-          return `<li><strong>${esc(ty)}</strong> ${esc(lab)}${demo}</li>`;
+          return `<li><strong>${esc(ty)}</strong> ${prettyMaybe(lab) || prettyRef(i.id)}${demo}</li>`;
         })
         .join("")
     : `<li class="muted">No person-owned intents</li>`;
@@ -3793,7 +3920,7 @@ function renderPersonProfile(p, hostEl) {
         .slice(0, 10)
         .map(
           (c) =>
-            `<li><strong>[${esc(c.severity || c.kind || "?")}]</strong> ${esc(c.summary || c.kind || "")}${c.is_demo ? ' <span class="pill mid">demo</span>' : ""}</li>`
+            `<li><strong>[${esc(c.severity || c.kind || "?")}]</strong> ${scrubTextHtml(c.summary || c.kind || "")}${c.is_demo ? ' <span class="pill mid">demo</span>' : ""}</li>`
         )
         .join("")
     : `<li class="muted">No conflicts touching this person</li>`;
@@ -3804,7 +3931,7 @@ function renderPersonProfile(p, hostEl) {
           const st = it.status || "unknown";
           const pillCls =
             st === "supported" ? "up" : st === "contradicted" || st === "abandoned" ? "down" : "mid";
-          return `<li><span class="pill ${pillCls}">${esc(st)}</span> <strong>${esc(it.intent_type || "")}</strong> ${esc(it.said_or_implied || "")}<div class="muted small">${esc(it.gap || "")}</div></li>`;
+          return `<li><span class="pill ${pillCls}">${esc(st)}</span> <strong>${esc(it.intent_type || "")}</strong> ${scrubTextHtml(it.said_or_implied || "")}<div class="muted small">${scrubTextHtml(it.gap || "")}</div></li>`;
         })
         .join("")
     : `<li class="muted">No aged non-demo intents to score yet</li>`;
@@ -3813,7 +3940,7 @@ function renderPersonProfile(p, hostEl) {
         .slice(0, 12)
         .map(
           (c) =>
-            `<li><span class="pill mid">${esc(c.intent_type || "?")}</span> <span class="muted small">${esc(c.channel || "")} · conf ${esc(String(c.confidence ?? ""))}</span><div>${esc(c.text_preview || "")}</div></li>`
+            `<li><span class="pill mid">${esc(c.intent_type || "?")}</span> <span class="muted small">${prettyMaybe(c.channel || "")} · conf ${esc(String(c.confidence ?? ""))}</span><div>${scrubTextHtml(c.text_preview || "")}</div></li>`
         )
         .join("")
     : `<li class="muted">No channel/DM intent claims yet — invite bot to a team channel; not a private wiretap</li>`;
@@ -3823,8 +3950,8 @@ function renderPersonProfile(p, hostEl) {
 
   hostEl.innerHTML = `
     <div class="meta-row" style="margin-bottom:0.5rem;">
-      <span class="pill up">${esc(sub.display_name || sub.subject_id || "?")}</span>
-      <span class="pill mid">${esc(sub.subject_id || "")}</span>
+      <span class="pill up">${displayNameOrEye(sub.display_name, sub.subject_id)}</span>
+      ${sub.subject_id ? prettyRef(sub.subject_id) : ""}
       <span class="pill mid">confidence ${esc(String(Math.round((p.confidence_overall || 0) * 100)))}%</span>
       <span class="pill mid">${esc(fmtIst(p.as_of))}</span>
     </div>
@@ -3917,7 +4044,7 @@ async function loadFollowThroughOnly() {
     const items = ft.items || [];
     if (host) {
       host.innerHTML = `
-        <div class="meta-row"><span class="pill mid">${esc(ft.subject_id || subject)}</span>
+        <div class="meta-row"><span class="pill mid">${prettyMaybe(ft.subject_id || subject)}</span>
         <span class="pill mid">${items.length} item(s)</span></div>
         <p class="muted small">${esc(ft.note || "")}</p>
         <ul class="item-list">${
@@ -3931,7 +4058,7 @@ async function loadFollowThroughOnly() {
                       : st === "contradicted" || st === "abandoned"
                         ? "down"
                         : "mid";
-                  return `<li><span class="pill ${pillCls}">${esc(st)}</span> <strong>${esc(it.intent_type || "")}</strong> ${esc(it.said_or_implied || "")}<div class="muted small">${esc(it.gap || "")}</div></li>`;
+                  return `<li><span class="pill ${pillCls}">${esc(st)}</span> <strong>${esc(it.intent_type || "")}</strong> ${scrubTextHtml(it.said_or_implied || "")}<div class="muted small">${scrubTextHtml(it.gap || "")}</div></li>`;
                 })
                 .join("")
             : `<li class="muted">No follow-through items</li>`
@@ -4001,10 +4128,10 @@ async function loadIntentLedger() {
             const sum = (c.summary || c.text_preview || "")
               .replace(/^(SHIP|BLOCKED|FREEZE|FIX|EXPLORE|REVIEW):\s*/i, "")
               .slice(0, 140);
-            const own = c.owner_subject ? esc(c.owner_subject) : "Someone";
+            const own = c.owner_subject ? prettyMaybe(c.owner_subject) : "Someone";
             const demoTag = c.is_demo ? ` <span class="pill mid">demo</span>` : "";
             return `<li class="ux-card"><span class="pill mid">${esc(plainIntentType(ty))}</span>${demoTag}
-              <strong>${esc(own)}</strong> — ${esc(sum || plainIntentType(ty))}</li>`;
+              <strong>${own}</strong> — ${scrubTextHtml(sum || plainIntentType(ty))}</li>`;
           })
           .join("");
       } else {
@@ -4015,9 +4142,9 @@ async function loadIntentLedger() {
             const demoTag = c.is_demo ? ` <span class="pill mid">demo</span>` : "";
             const conf = typeof c.confidence === "number" ? Math.round(c.confidence * 100) + "%" : "";
             const sum = c.summary || c.text_preview || "";
-            const own = c.owner_subject ? esc(c.owner_subject) : "—";
-            return `<li><span class="pill mid">${esc(ty)}</span>${demoTag} <strong>${esc(sum).slice(0, 120)}</strong>
-              <div class="muted small">${esc(src)} · ${esc(own)} · conf ${esc(conf)} · <code>${esc((c.claim_id || "").slice(0, 36))}</code></div></li>`;
+            const own = c.owner_subject ? prettyMaybe(c.owner_subject) : "—";
+            return `<li><span class="pill mid">${esc(ty)}</span>${demoTag} <strong>${scrubTextHtml(String(sum).slice(0, 120))}</strong>
+              <div class="muted small">${esc(src)} · ${own} · conf ${esc(conf)} · ${c.claim_id ? prettyRef(c.claim_id) : ""}</div></li>`;
           })
           .join("");
       }
@@ -4199,7 +4326,7 @@ async function loadCommitments(mode) {
             return `<li>
               <strong>${esc(c.headline || c.text || "")}</strong>
               <div class="muted small">${esc(who)}${to ? " → " + esc(to) : ""} · ${esc(c.source || "")}
-              · <code>${esc(shortHumanId(id))}</code> ${lin}</div>
+              · ${prettyRef(id)} ${lin}</div>
               <div class="actions-inline" style="margin-top:0.25rem;">
                 <button type="button" class="ghost cmt-done" data-id="${esc(id)}">Mark done</button>
                 <button type="button" class="ghost cmt-dismiss" data-id="${esc(id)}">Dismiss</button>
@@ -4766,7 +4893,7 @@ async function refreshDevInsights() {
         ? entries
             .map(
               ([k, v]) =>
-                `<li><strong>${esc(k)}</strong> — ${v} authored</li>`
+                `<li><strong>${prettyMaybe(k)}</strong> — ${v} authored</li>`
             )
             .join("")
         : `<li class="muted">No AUTHORED edges yet — wait for commit poller / webhooks.</li>`;
@@ -4783,12 +4910,11 @@ async function refreshDevInsights() {
       $("ins-recent").innerHTML = rec.length
         ? rec
             .map((c) => {
-              const sha = esc(c.sha7 || c.resource_id || "?");
               const m = (c.message || c.title || "").toString().trim();
-              const msg = m && m !== (c.sha7 || "")
+              const msg = m && m !== (c.sha7 || "") && !isOpaqueToken(m)
                 ? esc(m.slice(0, 100))
                 : `<span class="muted">no message</span>`;
-              return `<li><code>${sha}</code> ${msg}</li>`;
+              return `<li>${prettyRef(c.sha7 || c.resource_id || c.id || "")} ${msg}</li>`;
             })
             .join("")
         : `<li class="muted">No commit nodes on graph yet.</li>`;
@@ -4802,3 +4928,25 @@ async function refreshDevInsights() {
     if (msg) msg.textContent = "Insights failed: " + (e.message || e);
   }
 }
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest?.(".id-eye");
+  if (!btn) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const raw = btn.getAttribute("data-id") || "";
+  if (!raw) return;
+  try {
+    await navigator.clipboard.writeText(raw);
+    btn.classList.add("copied");
+    const tip = btn.querySelector(".id-eye-tip");
+    const prev = tip ? tip.textContent : "";
+    if (tip) tip.textContent = "Copied";
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      if (tip) tip.textContent = prev || raw;
+    }, 900);
+  } catch (_) {
+    prompt("Identifier:", raw);
+  }
+});

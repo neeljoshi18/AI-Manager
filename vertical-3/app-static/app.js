@@ -163,7 +163,7 @@ function setTheme(theme) {
   });
   if ($("settings-theme")) {
     $("settings-theme").textContent =
-      t === "dark" ? "Color: Dark — warmer night canvas." : "Color: Light — cream paper, gold accent.";
+      t === "dark" ? "Color: Dark — true black." : "Color: Light — paper white, gold accent.";
   }
   if ($("btn-theme-light")) {
     $("btn-theme-light").classList.toggle("primary", t === "light");
@@ -2845,26 +2845,26 @@ function ensureGraphCanvas() {
 function graphPalette() {
   const dark = isDarkTheme();
   return {
-    ink: dark ? "#f4efe6" : "#1c1914",
-    muted: dark ? "#a39b8c" : "#6b645a",
-    personFill: dark ? "#2a241c" : "#fff8ee",
+    ink: dark ? "#f5f5f5" : "#111111",
+    muted: dark ? "#a3a3a3" : "#6b6b6b",
+    personFill: dark ? "#161616" : "#fff8ee",
     personStroke: dark ? "#e0a84a" : "#c07a2c",
     personGlyph: dark ? "#e0a84a" : "#8a5a22",
     prFill: "#c07a2c",
     prStroke: dark ? "#e0a84a" : "#8a5a22",
-    issueFill: dark ? "#3a2424" : "#f6eeee",
+    issueFill: dark ? "#1a1010" : "#f6eeee",
     issueStroke: dark ? "#d08a8a" : "#b56a6a",
-    intentFill: dark ? "#2a261c" : "#fff9ef",
+    intentFill: dark ? "#161410" : "#fff9ef",
     intentStroke: dark ? "#d4b07a" : "#c4a06a",
-    repoFill: dark ? "#2c2a26" : "#ede8e0",
-    repoStroke: dark ? "#8a8478" : "#6b6560",
-    commitFill: dark ? "#243028" : "#eef3ef",
+    repoFill: dark ? "#1a1a1a" : "#ececea",
+    repoStroke: dark ? "#8a8a8a" : "#6b6b6b",
+    commitFill: dark ? "#101610" : "#eef3ef",
     commitStroke: dark ? "#7a9a80" : "#5f8466",
-    edge: dark ? "160,150,136" : "168,160,148",
+    edge: dark ? "80,80,80" : "168,168,164",
     edgeClaim: dark ? "224,168,74" : "192,122,44",
     edgeBlock: dark ? "208,138,138" : "181,106,106",
     glow: dark ? "224,168,74" : "192,122,44",
-    hud: dark ? "#a39b8c" : "#6b645a",
+    hud: dark ? "#a3a3a3" : "#6b6b6b",
   };
 }
 
@@ -2910,7 +2910,7 @@ function hideGraphTip() {
 function focusGraphNode(n) {
   const canvas = $("graph-canvas");
   if (!canvas || !n) return;
-  graphState.scale = Math.min(2.2, Math.max(1.15, graphState.scale * 1.25));
+  graphState.scale = Math.min(1.25, Math.max(graphState.scale, 0.95));
   graphState.pan.x = canvas.width / 2 - n.x * graphState.scale;
   graphState.pan.y = canvas.height / 2 - n.y * graphState.scale;
 }
@@ -3782,7 +3782,7 @@ function drawGraph() {
 
     const showLabel = inFocus || isBlock || (visibleEdges.length < 24 && edgePriority(e) >= 2);
     if (showLabel) {
-      ctx.font = `${10 / graphState.scale}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
+      ctx.font = `${10 / graphState.scale}px "IBM Plex Sans", ui-sans-serif, sans-serif`;
       ctx.fillStyle = inFocus ? p.ink : p.muted;
       ctx.textAlign = "center";
       ctx.fillText(e.type, mx, my - 4 / graphState.scale);
@@ -3810,14 +3810,14 @@ function drawGraph() {
       graphState.scale >= 1.05 ||
       visibleNodes.filter((x) => x.type === "Commit").length <= 10;
     if (showLabel) {
-      ctx.font = `${(n.type === "Person" ? 12 : 11) / graphState.scale}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
+      ctx.font = `500 ${(n.type === "Person" ? 12 : 11) / graphState.scale}px "IBM Plex Sans", ui-sans-serif, sans-serif`;
       ctx.fillStyle = p.ink;
       ctx.textAlign = "center";
       const maxLen = n.type === "Commit" ? 28 : n.type === "Person" ? 20 : 26;
       ctx.fillText(truncateLabel(n.label, maxLen), n.x, n.y + n.r + 14 / graphState.scale);
       if (n.type === "Intent" && n.meta?.intent_type) {
         ctx.fillStyle = p.muted;
-        ctx.font = `${9 / graphState.scale}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
+        ctx.font = `${9 / graphState.scale}px "IBM Plex Sans", ui-sans-serif, sans-serif`;
         ctx.fillText(plainIntentType(n.meta.intent_type), n.x, n.y + n.r + 24 / graphState.scale);
       }
     }
@@ -3830,7 +3830,7 @@ function drawGraph() {
   const vis = visibleNodes.length;
   if (total > vis) {
     ctx.fillStyle = p.hud;
-    ctx.font = `${11 * dpr}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
+    ctx.font = `${11 * dpr}px "IBM Plex Sans", ui-sans-serif, sans-serif`;
     ctx.textAlign = "left";
     ctx.fillText(`Showing ${vis}/${total} · hover a node · double-click to zoom`, 12 * dpr, 20 * dpr);
   }
@@ -3839,7 +3839,7 @@ function drawGraph() {
     const raw = graphState.raw || {};
     const v2Up = raw.v2_up !== false && raw.error !== "v2_unreachable";
     ctx.fillStyle = p.hud;
-    ctx.font = `${16 * dpr}px Newsreader, serif`;
+    ctx.font = `600 ${15 * dpr}px "IBM Plex Sans", ui-sans-serif, sans-serif`;
     ctx.textAlign = "center";
     const msg = !v2Up
       ? "The map is recovering — it will refill on its own"

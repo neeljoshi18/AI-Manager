@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260814a" />
-  <script>window.__APP_JS_V="20260814a";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260814b" />
+  <script>window.__APP_JS_V="20260814b";</script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -568,7 +568,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           <p class="muted small"><strong>Slack = delivery</strong> (digests, Approve / Edit / Don't send). <strong>GitHub = work</strong> (PRs, issues, pushes → graph). Tokens never sit on twin-api env (ADR-012). No LOC rankings.</p>
           <div class="meta-row" id="conn-oauth-status" style="margin-bottom:0.75rem;"><span class="pill mid">checking install status…</span></div>
           <div class="card" style="background:var(--surface-2, #f6f7f9); margin-bottom:0.75rem; padding:0.75rem 1rem;" id="conn-guide">
-            <strong>Sales-call path:</strong> Connect Slack → invite bot to channel (optional; DMs still work) → Install GitHub App → map pod under Team → open Cockpit.
+            <strong>Sales-call path:</strong> Connect Slack → paste Events URL → invite bot to team channel (channel claims) → Install GitHub App → map pod under Team → open Cockpit.
             ICs mostly only see Slack digests.
           </div>
           <div id="conn-post-install" class="card hidden" style="background:#ecfdf5; border:1px solid #86efac; margin-bottom:0.75rem; padding:0.75rem 1rem;">
@@ -577,7 +577,8 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
           </div>
           <ol class="muted small" id="conn-checklist" style="margin:0 0 0.75rem 1.1rem;">
             <li id="conn-step-slack">Connect Slack — bot install OAuth (opens Slack)</li>
-            <li id="conn-step-channel">Invite bot to team channel (optional — DM fallback works)</li>
+            <li id="conn-step-events">Paste Slack Events Request URL (ambient claims)</li>
+            <li id="conn-step-channel">Invite bot to team channel (needed for channel claims)</li>
             <li id="conn-step-gh">Install GitHub App — org/repos (opens GitHub)</li>
             <li id="conn-step-map">Map pod under Team (Slack user ids)</li>
             <li id="conn-step-graph">Graph healthy + digests compiling</li>
@@ -599,13 +600,16 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
             <div>
               <p><strong>Slack</strong> <span class="muted small">= delivery (default)</span></p>
               <p class="muted small" id="conn-slack">Outbound digests via egress vault only (ADR-012). Batched notify (ADR-014).</p>
+              <p class="muted small">Events Request URL (ambient claims — copy into Slack app → Event Subscriptions):</p>
+              <p style="word-break:break-all;"><code id="conn-slack-events">—</code></p>
               <div class="actions-inline">
                 <button type="button" class="primary" id="btn-slack-oauth">Connect Slack…</button>
+                <button type="button" class="ghost" id="btn-slack-events-copy">Copy Events URL</button>
               </div>
               <p class="muted small" id="conn-slack-manual" style="margin-top:0.5rem;"></p>
               <p class="muted small" id="conn-slack-channel-hint" style="margin-top:0.35rem;">
-                After connect: invite the bot to your team channel for channel posts.
-                Channel id on the form below is used for test status — digests still DM mapped people if the bot is not in a channel.
+                After connect: paste the Events URL, then invite the bot to the team channel so “blocked on…” / “I’ll send…” become claims.
+                Digests still DM mapped people if the bot is not in a channel. Never private 1:1 wiretap.
               </p>
             </div>
           </div>
@@ -643,7 +647,7 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
             <button type="button" id="btn-ux-technical" class="ghost">Technical view</button>
           </div>
           <p class="muted small" id="settings-ux-mode" style="margin-top:0.5rem;">Mode: —</p>
-          <p class="muted small" style="margin-top:0.75rem;"><strong>Morning digest</strong> — optional Slack channel via <code>COMMITMENT_DIGEST_CHANNEL</code>. <strong>Linear</strong> — optional export with <code>LINEAR_API_KEY</code> + <code>LINEAR_TEAM_ID</code>.</p>
+          <p class="muted small" style="margin-top:0.75rem;"><strong>Morning digest</strong> — optional Slack channel via <code>COMMITMENT_DIGEST_CHANNEL</code> at <code>COMMITMENT_DIGEST_HOUR_IST</code> (preferred) or <code>COMMITMENT_DIGEST_HOUR_UTC</code>. <strong>Linear</strong> — optional export with <code>LINEAR_API_KEY</code> + <code>LINEAR_TEAM_ID</code>.</p>
         </div>
         <div class="card">
           <h2>Cadence (server env)</h2>
@@ -722,6 +726,6 @@ Empty ledgers never DM. Same open PR does not re-DM.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260814a"></script>
+  <script src="/app/app.js?v=20260814b"></script>
 </body>
 </html>

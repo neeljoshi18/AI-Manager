@@ -1598,9 +1598,10 @@ function showPostInstallCallout(kind, detail) {
       ? ` Team channel on the form: <code>${esc(ch)}</code> — invite the bot there for channel posts.`
       : " Invite the bot to your team channel for channel posts.";
     body.innerHTML =
-      `1) ${chHint} <em>DM fallback still works</em> for mapped people if the bot is not in a channel.<br/>` +
-      `2) Map your pod under <strong>Team</strong> (Slack user ids).<br/>` +
-      `3) Open <strong>Cockpit</strong>. If digests fail after first connect, restart egress once so it reloads the vault.` +
+      `1) Paste the <strong>Events Request URL</strong> into Slack app → Event Subscriptions (copy below). Bot events: <code>message.channels</code>, <code>message.groups</code>, <code>message.im</code>.<br/>` +
+      `2) ${chHint} Needed for ambient “blocked on…” / “I’ll send…” claims. <em>Digests still DM</em> mapped people if the bot is not in a channel.<br/>` +
+      `3) Map your pod under <strong>Team</strong> (Slack user ids).<br/>` +
+      `4) Open <strong>Cockpit</strong>. If digests fail after first connect, restart egress once so it reloads the vault. Reconnect Slack if this workspace predates channel-history scopes.` +
       (detail ? `<br/><span class="muted">${esc(detail)}</span>` : "");
   } else if (kind === "github") {
     title.textContent = "GitHub App — next steps";
@@ -1672,15 +1673,15 @@ async function startOAuth(kind) {
         guideEl.innerHTML =
           `<strong>Connect Slack</strong> (delivery) — install the AI Manager bot on your workspace. ` +
           `After Allow you land on “Slack connected”, then return here. Digests use the bot token (vault only). ` +
-          `Invite the bot to a channel for channel posts; DMs still work without that. ` +
+          `Then paste the Events URL and invite the bot to the team channel for ambient claims. ` +
           `Restart egress once after first connect so it reloads secrets.`;
       }
       const ok = confirm(
         "Connect Slack (delivery)\n\n" +
           "1. Slack will open — install the bot on your workspace\n" +
-          "2. Approve chat:write / im:write\n" +
+          "2. Approve delivery + channel-history scopes (Events / ambient claims)\n" +
           "3. You’ll land on “Slack connected” with next steps\n" +
-          "4. Return here → invite bot to channel (optional) → map Team → Cockpit\n\n" +
+          "4. Return here → paste Events URL → invite bot to channel → map Team → Cockpit\n\n" +
           "Continue to Slack?"
       );
       if (!ok) return;
@@ -1814,6 +1815,9 @@ async function refreshConnectors() {
     if ($("conn-gh-webhook") && gh.webhook_url) {
       $("conn-gh-webhook").textContent = gh.webhook_url;
     }
+    if ($("conn-slack-events") && slack.events_url) {
+      $("conn-slack-events").textContent = slack.events_url;
+    }
     if ($("conn-slack")) {
       const scopes = Array.isArray(slack.scopes) ? slack.scopes.join(", ") : "";
       $("conn-slack").textContent =
@@ -1860,10 +1864,18 @@ async function refreshConnectors() {
           ? "Connect Slack — OAuth ready (button opens Slack install)"
           : "Connect Slack — set SLACK_CLIENT_ID/SECRET or paste vault token"
     );
+    const eventsStep = byId.slack_events_url;
+    mark(
+      "conn-step-events",
+      false,
+      eventsStep?.label ||
+        "Paste Slack Events Request URL (Event Subscriptions) — copy from this page"
+    );
     mark(
       "conn-step-channel",
       false,
-      "Invite bot to team channel (optional — DM fallback still works)"
+      byId.slack_bot_channel?.label ||
+        "Invite bot to team channel (needed for channel claims; digests still DM)"
     );
     mark(
       "conn-step-gh",
@@ -4470,8 +4482,8 @@ function applyChromeUxMode() {
     const p = connView.querySelector(".card > p.muted.small");
     if (p) {
       p.textContent = simple
-        ? "Link chat and GitHub, map the pod, then status writes itself."
-        : "Tenant → Slack → GitHub → batch notify → first digest. Server checks stack; OAuth needs human secrets.";
+        ? "Link chat and GitHub, paste the Slack Events URL, map the pod, then status writes itself."
+        : "Tenant → Slack → Events URL + channel invite → GitHub → batch notify → first digest. Server checks stack; OAuth needs human secrets.";
     }
   }
   // Today
@@ -4609,6 +4621,23 @@ if ($("btn-gh-webhook-copy")) {
         alert("Webhook URL copied");
       } catch {
         prompt("Copy webhook URL:", url);
+      }
+    }
+  });
+}
+if ($("btn-slack-events-copy")) {
+  $("btn-slack-events-copy").addEventListener("click", async () => {
+    const t = $("conn-slack-events")?.textContent?.trim();
+    if (!t || t === "—") {
+      await refreshConnectors();
+    }
+    const url = $("conn-slack-events")?.textContent?.trim();
+    if (url && url !== "—") {
+      try {
+        await navigator.clipboard.writeText(url);
+        alert("Slack Events URL copied");
+      } catch {
+        prompt("Copy Slack Events URL:", url);
       }
     }
   });

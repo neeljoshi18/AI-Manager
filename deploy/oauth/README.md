@@ -13,8 +13,9 @@ White-glove sequence that should never look broken:
 
 1. **Connections → Connect Slack**  
    Bot install OAuth → success page → return lands on Connections (`/app/?view=connections`).
-2. **Invite the bot** to the team channel if you want channel posts.  
-   **DM fallback still works** if the bot is not in a channel — digests go to mapped Slack user ids.
+2. **Paste Events Request URL** `https://$DOMAIN/v3/slack/events` in Slack app → Event Subscriptions  
+   (bot events: `message.channels`, `message.groups`, `message.im`). Then **invite the bot** to the team channel for ambient claims.  
+   **Digests still DM** mapped people if the bot is not in a channel.
 3. **Install GitHub App** (work signals) → copy webhook URL into App settings if needed → pick org/repos.
 4. **Map pod under Team** (Slack user ids / bulk import).
 5. **Open Cockpit** (digests, pulse, tomorrow focus) / Graph after ~1 min for work to land.
@@ -52,7 +53,7 @@ Keep **`DELIVERY_ADAPTER=slack`** (default) unless the tenant explicitly wants T
 4. Product UI → **Connections → Connect Slack** (or Cockpit → Connect Slack/GH).
 5. Callback writes `SLACK_BOT_TOKEN` into `OAUTH_VAULT_PATH` (`/secrets/dev_secrets.json` on staging). Never displays the token.
 6. **Restart egress** so it reloads the vault (or full deploy) — only needed after a successful vault write.
-7. Invite bot to team channel for channel posts; DMs still work without that once people are mapped.
+7. Confirm Event Subscriptions Request URL is `https://$DOMAIN/v3/slack/events`. Invite bot to team channel for ambient claims; digests still DM without that once people are mapped. Re-run **Connect Slack** if the token predates channel-history scopes.
 8. Never put `SLACK_BOT_TOKEN` on twin-api env (ADR-012).
 
 ### Manual path (always works)

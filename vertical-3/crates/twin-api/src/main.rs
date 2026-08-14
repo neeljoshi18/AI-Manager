@@ -1504,7 +1504,22 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
     } else {
         None
     };
-    let slack_scopes = vec!["chat:write", "im:write", "users:read"];
+    // Must match deploy/oauth/slack-app-manifest.json — channel Events need history scopes.
+    let slack_scopes = vec![
+        "chat:write",
+        "im:write",
+        "im:history",
+        "users:read",
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+    ];
+    let slack_events_url = if public.starts_with("https://") {
+        format!("{}/v3/slack/events", public.trim_end_matches('/'))
+    } else {
+        "https://YOUR_HOST/v3/slack/events".into()
+    };
     // Checklist: booleans only — safe for champion UI (no secrets).
     let install_checklist = json!([
         {
@@ -1512,7 +1527,7 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
             "label": "Connect Slack (bot install OAuth)",
             "done": slack_bot_in_vault || slack_oauth,
             "hint": if slack_bot_in_vault {
-                "Bot token present in vault — restart egress once after first connect"
+                "Bot token present in vault — restart egress once after first connect. Reconnect if the install predates channel-history scopes."
             } else if slack_oauth {
                 "OAuth credentials ready — click Connect Slack"
             } else {
@@ -1520,10 +1535,16 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
             },
         },
         {
-            "id": "slack_bot_channel",
-            "label": "Invite bot to team channel (optional — DMs still work)",
+            "id": "slack_events_url",
+            "label": "Paste Slack Events Request URL (ambient claims)",
             "done": false,
-            "hint": "Channel posts need the bot in the channel; digests fall back to DMs for mapped people",
+            "hint": "Slack app → Event Subscriptions → Request URL. Bot events: message.channels, message.groups, message.im. Not a private 1:1 wiretap.",
+        },
+        {
+            "id": "slack_bot_channel",
+            "label": "Invite bot to team channel (needed for channel claims)",
+            "done": false,
+            "hint": "Ambient SHIP/BLOCKED/I'll… claims only from channels the bot is in. Digests still DM mapped people without this.",
         },
         {
             "id": "github_install",
@@ -1550,7 +1571,9 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
     ]);
     let next_steps = json!({
         "slack": [
-            "Invite the AI Manager bot to your team channel for channel posts (DMs still work if you skip this)",
+            "Paste the Slack Events Request URL into the Slack app (Event Subscriptions)",
+            "Reconnect Slack if the bot was installed before channel-history scopes",
+            "Invite the bot to the team channel for ambient claims (digests still DM without this)",
             "Map your eng pod under Team (Slack user ids)",
             "Open Cockpit for digests and pulse",
         ],
@@ -1561,7 +1584,8 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
         ],
         "order": [
             "Connect Slack (delivery)",
-            "Invite bot to channel (optional; DM fallback works)",
+            "Paste Slack Events Request URL (ambient claims)",
+            "Invite bot to team channel (channel claims)",
             "Install GitHub App (work signals)",
             "Map pod under Team",
             "Open Cockpit",
@@ -1574,6 +1598,8 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
             "oauth_credentials": slack_oauth,
             "bot_token_in_vault": slack_bot_in_vault,
             "scopes": slack_scopes,
+            "events_url": slack_events_url,
+            "events_bot_events": ["message.channels", "message.groups", "message.im"],
             "egress_mode": st.slack_mode,
             "vault_write_path_set": oauth_vault_path().is_some(),
             "vault_parent_exists": vault_writable,
@@ -1581,9 +1607,9 @@ async fn oauth_status(State(st): State<AppState>) -> impl IntoResponse {
             "manifest": "deploy/oauth/slack-app-manifest.json",
             "callback": format!("{}/v3/oauth/slack/callback", public.trim_end_matches('/')),
             "note": if slack_bot_in_vault {
-                "Slack bot token in vault. Restart egress once after first connect so delivery reloads. Invite bot to team channel for channel posts — DMs still work without that."
+                "Slack bot token in vault. Restart egress once after first connect so delivery reloads. Paste Events Request URL + invite the bot to the team channel for ambient claims. Digests still DM without that. Never private 1:1 wiretap."
             } else if slack_oauth {
-                "Connect Slack opens authorize URL; callback writes SLACK_BOT_TOKEN to vault if OAUTH_VAULT_PATH set. Restart egress after first OAuth."
+                "Connect Slack opens authorize URL (includes channel-history scopes for Events). Callback writes SLACK_BOT_TOKEN to vault if OAUTH_VAULT_PATH set. Restart egress after first OAuth."
             } else {
                 "Set SLACK_CLIENT_ID + SLACK_CLIENT_SECRET in deploy/.env.staging, or paste bot token into vault manually."
             },
@@ -1741,7 +1767,10 @@ async fn oauth_slack_start() -> impl IntoResponse {
             std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "https://REPLACE_ME".into())
         )
     });
-    let scopes = "chat:write,im:write,users:read";
+    // Keep in lockstep with deploy/oauth/slack-app-manifest.json.
+    // channels/groups history is required for Events API ambient claims
+    // (bot-invited channels only — not private human↔human DMs).
+    let scopes = "chat:write,im:write,im:history,users:read,channels:history,channels:read,groups:history,groups:read";
     let url = format!(
         "https://slack.com/oauth/v2/authorize?client_id={}&scope={}&redirect_uri={}",
         urlencoding_slack(&client_id),
@@ -1754,7 +1783,13 @@ async fn oauth_slack_start() -> impl IntoResponse {
             "ready": true,
             "authorize_url": url,
             "redirect_uri": redirect,
-            "note": "Opens Slack install. Callback stores bot token in OAUTH_VAULT_PATH (egress vault). Restart egress after first connect so delivery picks up the token."
+            "events_url": format!(
+                "{}/v3/slack/events",
+                std::env::var("PUBLIC_BASE_URL")
+                    .unwrap_or_else(|_| "https://status.neel.world".into())
+                    .trim_end_matches('/')
+            ),
+            "note": "Opens Slack install (channel-history scopes for Events). Callback stores bot token in OAUTH_VAULT_PATH (egress vault). Restart egress after first connect so delivery picks up the token."
         })),
     )
 }
@@ -1852,7 +1887,7 @@ async fn oauth_slack_callback(Query(q): Query<SlackOAuthCb>) -> impl IntoRespons
     if token.is_empty() || !token.starts_with("xoxb-") {
         return Html(oauth_html(
             "No bot token in response",
-            "Install may have been user-only. Ensure bot scopes chat:write,im:write.",
+            "Install may have been user-only. Ensure bot scopes include chat:write, im:write, im:history, channels:history, groups:history.",
             false,
         ))
         .into_response();
@@ -1886,7 +1921,8 @@ async fn oauth_slack_callback(Query(q): Query<SlackOAuthCb>) -> impl IntoRespons
 {vault_msg}
 <h2 style="font-size:1.05rem;margin-top:1.25rem">Next steps</h2>
 <ol class="steps">
-  <li><strong>Invite the bot</strong> to your team channel if you want channel posts. <span class="muted">Skip this and digests still go as DMs to mapped people.</span></li>
+  <li><strong>Paste Events URL</strong> <code>https://status.neel.world/v3/slack/events</code> into Slack app → Event Subscriptions (bot events: message.channels, message.groups, message.im).</li>
+  <li><strong>Invite the bot</strong> to your team channel for ambient claims (“blocked on…”, “I’ll send…”). <span class="muted">Digests still go as DMs to mapped people if you skip this. Never private 1:1 wiretap.</span></li>
   <li><strong>Map your pod</strong> under Team (Slack user ids) so each person gets the right digest.</li>
   <li><strong>Open Cockpit</strong> for digests, pulse, and tomorrow focus.</li>
 </ol>

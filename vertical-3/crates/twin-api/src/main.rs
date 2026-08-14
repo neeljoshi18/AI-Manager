@@ -6387,6 +6387,7 @@ async fn intent_insights_plain(
                 .filter(|x| x.twin_kind == TwinKind::Person && x.enabled)
                 .count()
         });
+    let directory = build_person_directory(&st, &tenant_id).await;
     let body = commitments::build_plain_insights(
         &tenant_id,
         &claims,
@@ -6394,6 +6395,7 @@ async fn intent_insights_plain(
         &cmts,
         commit_count,
         people,
+        &directory,
     );
     Json(body)
 }

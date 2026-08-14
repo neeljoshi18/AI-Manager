@@ -4245,8 +4245,8 @@ async function loadPlainInsights() {
       el.innerHTML = `<ul class="item-list">${arr
         .map((it) => {
           const prio = it.priority === "high" ? "down" : it.priority === "info" ? "up" : "mid";
-          return `<li><span class="pill ${prio}">${esc(it.kind || "note")}</span> ${esc(it.text || "")}
-            <div class="muted small">${esc(it.action || "")}</div></li>`;
+          return `<li><span class="pill ${prio}">${esc(it.kind || "note")}</span> ${scrubTextHtml(it.text || "")}
+            <div class="muted small">${scrubTextHtml(it.action || "")}</div></li>`;
         })
         .join("")}</ul>`;
     };

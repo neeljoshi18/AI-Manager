@@ -468,6 +468,61 @@ pub fn claim_type_plain(intent_type: &str) -> &'static str {
     }
 }
 
+/// True when a label is a graph/twin machine id (never show as a person's name).
+pub fn looks_machine_id(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("person:")
+        || t.starts_with("twin:")
+        || t.starts_with("intent:")
+        || t.starts_with("gu_")
+        || t.starts_with("dft_")
+        || t.starts_with("led_")
+        || t.starts_with("cmt:")
+        || t.contains(":gu_")
+}
+
+/// Champion-facing name. Never returns `person:gu_…` / raw subject hashes.
+pub fn human_owner_label(raw: &str, dir: &[PersonDirEntry]) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return "Someone".into();
+    }
+    let stripped = t
+        .strip_prefix("twin:")
+        .unwrap_or(t)
+        .strip_prefix("person:")
+        .unwrap_or(t)
+        .strip_prefix("intent:")
+        .unwrap_or(t);
+    if let Some((_, name)) = resolve_person_ref(t, dir).or_else(|| resolve_person_ref(stripped, dir))
+    {
+        if !name.is_empty() && !looks_machine_id(&name) {
+            return name;
+        }
+    }
+    let tl = t.to_ascii_lowercase();
+    for p in dir {
+        if !p.subject_id.is_empty() && tl.contains(&p.subject_id.to_ascii_lowercase()) {
+            if !looks_machine_id(&p.display_name) && !p.display_name.is_empty() {
+                return p.display_name.clone();
+            }
+        }
+        for a in &p.aliases {
+            if a.len() >= 4 && !looks_machine_id(a) && tl.contains(&a.to_ascii_lowercase()) {
+                if !looks_machine_id(&p.display_name) && !p.display_name.is_empty() {
+                    return p.display_name.clone();
+                }
+                return a.clone();
+            }
+        }
+    }
+    if looks_machine_id(t) {
+        "Someone".into()
+    } else {
+        t.to_string()
+    }
+}
+
 /// One-line insight from a typed claim.
 pub fn claim_insight_line(intent_type: &str, summary: &str, owner: &str, is_demo: bool) -> String {
     if is_demo {
@@ -535,6 +590,7 @@ pub fn build_plain_insights(
     commitments: &[Commitment],
     commit_count: Option<u64>,
     people_with_digests: Option<usize>,
+    directory: &[PersonDirEntry],
 ) -> Value {
     let mut act_now: Vec<Value> = Vec::new();
     let mut watch: Vec<Value> = Vec::new();
@@ -569,16 +625,17 @@ pub fn build_plain_insights(
             .get("intent_type")
             .and_then(|x| x.as_str())
             .unwrap_or("OTHER");
-        let owner = cl
+        let owner_raw = cl
             .get("owner_subject")
             .and_then(|x| x.as_str())
-            .unwrap_or("Someone");
+            .unwrap_or("");
+        let owner = human_owner_label(owner_raw, directory);
         let summary = cl
             .get("summary")
             .or_else(|| cl.get("text_preview"))
             .and_then(|x| x.as_str())
             .unwrap_or("");
-        let line = claim_insight_line(ty, summary, owner, false);
+        let line = claim_insight_line(ty, summary, &owner, false);
         if ty == "BLOCKED" || ty == "FREEZE" {
             act_now.push(json!({
                 "kind": "claim",
@@ -715,6 +772,28 @@ mod tests {
         let r = resolve_person_ref("U123", &dir).unwrap();
         assert_eq!(r.0, "gu_1");
         assert_eq!(r.1, "neeljoshi18");
+    }
+
+    #[test]
+    fn owner_label_never_leaks_person_gu() {
+        let dir = vec![PersonDirEntry {
+            subject_id: "gu_ec3cab86-2a3c-4737-bb04-d1f2deeae9f8".into(),
+            display_name: "neeljoshi18".into(),
+            slack_user_id: None,
+            aliases: vec!["neeljoshi18".into()],
+        }];
+        let mapped = human_owner_label(
+            "person:gu_ec3cab86-2a3c-4737-bb04-d1f2deeae9f8",
+            &dir,
+        );
+        assert_eq!(mapped, "neeljoshi18");
+        let unknown = human_owner_label(
+            "person:gu_d50538b5-ee09-4163-b7c7-aeb3d2918882",
+            &dir,
+        );
+        assert_eq!(unknown, "Someone");
+        assert!(!looks_machine_id(&mapped));
+        assert!(!looks_machine_id(&unknown));
     }
 
     #[test]

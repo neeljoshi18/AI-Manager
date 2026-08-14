@@ -3,7 +3,7 @@
 **Repo:** `neeljoshi18/AI-Manager` · branch **`main`**  
 **Staging:** https://status.neel.world/app/  
 **Cache-bust:** hard-refresh → `app.js?v=20260814d` + styles  
-**HEAD (at handoff):** will be the commit that ships this file + `person:gu_*` insight hygiene  
+**HEAD (at handoff):** `f727ef1` — Worth watching owner names · prior: `f33a9e8` eye ids · `81183a6` Slack Events  
 **Purpose:** Continue after IST leak-close, Slack Events install surface, circled-eye id hygiene, and Worth-watching owner-name fix.  
 **Do not auto-compact** — handoff + new chat when context is high.
 

@@ -4,8 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Manager</title>
-  <link rel="stylesheet" href="/app/styles.css?v=20260815a" />
-  <script>window.__APP_JS_V="20260815a";</script>
+  <link rel="stylesheet" href="/app/styles.css?v=20260815b" />
+  <script>window.__APP_JS_V="20260815b";</script>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("ai_manager_theme");
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    })();
+  </script>
   <meta http-equiv="Cache-Control" content="no-cache" />
 </head>
 <body>
@@ -57,6 +70,11 @@
         </button>
       </nav>
       <div class="nav-foot">
+        <button type="button" id="btn-theme-nav" class="ghost theme-toggle" title="Switch light / dark" aria-label="Toggle color theme">
+          <svg class="icon-sun" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.6v1.6M10 15.8v1.6M2.6 10h1.6M15.8 10h1.6M4.6 4.6l1.1 1.1M14.3 14.3l1.1 1.1M15.4 4.6l-1.1 1.1M5.7 14.3l-1.1 1.1"/></svg>
+          <svg class="icon-moon" viewBox="0 0 20 20" aria-hidden="true"><path d="M12.6 4.2A6.4 6.4 0 1 0 16 13.2 5.1 5.1 0 0 1 12.6 4.2Z"/></svg>
+          <span class="theme-toggle-label">Dark mode</span>
+        </button>
         <button type="button" id="btn-ux-mode" class="ghost ux-mode-btn" title="Same product — Simple is the visual story, Technical is a denser operator view">Technical view</button>
         <span id="nav-mode" class="muted">—</span>
       </div>
@@ -69,6 +87,10 @@
           <p class="muted" id="view-sub">What needs attention — promises, status, and people</p>
         </div>
         <div class="top-actions">
+          <button type="button" id="btn-theme-top" class="ghost theme-toggle" title="Switch light / dark" aria-label="Toggle color theme">
+            <svg class="icon-sun" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.6v1.6M10 15.8v1.6M2.6 10h1.6M15.8 10h1.6M4.6 4.6l1.1 1.1M14.3 14.3l1.1 1.1M15.4 4.6l-1.1 1.1M5.7 14.3l-1.1 1.1"/></svg>
+            <svg class="icon-moon" viewBox="0 0 20 20" aria-hidden="true"><path d="M12.6 4.2A6.4 6.4 0 1 0 16 13.2 5.1 5.1 0 0 1 12.6 4.2Z"/></svg>
+          </button>
           <button type="button" id="btn-ux-mode-top" class="ghost ux-mode-btn" title="Same product — Simple is the visual story, Technical is a denser operator view">Technical view</button>
           <button id="btn-refresh" class="ghost">Refresh</button>
         </div>
@@ -374,7 +396,7 @@
             <div>
               <h2 style="margin:0;">Work map</h2>
               <p class="muted small" style="margin:0.25rem 0 0;">
-                People connected to the work they touch. Drag to rearrange, scroll to zoom, click a node for the story.
+                Hover to light a neighborhood. Click for the story. Double-click to zoom in. Drag people around. Find someone below.
               </p>
             </div>
             <div class="graph-toolbar-actions">
@@ -396,6 +418,9 @@
                 Show unsent updates
                 <input type="checkbox" id="graph-show-unapproved" />
               </label>
+              <label class="inline-label">Find
+                <input id="graph-find" placeholder="Name or work…" />
+              </label>
               <button id="btn-graph-story" class="primary" type="button">Enrich story</button>
               <button id="btn-graph-refresh" class="ghost" type="button">Refresh</button>
               <button id="btn-graph-fit" class="ghost" type="button">Fit</button>
@@ -408,6 +433,7 @@
         <div class="graph-layout">
           <div class="card graph-canvas-card">
             <canvas id="graph-canvas" width="1100" height="680" aria-label="Work map"></canvas>
+            <div id="graph-tip" class="graph-tip hidden"></div>
             <div class="graph-legend" id="graph-legend"></div>
           </div>
           <div class="card graph-side">
@@ -665,6 +691,11 @@ Empty windows never message anyone.</pre>
             <button type="button" id="btn-ux-technical" class="ghost">Technical view</button>
           </div>
           <p class="muted small" id="settings-ux-mode" style="margin-top:0.5rem;">Mode: —</p>
+          <div class="actions-inline" style="margin-top:0.75rem;">
+            <button type="button" id="btn-theme-light" class="ghost">Light</button>
+            <button type="button" id="btn-theme-dark" class="ghost">Dark</button>
+          </div>
+          <p class="muted small" id="settings-theme" style="margin-top:0.5rem;">Color: —</p>
           <p class="muted small" style="margin-top:0.75rem;">Morning digest can go to an optional Slack channel. Linear export is optional — promises stay here either way.</p>
         </div>
         <div class="card">
@@ -744,6 +775,6 @@ Empty windows never message anyone.</pre>
       </section>
     </main>
   </div>
-  <script src="/app/app.js?v=20260815a"></script>
+  <script src="/app/app.js?v=20260815b"></script>
 </body>
 </html>

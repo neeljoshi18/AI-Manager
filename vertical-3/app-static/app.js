@@ -135,6 +135,55 @@ function toggleUxMode(ev) {
   }
   setUxMode(getUxMode() === "simple" ? "technical" : "simple");
 }
+
+const THEME_KEY = "ai_manager_theme";
+function getTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === "light" || t === "dark") return t;
+  } catch (_) {}
+  try {
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      return "dark";
+    }
+  } catch (_) {}
+  return "light";
+}
+function isDarkTheme() {
+  return (document.documentElement.getAttribute("data-theme") || getTheme()) === "dark";
+}
+function setTheme(theme) {
+  const t = theme === "dark" ? "dark" : "light";
+  try {
+    localStorage.setItem(THEME_KEY, t);
+  } catch (_) {}
+  document.documentElement.setAttribute("data-theme", t);
+  document.querySelectorAll(".theme-toggle-label").forEach((el) => {
+    el.textContent = t === "dark" ? "Light mode" : "Dark mode";
+  });
+  if ($("settings-theme")) {
+    $("settings-theme").textContent =
+      t === "dark" ? "Color: Dark — warmer night canvas." : "Color: Light — cream paper, gold accent.";
+  }
+  if ($("btn-theme-light")) {
+    $("btn-theme-light").classList.toggle("primary", t === "light");
+    $("btn-theme-light").classList.toggle("ghost", t !== "light");
+  }
+  if ($("btn-theme-dark")) {
+    $("btn-theme-dark").classList.toggle("primary", t === "dark");
+    $("btn-theme-dark").classList.toggle("ghost", t !== "dark");
+  }
+  try {
+    if (typeof drawGraph === "function") drawGraph();
+  } catch (_) {}
+}
+function toggleTheme(ev) {
+  if (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+  setTheme(isDarkTheme() ? "light" : "dark");
+}
 function rerenderActiveViewForUx() {
   const active = document.querySelector(".nav-item.active");
   const v = active?.getAttribute("data-view") || "cockpit";
@@ -2147,6 +2196,10 @@ function handleConnectReturn() {
     if (modeParam === "simple" || modeParam === "technical") {
       setUxMode(modeParam, { rerender: false });
     }
+    const themeParam = params.get("theme");
+    if (themeParam === "light" || themeParam === "dark") {
+      setTheme(themeParam);
+    }
     const known = ["cockpit", "today", "status", "team", "graph", "connections", "insights", "settings", "lab"];
     if (known.includes(viewParam) || connected === "slack" || connected === "github") {
       showView(known.includes(viewParam) ? viewParam : "connections");
@@ -2593,6 +2646,8 @@ const graphState = {
   edges: [], // { id, type, from, to }
   filters: {}, // type -> bool
   selected: null,
+  hover: null,
+  find: "",
   liveTimer: null,
   anim: null,
   drag: null,
@@ -2605,6 +2660,7 @@ const graphState = {
   fitTimer: null,
   storyTried: false,
   settled: false,
+  lastClick: { id: null, t: 0 },
 };
 
 const GRAPH_TYPE_ORDER = [
@@ -2708,17 +2764,25 @@ function ensureGraphCanvas() {
     const pt = canvasPoint(canvas, e);
     const hit = hitNode(pt.x, pt.y);
     if (hit) {
+      const now = Date.now();
+      const dbl =
+        graphState.lastClick.id === hit.id && now - graphState.lastClick.t < 320;
+      graphState.lastClick = { id: hit.id, t: now };
       graphState.selected = hit.id;
-      graphState.drag = { id: hit.id, ox: hit.x, oy: hit.y };
+      graphState.drag = { id: hit.id, ox: hit.x, oy: hit.y, moved: false };
       hit.fx = hit.x;
       hit.fy = hit.y;
       canvas.setPointerCapture(e.pointerId);
       renderGraphDetail(hit);
+      if (dbl) focusGraphNode(hit);
       drawGraph();
       return;
     }
+    graphState.selected = null;
+    hideGraphTip();
     graphState.panning = { x: e.clientX, y: e.clientY, px: graphState.pan.x, py: graphState.pan.y };
     canvas.setPointerCapture(e.pointerId);
+    drawGraph();
   });
   canvas.addEventListener("pointermove", (e) => {
     if (graphState.drag) {
@@ -2731,13 +2795,35 @@ function ensureGraphCanvas() {
         n.fy = pt.y;
         n.vx = 0;
         n.vy = 0;
+        graphState.drag.moved = true;
       }
+      hideGraphTip();
       return;
     }
     if (graphState.panning) {
       graphState.pan.x = graphState.panning.px + (e.clientX - graphState.panning.x);
       graphState.pan.y = graphState.panning.py + (e.clientY - graphState.panning.y);
+      hideGraphTip();
+      return;
     }
+    const pt = canvasPoint(canvas, e);
+    const hit = hitNode(pt.x, pt.y);
+    const next = hit?.id || null;
+    canvas.classList.toggle("is-over-node", !!next);
+    if (graphState.hover !== next) {
+      graphState.hover = next;
+      drawGraph();
+    }
+    if (hit) placeGraphTip(e, hit);
+    else hideGraphTip();
+  });
+  canvas.addEventListener("pointerleave", () => {
+    if (graphState.hover) {
+      graphState.hover = null;
+      drawGraph();
+    }
+    hideGraphTip();
+    canvas.classList.remove("is-over-node");
   });
   canvas.addEventListener("pointerup", () => {
     if (graphState.drag) {
@@ -2754,6 +2840,79 @@ function ensureGraphCanvas() {
     graphState.drag = null;
     graphState.panning = null;
   });
+}
+
+function graphPalette() {
+  const dark = isDarkTheme();
+  return {
+    ink: dark ? "#f4efe6" : "#1c1914",
+    muted: dark ? "#a39b8c" : "#6b645a",
+    personFill: dark ? "#2a241c" : "#fff8ee",
+    personStroke: dark ? "#e0a84a" : "#c07a2c",
+    personGlyph: dark ? "#e0a84a" : "#8a5a22",
+    prFill: "#c07a2c",
+    prStroke: dark ? "#e0a84a" : "#8a5a22",
+    issueFill: dark ? "#3a2424" : "#f6eeee",
+    issueStroke: dark ? "#d08a8a" : "#b56a6a",
+    intentFill: dark ? "#2a261c" : "#fff9ef",
+    intentStroke: dark ? "#d4b07a" : "#c4a06a",
+    repoFill: dark ? "#2c2a26" : "#ede8e0",
+    repoStroke: dark ? "#8a8478" : "#6b6560",
+    commitFill: dark ? "#243028" : "#eef3ef",
+    commitStroke: dark ? "#7a9a80" : "#5f8466",
+    edge: dark ? "160,150,136" : "168,160,148",
+    edgeClaim: dark ? "224,168,74" : "192,122,44",
+    edgeBlock: dark ? "208,138,138" : "181,106,106",
+    glow: dark ? "224,168,74" : "192,122,44",
+    hud: dark ? "#a39b8c" : "#6b645a",
+  };
+}
+
+function nodeMatchesFind(n) {
+  const q = (graphState.find || "").trim().toLowerCase();
+  if (!q) return false;
+  const blob = `${n.label || ""} ${n.type || ""} ${n.id || ""} ${n.meta?.intent_type || ""}`.toLowerCase();
+  return blob.includes(q);
+}
+
+function placeGraphTip(e, n) {
+  const tip = $("graph-tip");
+  const host = $("graph-canvas")?.parentElement;
+  if (!tip || !host) return;
+  const rect = host.getBoundingClientRect();
+  let x = e.clientX - rect.left + 14;
+  let y = e.clientY - rect.top + 14;
+  tip.classList.remove("hidden");
+  const kind =
+    n.type === "Person"
+      ? "Person"
+      : n.type === "PullRequest"
+        ? "Review"
+        : n.type === "Intent"
+          ? plainIntentType(n.meta?.intent_type || "Focus")
+          : n.type === "Commit"
+            ? "Update"
+            : n.type || "Item";
+  tip.innerHTML = `<strong>${esc(truncateLabel(n.label || "Untitled", 42))}</strong><span class="muted">${esc(kind)} · click for story · double-click to zoom</span>`;
+  const tw = tip.offsetWidth || 180;
+  const th = tip.offsetHeight || 56;
+  if (x + tw > rect.width - 12) x = e.clientX - rect.left - tw - 12;
+  if (y + th > rect.height - 12) y = e.clientY - rect.top - th - 12;
+  tip.style.left = `${Math.max(8, x)}px`;
+  tip.style.top = `${Math.max(8, y)}px`;
+}
+
+function hideGraphTip() {
+  const tip = $("graph-tip");
+  if (tip) tip.classList.add("hidden");
+}
+
+function focusGraphNode(n) {
+  const canvas = $("graph-canvas");
+  if (!canvas || !n) return;
+  graphState.scale = Math.min(2.2, Math.max(1.15, graphState.scale * 1.25));
+  graphState.pan.x = canvas.width / 2 - n.x * graphState.scale;
+  graphState.pan.y = canvas.height / 2 - n.y * graphState.scale;
 }
 
 function canvasPoint(canvas, e) {
@@ -3265,20 +3424,20 @@ function renderGraphChrome(data) {
   if (legend) {
     legend.innerHTML = isSimpleMode()
       ? [
-          `<span><i></i> People</span>`,
-          `<span><i class="pr"></i> Reviews / PRs</span>`,
+          `<span><i class="person"></i> People</span>`,
+          `<span><i class="pr"></i> Reviews</span>`,
           `<span><i class="issue"></i> Issues</span>`,
-          `<span><i class="intent"></i> Focus / goals</span>`,
+          `<span><i class="intent"></i> Focus</span>`,
           `<span><i class="repo"></i> Projects</span>`,
-          `<span>Lines show who is connected to what</span>`,
+          `<span>Hover a person · double-click to zoom</span>`,
         ].join("")
       : [
-          `<span><i></i> Person</span>`,
+          `<span><i class="person"></i> Person</span>`,
           `<span><i class="pr"></i> Pull request</span>`,
           `<span><i class="issue"></i> Issue</span>`,
           `<span><i class="intent"></i> Intent</span>`,
           `<span><i class="repo"></i> Repo</span>`,
-          `<span>Lines = edges (AUTHORED, CLAIMS, BLOCKS…)</span>`,
+          `<span>Hover neighborhood · find · double-click</span>`,
         ].join("");
   }
   const people = $("graph-people");
@@ -3555,6 +3714,8 @@ function drawGraph() {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
+  const p = graphPalette();
+  graphState.frame = (graphState.frame || 0) + 1;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -3564,6 +3725,16 @@ function drawGraph() {
 
   const byId = new Map(graphState.nodes.map((n) => [n.id, n]));
   const selected = graphState.selected;
+  const hover = graphState.hover;
+  const focusId = hover || selected;
+  const neighbor = new Set();
+  if (focusId) {
+    neighbor.add(focusId);
+    for (const e of graphState.edges) {
+      if (e.from === focusId) neighbor.add(e.to);
+      if (e.to === focusId) neighbor.add(e.from);
+    }
+  }
   const visibleNodes = graphState.nodes.filter((n) => nodeVisible(n));
   const visibleEdges = graphState.edges.filter((e) => {
     const a = byId.get(e.from);
@@ -3571,7 +3742,6 @@ function drawGraph() {
     return a && b && nodeVisible(a) && nodeVisible(b);
   });
 
-  // Draw non-selected edges first (dim), then story edges, then selected neighborhood
   const edgePriority = (e) => {
     if (e.type === "BLOCKS" || e.type === "BLOCKED_BY") return 3;
     if (e.type === "CLAIMS" || e.type === "ABOUT") return 2;
@@ -3584,47 +3754,41 @@ function drawGraph() {
     const a = byId.get(e.from);
     const b = byId.get(e.to);
     if (!a || !b) continue;
-    const inSel = selected && (a.id === selected || b.id === selected);
-    // Skip most PUSHED_TO clutter unless selected
-    if (e.type === "PUSHED_TO" && !inSel && visibleEdges.length > 25) continue;
+    const inFocus = focusId && (a.id === focusId || b.id === focusId);
+    const inFind = nodeMatchesFind(a) || nodeMatchesFind(b);
+    if (e.type === "PUSHED_TO" && !inFocus && visibleEdges.length > 25) continue;
 
     const isBlock = /block/i.test(e.type);
     const isClaim = e.type === "CLAIMS" || e.type === "ABOUT";
     ctx.beginPath();
-    // slight curve for readability
     const mx = (a.x + b.x) / 2 + (a.y - b.y) * 0.08;
     const my = (a.y + b.y) / 2 + (b.x - a.x) * 0.08;
     ctx.moveTo(a.x, a.y);
     ctx.quadraticCurveTo(mx, my, b.x, b.y);
-    let alpha = inSel ? 1 : selected ? 0.18 : 0.55;
-    if (isBlock) alpha = Math.max(alpha, 0.9);
-    if (isClaim) alpha = Math.max(alpha, 0.75);
+    let alpha = inFocus ? 0.95 : focusId ? 0.08 : 0.42;
+    if (inFind) alpha = Math.max(alpha, 0.7);
+    if (isBlock && !focusId) alpha = Math.max(alpha, 0.75);
     ctx.strokeStyle = isBlock
-      ? `rgba(181,106,106,${alpha})`
+      ? `rgba(${p.edgeBlock},${alpha})`
       : isClaim
-        ? `rgba(59,111,120,${alpha})`
-        : `rgba(168,166,160,${alpha})`;
-    ctx.lineWidth = (isBlock ? 2.2 : inSel ? 1.6 : 1.1) / graphState.scale;
+        ? `rgba(${p.edgeClaim},${alpha})`
+        : `rgba(${p.edge},${alpha})`;
+    ctx.lineWidth = (inFocus ? 2.2 : isBlock ? 1.8 : 1.15) / graphState.scale;
     if (isClaim) ctx.setLineDash([5 / graphState.scale, 4 / graphState.scale]);
     else if (isBlock) ctx.setLineDash([3 / graphState.scale, 3 / graphState.scale]);
     else ctx.setLineDash([]);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const showLabel =
-      isBlock ||
-      isClaim ||
-      inSel ||
-      (visibleEdges.length < 30 && edgePriority(e) >= 1);
+    const showLabel = inFocus || isBlock || (visibleEdges.length < 24 && edgePriority(e) >= 2);
     if (showLabel) {
-      ctx.font = `${10 / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = inSel || isBlock ? "#6b6b6b" : "#a8a6a0";
+      ctx.font = `${10 / graphState.scale}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
+      ctx.fillStyle = inFocus ? p.ink : p.muted;
       ctx.textAlign = "center";
       ctx.fillText(e.type, mx, my - 4 / graphState.scale);
     }
   }
 
-  // Nodes: commits first (under), hubs on top
   const paintOrder = [...visibleNodes].sort((a, b) => {
     const rank = (t) =>
       t === "Commit" ? 0 : t === "Repo" ? 1 : t === "Intent" ? 3 : t === "Person" ? 4 : 2;
@@ -3633,23 +3797,27 @@ function drawGraph() {
 
   for (const n of paintOrder) {
     const isSel = n.id === selected;
-    const dim = selected && !isSel;
-    ctx.globalAlpha = dim ? 0.35 : 1;
-    drawNodeShape(ctx, n, isSel);
+    const isHov = n.id === hover;
+    const found = nodeMatchesFind(n);
+    const dim = focusId && !neighbor.has(n.id) && !found;
+    ctx.globalAlpha = dim ? 0.22 : 1;
+    drawNodeShape(ctx, n, isSel, isHov || found, p);
     const showLabel =
       GRAPH_HUB_TYPES.has(n.type) ||
       isSel ||
+      isHov ||
+      found ||
       graphState.scale >= 1.05 ||
       visibleNodes.filter((x) => x.type === "Commit").length <= 10;
     if (showLabel) {
-      ctx.font = `${(n.type === "Person" ? 12 : 11) / graphState.scale}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = "#1a1a1a";
+      ctx.font = `${(n.type === "Person" ? 12 : 11) / graphState.scale}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
+      ctx.fillStyle = p.ink;
       ctx.textAlign = "center";
       const maxLen = n.type === "Commit" ? 28 : n.type === "Person" ? 20 : 26;
       ctx.fillText(truncateLabel(n.label, maxLen), n.x, n.y + n.r + 14 / graphState.scale);
       if (n.type === "Intent" && n.meta?.intent_type) {
-        ctx.fillStyle = "#8a8a8a";
-        ctx.font = `${9 / graphState.scale}px Inter, ui-sans-serif, system-ui, sans-serif`;
+        ctx.fillStyle = p.muted;
+        ctx.font = `${9 / graphState.scale}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
         ctx.fillText(plainIntentType(n.meta.intent_type), n.x, n.y + n.r + 24 / graphState.scale);
       }
     }
@@ -3658,65 +3826,70 @@ function drawGraph() {
 
   ctx.restore();
 
-  // HUD: visible vs total
   const total = graphState.nodes.length;
   const vis = visibleNodes.length;
   if (total > vis) {
-    ctx.fillStyle = "#737373";
-    ctx.font = `${11 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillStyle = p.hud;
+    ctx.font = `${11 * dpr}px "Plus Jakarta Sans", ui-sans-serif, sans-serif`;
     ctx.textAlign = "left";
-    ctx.fillText(
-      `Showing ${vis}/${total} nodes (recent commits / filters)`,
-      12 * dpr,
-      20 * dpr
-    );
+    ctx.fillText(`Showing ${vis}/${total} · hover a node · double-click to zoom`, 12 * dpr, 20 * dpr);
   }
 
   if (!graphState.nodes.length) {
     const raw = graphState.raw || {};
     const v2Up = raw.v2_up !== false && raw.error !== "v2_unreachable";
-    ctx.fillStyle = "#737373";
-    ctx.font = `${14 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillStyle = p.hud;
+    ctx.font = `${16 * dpr}px Newsreader, serif`;
     ctx.textAlign = "center";
     const msg = !v2Up
-      ? "The map service is recovering — this will refill on its own"
+      ? "The map is recovering — it will refill on its own"
       : "The map is still filling from recent work";
     ctx.fillText(msg, canvas.width / 2, canvas.height / 2);
   }
 }
 
-function drawNodeShape(ctx, n, selected) {
+function drawNodeShape(ctx, n, selected, lit, pal) {
+  const p = pal || graphPalette();
   const r = n.r;
   ctx.save();
   ctx.translate(n.x, n.y);
-  if (selected) {
+  if (selected || lit) {
+    const pulse = selected ? 1 + 0.08 * Math.sin((graphState.frame || 0) / 12) : 1;
     ctx.beginPath();
-    ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
-    ctx.strokeStyle = "#3b6f78";
-    ctx.lineWidth = 2 / graphState.scale;
+    ctx.arc(0, 0, (r + 7) * pulse, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${p.glow},${selected ? 0.85 : 0.45})`;
+    ctx.lineWidth = (selected ? 2.4 : 1.6) / graphState.scale;
+    ctx.shadowColor = `rgba(${p.glow},0.55)`;
+    ctx.shadowBlur = 16 / graphState.scale;
     ctx.stroke();
+    ctx.shadowBlur = 0;
   }
   ctx.lineWidth = 1.4 / graphState.scale;
-  ctx.strokeStyle = "#1c1b17";
-  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = p.ink;
+  ctx.fillStyle = isDarkTheme() ? "#1d1a16" : "#fffcf7";
 
   if (n.type === "Person") {
+    ctx.fillStyle = p.personFill;
+    ctx.strokeStyle = p.personStroke;
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(0, -r * 0.25, r * 0.28, 0, Math.PI * 2);
-    ctx.fillStyle = "#1c1b17";
+    ctx.fillStyle = p.personGlyph;
     ctx.fill();
     ctx.beginPath();
     ctx.arc(0, r * 0.55, r * 0.55, Math.PI, 0);
     ctx.fill();
   } else if (n.type === "PullRequest") {
-    ctx.fillStyle = "#1c1b17";
+    ctx.fillStyle = p.prFill;
+    ctx.strokeStyle = p.prStroke;
     ctx.fillRect(-r * 0.7, -r * 0.7, r * 1.4, r * 1.4);
     ctx.strokeRect(-r * 0.7, -r * 0.7, r * 1.4, r * 1.4);
   } else if (n.type === "Issue" || n.type === "Ticket") {
+    ctx.fillStyle = p.issueFill;
+    ctx.strokeStyle = p.issueStroke;
     ctx.beginPath();
     ctx.moveTo(0, -r);
     ctx.lineTo(r, 0);
@@ -3741,21 +3914,24 @@ function drawNodeShape(ctx, n, selected) {
     ctx.lineWidth = selected ? 2.5 : 1.5;
     ctx.stroke();
   } else if (n.type === "Intent") {
+    ctx.fillStyle = p.intentFill;
+    ctx.strokeStyle = p.intentStroke;
+    ctx.fillRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
     ctx.setLineDash([3 / graphState.scale, 2 / graphState.scale]);
     ctx.strokeRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
     ctx.setLineDash([]);
-    ctx.fillStyle = "#fafafa";
-    ctx.fillRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
-    ctx.strokeRect(-r * 0.75, -r * 0.75, r * 1.5, r * 1.5);
   } else if (n.type === "Repo") {
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#e8e8e6";
+    ctx.fillStyle = p.repoFill;
+    ctx.strokeStyle = p.repoStroke;
     ctx.fill();
     ctx.stroke();
   } else {
     ctx.beginPath();
     ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2);
+    ctx.fillStyle = p.commitFill;
+    ctx.strokeStyle = p.commitStroke;
     ctx.fill();
     ctx.stroke();
   }
@@ -4649,6 +4825,25 @@ function wireUxModeButtons() {
   }
 }
 wireUxModeButtons();
+function wireThemeButtons() {
+  document.querySelectorAll(".theme-toggle").forEach((btn) => {
+    btn.addEventListener("click", (e) => toggleTheme(e));
+  });
+  if ($("btn-theme-light")) {
+    $("btn-theme-light").addEventListener("click", (e) => {
+      e.preventDefault();
+      setTheme("light");
+    });
+  }
+  if ($("btn-theme-dark")) {
+    $("btn-theme-dark").addEventListener("click", (e) => {
+      e.preventDefault();
+      setTheme("dark");
+    });
+  }
+}
+wireThemeButtons();
+setTheme(getTheme());
 // Apply saved mode (re-render after short tick so cockpit can paint)
 setUxMode(getUxMode(), { rerender: false });
 setTimeout(() => {
@@ -4718,8 +4913,8 @@ function applyChromeUxMode() {
     const p = graphView.querySelector(".graph-toolbar p.muted.small");
     if (p) {
       p.textContent = simple
-        ? "People connected to the work they touch. Drag, zoom, click a node for the story."
-        : "People connected to work and focuses. Drag, zoom, click a node. Recent work only by default.";
+        ? "Hover to light a neighborhood. Click for the story. Double-click to zoom in. Find someone in the bar above."
+        : "Hover neighborhood, find a name, double-click to zoom. Recent work only by default.";
     }
   }
   // Connect
@@ -4960,6 +5155,29 @@ if ($("graph-live")) {
     }
   });
 }
+if ($("graph-find")) {
+  $("graph-find").addEventListener("input", () => {
+    graphState.find = $("graph-find").value || "";
+    const q = graphState.find.trim().toLowerCase();
+    if (q) {
+      const hit = graphState.nodes.find((n) => nodeVisible(n) && nodeMatchesFind(n));
+      if (hit) {
+        graphState.selected = hit.id;
+        focusGraphNode(hit);
+        renderGraphDetail(hit);
+      }
+    }
+    drawGraph();
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("view-graph")?.classList.contains("hidden")) return;
+  graphState.selected = null;
+  graphState.hover = null;
+  hideGraphTip();
+  drawGraph();
+});
 
 refreshHealth();
 refreshOnboarding();

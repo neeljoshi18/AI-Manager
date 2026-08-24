@@ -80,9 +80,16 @@ COMMIT_POLL_PAGES = int(os.environ.get("COMMIT_POLL_PAGES", "3"))
 COMMIT_BOOT_PAGES = int(os.environ.get("COMMIT_BOOT_PAGES", "10"))
 COMMIT_BOOT_CAP = int(os.environ.get("COMMIT_BOOT_CAP", "100"))  # max project per boot tick
 COMMIT_TICK_CAP = int(os.environ.get("COMMIT_TICK_CAP", "40"))  # steady tick cap
-COMMIT_SEEN_FILE = os.environ.get(
-    "COMMIT_SEEN_FILE", f"/var/lib/ai-manager/bridge_commits_seen_{TENANT}.txt"
-)
+def _bridge_state_file(name: str) -> str:
+    """VPS used /var/lib/ai-manager; laptop has no write there — fall back to /tmp."""
+    vps_dir = "/var/lib/ai-manager"
+    vps = f"{vps_dir}/{name}_{TENANT}.txt"
+    local = f"/tmp/ai_manager_{name}_{TENANT}.txt"
+    if os.path.isdir(vps_dir) and os.access(vps_dir, os.W_OK):
+        return vps
+    return local
+
+COMMIT_SEEN_FILE = os.environ.get("COMMIT_SEEN_FILE", _bridge_state_file("bridge_commits_seen"))
 # PR currency: open (+ recently updated closed) PRs → PullRequest + organic Intent (rules_v0).
 # Complements webhooks; commits alone cannot feed claim/conflict detectors.
 PR_POLL_SECS = float(os.environ.get("PR_POLL_SECS", "120"))
@@ -91,9 +98,7 @@ PR_POLL_PAGES = int(os.environ.get("PR_POLL_PAGES", "2"))
 PR_BOOT_PAGES = int(os.environ.get("PR_BOOT_PAGES", "3"))
 PR_TICK_CAP = int(os.environ.get("PR_TICK_CAP", "40"))
 PR_BOOT_CAP = int(os.environ.get("PR_BOOT_CAP", "80"))
-PR_SEEN_FILE = os.environ.get(
-    "PR_SEEN_FILE", f"/var/lib/ai-manager/bridge_prs_seen_{TENANT}.txt"
-)
+PR_SEEN_FILE = os.environ.get("PR_SEEN_FILE", _bridge_state_file("bridge_prs_seen"))
 _LAST_COMMIT_POLL = 0.0
 _COMMIT_BOOT_DONE = False
 _LAST_PR_POLL = 0.0

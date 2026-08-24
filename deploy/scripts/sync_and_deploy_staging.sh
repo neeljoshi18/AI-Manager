@@ -6,6 +6,11 @@
 # Swap setup is best-effort only (never blocks deploy). Non-interactive SSH
 # cannot prompt for sudo passwords.
 set -euo pipefail
+# PAUSED 2026-08-15 — DigitalOcean droplet is powered off. Script kept (not deleted).
+# Local: ./scripts/dev_up.sh → http://127.0.0.1:18083/app/
+# See: deploy/PAUSED_DIGITALOCEAN.md
+echo "PAUSED: DigitalOcean droplet is off. Use ./scripts/dev_up.sh → http://127.0.0.1:18083/app/" >&2
+exit 1
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HOST="${STAGING_HOST:-neel@206.189.129.31}"
 REMOTE_DIR="${STAGING_REMOTE_DIR:-ai-manager}"

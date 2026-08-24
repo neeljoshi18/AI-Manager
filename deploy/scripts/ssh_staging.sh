@@ -4,6 +4,11 @@
 #   ./deploy/scripts/ssh_staging.sh
 #   ./deploy/scripts/ssh_staging.sh 'docker ps'
 set -euo pipefail
+# PAUSED 2026-08-15 — DigitalOcean droplet is powered off. Script kept (not deleted).
+# Local: ./scripts/dev_up.sh → http://127.0.0.1:18083/app/
+# See: deploy/PAUSED_DIGITALOCEAN.md
+echo "PAUSED: DigitalOcean droplet is off. Use ./scripts/dev_up.sh → http://127.0.0.1:18083/app/" >&2
+exit 1
 HOST="${STAGING_HOST:-206.189.129.31}"
 USER="${STAGING_USER:-neel}"
 KEY="${STAGING_SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}"

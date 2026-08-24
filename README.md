@@ -27,6 +27,8 @@ Private monorepo for the Autonomous AI Manager platform (engineering context lay
 
 ## 2-minute demo (leads / Reddit / X)
 
+**2026-08-15:** DigitalOcean staging is **paused** (droplet off). `status.neel.world` will not load until a VPS is back. Use the laptop stack:
+
 ```bash
 ./scripts/dev_up.sh
 # Product UI (redesigned shell):
@@ -34,6 +36,8 @@ open http://127.0.0.1:18083/app/
 # Lab console:
 open http://127.0.0.1:18083/demo/
 ```
+
+Pause note (VPS code kept, not deleted): [deploy/PAUSED_DIGITALOCEAN.md](./deploy/PAUSED_DIGITALOCEAN.md)
 
 **Docker multi-service (staging-shaped):**
 

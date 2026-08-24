@@ -1,5 +1,9 @@
 # Deploy — M5 staging
 
+> **PAUSED 2026-08-15:** DigitalOcean droplet is powered off. VPS scripts and Actions are **kept but disabled** (not deleted).  
+> **Run locally:** `./scripts/dev_up.sh` → http://127.0.0.1:18083/app/  
+> Details: [PAUSED_DIGITALOCEAN.md](./PAUSED_DIGITALOCEAN.md)
+
 Goal: run AI Manager on a **single host** a teammate can hit over HTTPS — without laptop sleep killing the demo.
 
 ## Campus Wi‑Fi / blocked SSH

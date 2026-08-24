@@ -1,5 +1,10 @@
 # Deploy staging from GitHub's network (not campus Wi‑Fi).
 #
+# PAUSED 2026-08-15 — DigitalOcean droplet is powered off. Kept in full (not deleted).
+# Local instead: ./scripts/dev_up.sh → http://127.0.0.1:18083/app/
+# See: deploy/PAUSED_DIGITALOCEAN.md
+# To restore: uncomment on.push below and remove `if: false` on the job.
+#
 # Campus Wi‑Fi often blocks outbound SSH (port 22) to the droplet. This workflow
 # runs on GitHub-hosted runners, which can still reach the VPS. You only need
 # `git push` over HTTPS from college Wi‑Fi.
@@ -16,14 +21,27 @@
 # Trigger: push to main, or Actions → Deploy staging → Run workflow
 name: Deploy staging
 
+# Commented out while the droplet is off (auto-deploy would SSH a dead host).
+# on:
+#   push:
+#     branches: [main]
+#     paths-ignore:
+#       - "plans/**"
+#       - "starting-out-documents/**"
+#       - "**/*.md"
+#       - ".gitignore"
+#   workflow_dispatch:
+#     inputs:
+#       skip_build:
+#         description: "Skip image rebuild (pull-only compose up)"
+#         type: boolean
+#         default: false
+#       recover_only:
+#         description: "Recover mode: restart V2/egress/bridge (no full multi-service rebuild)"
+#         type: boolean
+#         default: false
+
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "plans/**"
-      - "starting-out-documents/**"
-      - "**/*.md"
-      - ".gitignore"
   workflow_dispatch:
     inputs:
       skip_build:
@@ -41,6 +59,8 @@ concurrency:
 
 jobs:
   deploy:
+    # PAUSED 2026-08-15: droplet closed. Re-enable when VPS is back.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

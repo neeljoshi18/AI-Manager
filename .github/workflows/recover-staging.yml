@@ -1,5 +1,9 @@
 # Fast staging recovery (no image rebuild). Runs from GitHub network (campus SSH often blocked).
 # Actions → Recover staging → Run workflow
+#
+# PAUSED 2026-08-15 — DigitalOcean droplet is powered off. File kept (not deleted).
+# Local: ./scripts/dev_up.sh → http://127.0.0.1:18083/app/
+# See: deploy/PAUSED_DIGITALOCEAN.md
 name: Recover staging
 
 on:
@@ -20,6 +24,8 @@ concurrency:
 
 jobs:
   recover:
+    # PAUSED 2026-08-15: droplet closed. Re-enable when VPS is back.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

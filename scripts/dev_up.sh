@@ -22,6 +22,8 @@ kill_port() {
 }
 
 echo "== AI Manager dev_up =="
+echo "DigitalOcean VPS is paused (droplet off) — this is the active serve path."
+echo "Product UI will be http://127.0.0.1:18083/app/  (see deploy/PAUSED_DIGITALOCEAN.md)"
 echo "logs: $LOGDIR"
 : > "$PIDFILE"
 

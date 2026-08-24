@@ -3,6 +3,11 @@
 # Run from your Mac on mobile hotspot when agent cannot SSH (campus Wi‑Fi blocks port 22):
 #   ./deploy/scripts/deploy_when_ssh.sh
 set -euo pipefail
+# PAUSED 2026-08-15 — DigitalOcean droplet is powered off. Script kept (not deleted).
+# Local: ./scripts/dev_up.sh → http://127.0.0.1:18083/app/
+# See: deploy/PAUSED_DIGITALOCEAN.md
+echo "PAUSED: DigitalOcean droplet is off. Use ./scripts/dev_up.sh → http://127.0.0.1:18083/app/" >&2
+exit 1
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 echo "== git pull =="
